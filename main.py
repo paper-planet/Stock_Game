@@ -1,56 +1,17 @@
-import asyncio
-import threading
-import tkinter as tk
-
+import asyncio,threading,tkinter as tk
 from market import Market
 from portfolio import Portfolio
-from ui import StockGameUI
+from ui import App
 
-
-def run_market(market):
-
-    async def simulation():
-
-        while market.running:
-
-            await market.tick()
-
-    asyncio.run(
-        simulation()
-    )
-
+def simulation(market):
+    async def run():
+        while market.running: await market.tick()
+    try:asyncio.run(run())
+    except Exception as e:market.errors.append(f'simulation thread: {e}')
 
 def main():
-
-    market = Market()
-
-    portfolio = Portfolio(
-        100_000_000
-    )
-
-    # Run the simulation in its
-    # own thread so Tkinter remains responsive.
-
-    market_thread = threading.Thread(
-        target=run_market,
-        args=(market,),
-        daemon=True
-    )
-
-    market_thread.start()
-
-    root = tk.Tk()
-
-    StockGameUI(
-        root,
-        market,
-        portfolio
-    )
-
-    root.mainloop()
-
-    market.running = False
-
-
-if __name__ == "__main__":
-    main()
+    market=Market();portfolio=Portfolio(100_000_000);market.portfolio=portfolio
+    threading.Thread(target=simulation,args=(market,),daemon=True,name='MarketSimulation').start();root=tk.Tk()
+    def stop():market.running=False;root.destroy()
+    root.protocol('WM_DELETE_WINDOW',stop);App(root,market,portfolio);root.mainloop();market.running=False
+if __name__=='__main__':main()
