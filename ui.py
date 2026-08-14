@@ -46,7 +46,16 @@ class Chart(tk.Canvas):
     def __init__(self,parent,app,index):
         super().__init__(parent,bg=BG,highlightthickness=2,highlightbackground='#263547');self.app=app;self.index=index;self.asset=None;self.timeframe='1D';self.kind='Candles';self.zoom=1.;self.cross=None;self.tool='Crosshair';self.drawings=[];self.drag_order=None;self.drag_start=None;self.bind('<Button-1>',self.click);self.bind('<Button-3>',self.context);self.bind('<B1-Motion>',self.drag);self.bind('<ButtonRelease-1>',self.release);self.bind('<Motion>',self.motion);self.bind('<MouseWheel>',self.wheel);self.bind('<Button-4>',lambda e:self._zoom(True));self.bind('<Button-5>',lambda e:self._zoom(False));self.bind('<Configure>',lambda e:self.draw());self._key=None
     def click(self,e):
-        self.app.active_chart=self.index;self.app.sync_chart_controls();self.start=(e.x,e.y);self.cross=(e.x,e.y);self.configure(highlightbackground=BLUE)
+        
+        if getattr(self.app,'selected_chart',None)==self.index:
+            self.app.selected_chart=None
+            self.configure(highlightbackground='#263547')
+        else:
+            self.app.selected_chart=self.index
+            for ch in self.app.charts:
+                ch.configure(highlightbackground=BLUE if ch is self else '#263547')
+            self.app.active_chart=self.index;self.app.sync_chart_controls()
+        self.start=(e.x,e.y);self.cross=(e.x,e.y)
         self.drag_order=self.nearest_order(e.y)
     def drag(self,e):
         self.cross=(e.x,e.y)
@@ -85,7 +94,7 @@ class Chart(tk.Canvas):
     def context(self,e):
         self.app.active_chart=self.index;self.app.sync_chart_controls();a=self.asset
         if not a:return
-        p=self.y_to_price(e.y);m=tk.Menu(self,tearoff=0);m.add_command(label=f'BUY {a.symbol} @ ${p:,.2f}',command=lambda:self.app.order_window(a,'BUY','LIMIT',p));m.add_command(label=f'SELL {a.symbol} @ ${p:,.2f}',command=lambda:self.app.order_window(a,'SELL','LIMIT',p));m.add_command(label=f'SHORT {a.symbol} @ ${p:,.2f}',command=lambda:self.app.order_window(a,'SHORT','LIMIT',p));m.add_command(label=f'COVER {a.symbol} @ ${p:,.2f}',command=lambda:self.app.order_window(a,'COVER','LIMIT',p));m.add_separator();m.add_command(label='Buy at Market',command=lambda:self.app.order_window(a,'BUY','MARKET',None));m.add_command(label='Set Stop',command=lambda:self.app.order_window(a,'SELL','STOP',p));m.add_command(label='Open Options',command=lambda:self.app.options_for(a));m.add_command(label='Level 2 / Level 3',command=lambda:self.app.depth_for(a));m.add_separator();m.add_command(label='ADD CHART',command=self.app.add_chart);m.add_command(label='REMOVE THIS CHART',command=lambda:self.app.remove_chart(self.index));m.tk_popup(e.x_root,e.y_root)
+        p=self.y_to_price(e.y);m=tk.Menu(self,tearoff=0);m.add_command(label=f'BUY {a.symbol} @ ${p:,.2f}',command=lambda:self.app.order_window(a,'BUY','LIMIT',p));m.add_command(label=f'SELL {a.symbol} @ ${p:,.2f}',command=lambda:self.app.order_window(a,'SELL','LIMIT',p));m.add_command(label=f'SHORT {a.symbol} @ ${p:,.2f}',command=lambda:self.app.order_window(a,'SHORT','LIMIT',p));m.add_command(label=f'COVER {a.symbol} @ ${p:,.2f}',command=lambda:self.app.order_window(a,'COVER','LIMIT',p));m.add_separator();m.add_command(label='Buy at Market',command=lambda:self.app.order_window(a,'BUY','MARKET',None));m.add_command(label='Set Stop',command=lambda:self.app.order_window(a,'SELL','STOP',p));m.add_command(label='Open Options',command=lambda:self.app.options_for(a));m.add_command(label='Level 2 / Level 3',command=lambda:self.app.depth_for(a));m.add_command(label='POP OUT ADVANCED CHART',command=lambda:self.app.advanced_chart(a));m.add_separator();m.add_command(label='ADD CHART',command=self.app.add_chart);m.add_command(label='REMOVE THIS CHART',command=lambda:self.app.remove_chart(self.index));m.tk_popup(e.x_root,e.y_root)
     def draw(self):
         a=self.asset;d=self.data();w=max(280,self.winfo_width());h=max(170,self.winfo_height());key=(a.symbol if a else None,self.timeframe,self.kind,round(self.zoom,2),len(d),round(a.price,3) if a else 0,w,h,len(self.drawings),len(self.app.market.pending_orders),self.app.ind_vars_version)
         if key==self._key:return
@@ -134,81 +143,100 @@ class Chart(tk.Canvas):
         if len(pts)>3:self.create_line(*pts,fill=col,width=1)
 
 class OptionsWindow(ToolWindow):
-    """Professional option chain with dynamic columns, OTM highlighting and quantity trading."""
-    BASE_COLS=['Bid','Ask','Last','Vol','OI','IV','Delta','Gamma','Theta','Vega']
     def __init__(self,parent,market,portfolio,refresh):
-        super().__init__(parent);self.market=market;self.portfolio=portfolio;self.refresh_main=refresh
-        self.style_window('OPTIONS — PRO CHAIN','1500x900');self.rate_ms=350;self.selected_side='CALL';self.selected_strike=None
-        self.visible_cols={x:True for x in self.BASE_COLS};self._vars_window=None
+        super().__init__(parent);self.market=market;self.portfolio=portfolio;self.refresh_main=refresh;self.style_window('OPTIONS — PRO CHAIN','1320x820');self.rate_ms=350;self.selected_side='CALL';self.selected_strike=None;self.visible_cols={x:True for x in ['Bid','Ask','Last','Vol','OI','IV','Delta','Gamma','Theta','Vega']}
         top=ttk.Frame(self);top.pack(fill='x',padx=8,pady=7)
         ttk.Label(top,text='Ticker').pack(side='left');self.entry=ttk.Entry(top,width=12);self.entry.insert(0,'SPX');self.entry.pack(side='left',padx=5);self.entry.bind('<Return>',lambda e:self.apply_symbol());ttk.Button(top,text='LOAD',command=self.apply_symbol).pack(side='left')
         for label,vals,var in [('Expiry',[x[0] for x in EXPIRATIONS],'0DTE'),('Range',['ATM ±5 Strikes','ATM ±10 Strikes','ATM ±20 Strikes','ATM ±50 Strikes','All'],'ATM ±20 Strikes'),('Sort',['Strike','Volume','Open Interest','IV','Delta','Gamma'],'Strike'),('Update',['150ms','250ms','350ms','500ms','1000ms'],'350ms')]:
-            ttk.Label(top,text=label).pack(side='left',padx=(12,2));v=ttk.Combobox(top,values=vals,state='readonly',width=13);v.set(var);v.pack(side='left');setattr(self,label.lower().replace('update','rate'),v)
-        self.span=self.range;self.rate.bind('<<ComboboxSelected>>',lambda e:self.set_rate())
-        ttk.Label(top,text='Sector').pack(side='left',padx=(10,2));self.sector_filter=tk.StringVar(value='ALL');self.sector_cb=ttk.Combobox(top,textvariable=self.sector_filter,values=['ALL']+market.sectors,state='readonly',width=14);self.sector_cb.pack(side='left');self.sector_cb.bind('<<ComboboxSelected>>',lambda e:self.apply_correlated_filter())
-        ttk.Label(top,text='Correlated').pack(side='left',padx=(8,2));self.corr=tk.StringVar(value='Underlying');self.corr_cb=ttk.Combobox(top,textvariable=self.corr,values=['Underlying','Sector ETF','Index','Commodity','FX'],state='readonly',width=14);self.corr_cb.pack(side='left')
-        ttk.Button(top,text='SPREAD BUILDER',command=self.spread_builder).pack(side='left',padx=7);ttk.Button(top,text='VARIABLES',command=self.variables).pack(side='left');self.live=ttk.Label(top,text='● LIVE');self.live.pack(side='right')
+            ttk.Label(top,text=label).pack(side='left',padx=(12,2));v=ttk.Combobox(top,values=vals,state='readonly',width=12);v.set(var);v.pack(side='left');setattr(self,label.lower().replace('update','rate'),v)
+        self.span=self.range
+        self.rate.bind('<<ComboboxSelected>>',lambda e:self.set_rate());ttk.Label(top,text='Sector').pack(side='left',padx=(10,2));self.sector_filter=tk.StringVar(value='ALL');self.sector_cb=ttk.Combobox(top,textvariable=self.sector_filter,values=['ALL']+market.sectors,state='readonly',width=14);self.sector_cb.pack(side='left');self.sector_cb.bind('<<ComboboxSelected>>',lambda e:self.apply_correlated_filter());ttk.Label(top,text='Correlated').pack(side='left',padx=(8,2));self.corr=tk.StringVar(value='Underlying');self.corr_cb=ttk.Combobox(top,textvariable=self.corr,values=['Underlying','Sector ETF','Index','Commodity','FX'],state='readonly',width=14);self.corr_cb.pack(side='left');ttk.Button(top,text='SPREAD BUILDER',command=self.spread_builder).pack(side='left',padx=7);ttk.Button(top,text='VARIABLES',command=self.variables).pack(side='left');self.live=ttk.Label(top,text='● LIVE');self.live.pack(side='right')
         head=tk.Frame(self,bg=BG);head.pack(fill='x',padx=8);tk.Label(head,text='CALLS',bg='#123326',fg=GREEN,font=('Arial',11,'bold')).pack(side='left',fill='x',expand=True);tk.Label(head,text='STRIKE / ATM',bg='#3c3320',fg=YELLOW,font=('Arial',11,'bold'),width=16).pack(side='left');tk.Label(head,text='PUTS',bg='#38202a',fg=RED,font=('Arial',11,'bold')).pack(side='left',fill='x',expand=True)
-        self.tv=ttk.Treeview(self,show='headings',selectmode='browse');self._configure_tree_columns();
-        self.tv.tag_configure('itm',background='#173d2e',foreground='#d9ffef');self.tv.tag_configure('otm',background='#4b1822',foreground='#ff9aaa');self.tv.tag_configure('atm',background='#403720',foreground='#fff2ae');self.tv.tag_configure('owned',background='#1b4d77',foreground='#ffffff')
-        opt_x=ttk.Scrollbar(self,orient='horizontal',command=self.tv.xview);self.tv.configure(xscrollcommand=opt_x.set);self.tv.pack(fill='both',expand=True,padx=8,pady=(5,0));opt_x.pack(fill='x',padx=8,pady=(0,5));self.tv.bind('<<TreeviewSelect>>',lambda e:self.info());self.tv.bind('<Button-3>',self.context);self.tv.bind('<Double-1>',lambda e:self.trade());
-        self.info_lbl=ttk.Label(self,text='OTM options are highlighted red. Blue = owned/working contracts. Use VARIABLES to show/hide columns.');self.info_lbl.pack(fill='x',padx=8,pady=5);self.after(100,self.update_chain)
-    def _configure_tree_columns(self):
-        cols=[];labels=[]
-        for prefix in ('c','p'):
-            for x in self.BASE_COLS:
-                if self.visible_cols[x]: cols.append(prefix+x.lower());labels.append(x)
-        cols.insert(len(cols)//2,'strike');labels.insert(len(labels)//2,'STRIKE')
-        self.tv.configure(columns=tuple(cols));
-        for c,l in zip(cols,labels):self.tv.heading(c,text=l);self.tv.column(c,width=78,anchor='center',stretch=False)
-        if 'strike' in cols:self.tv.column('strike',width=96,anchor='center',stretch=False)
+        cols=('cbid','cask','clast','cvol','coi','civ','cd','cg','ct','cv','strike','pd','pg','pt','pv','piv','poi','pvol','plast','pbid','pask');labels=['Bid','Ask','Last','Vol','OI','IV','Δ','Γ','Θ','V','Strike','Δ','Γ','Θ','V','IV','OI','Vol','Last','Bid','Ask'];self.chain_frame=ttk.Frame(self);self.chain_frame.pack(fill='both',expand=True,padx=8,pady=(5,0))
+        self.call_cols=['Bid','Ask','Last','Vol','OI','IV','Delta','Gamma','Theta','Vega']; self.put_cols=list(self.call_cols)
+        self.tv_calls=ttk.Treeview(self.chain_frame,show='headings',selectmode='browse'); self.tv_strike=ttk.Treeview(self.chain_frame,columns=('strike',),show='headings',selectmode='browse'); self.tv_puts=ttk.Treeview(self.chain_frame,show='headings',selectmode='browse')
+        self.tv_strike.heading('strike',text='STRIKE / ATM'); self.tv_strike.column('strike',width=96,anchor='center',stretch=False)
+        self.tv_calls.grid(row=0,column=0,sticky='nsew'); self.tv_strike.grid(row=0,column=1,sticky='nsew'); self.tv_puts.grid(row=0,column=2,sticky='nsew')
+        self.chain_frame.columnconfigure(0,weight=1); self.chain_frame.columnconfigure(1,weight=0); self.chain_frame.columnconfigure(2,weight=1); self.chain_frame.rowconfigure(0,weight=1)
+        self.tv_calls.tag_configure('itm',background='#173d2e',foreground='#bfffe7');self.tv_calls.tag_configure('otm',background='#5b1f2c',foreground='#ffdce2');self.tv_calls.tag_configure('atm',background='#403720',foreground='#fff2ae');self.tv_calls.tag_configure('owned',background='#1b4d77',foreground='#ffffff')
+        self.tv_puts.tag_configure('itm',background='#173d2e',foreground='#bfffe7');self.tv_puts.tag_configure('otm',background='#5b1f2c',foreground='#ffdce2');self.tv_puts.tag_configure('atm',background='#403720',foreground='#fff2ae');self.tv_puts.tag_configure('owned',background='#1b4d77',foreground='#ffffff')
+        for tv in (self.tv_calls,self.tv_strike,self.tv_puts):
+            tv.bind('<Button-1>',lambda e,tv=tv:self.chain_select(e,tv)); tv.bind('<Button-3>',lambda e,tv=tv:self.context(e)); tv.bind('<Double-1>',lambda e:self.trade())
+        self.tv=self.tv_calls
+        self.info_lbl=ttk.Label(self,text='ITM = green/blue • OTM = red • ATM = gold • right-click any column to trade or configure variables.');self.info_lbl.pack(fill='x',padx=8,pady=5);self.after(100,self.update_chain)
     def set_rate(self):self.rate_ms=int(self.rate.get().replace('ms',''))
     def variables(self):
-        if self._vars_window and self._vars_window.winfo_exists():self._vars_window.lift();return
-        w=self._vars_window=tk.Toplevel(self);w.title('OPTIONS VARIABLES');w.geometry('390x500');w.configure(bg=BG);w.protocol('WM_DELETE_WINDOW',w.destroy)
-        ttk.Label(w,text='Visible option-chain variables',font=('Arial',12,'bold')).pack(anchor='w',padx=12,pady=10)
-        ttk.Label(w,text='Changes apply immediately and persist while this chain is open.',foreground=MUTED).pack(anchor='w',padx=12,pady=(0,8))
-        for k in self.BASE_COLS:
+        if getattr(self,'var_window',None) is not None and self.var_window.winfo_exists(): self.var_window.lift(); return
+        w=tk.Toplevel(self);self.var_window=w;w.title('OPTIONS VARIABLES');w.geometry('380x520');w.resizable(True,True);w.configure(bg=BG);ttk.Label(w,text='Visible option-chain variables',font=('Arial',12,'bold')).pack(anchor='w',padx=12,pady=10)
+        for k in self.visible_cols:
             v=tk.BooleanVar(value=self.visible_cols[k]);ttk.Checkbutton(w,text=k,variable=v,command=lambda key=k,var=v:self.toggle_col(key,var)).pack(anchor='w',padx=20,pady=4)
-    def toggle_col(self,k,v):
-        self.visible_cols[k]=bool(v.get());self._configure_tree_columns();self.update_chain()
+        ttk.Button(w,text='RESET ALL COLUMNS',command=lambda:self.reset_columns()).pack(fill='x',padx=18,pady=12)
+        w.protocol('WM_DELETE_WINDOW',lambda:(setattr(self,'var_window',None),w.destroy()))
+    def reset_columns(self):
+        for k in self.visible_cols:self.visible_cols[k]=True
+        self.rebuild_chain_columns()
+    def toggle_col(self,k,v):self.visible_cols[k]=bool(v.get());self.rebuild_chain_columns()
+    def rebuild_chain_columns(self):
+        cols=[k for k,v in self.visible_cols.items() if v]
+        if not cols: cols=['Bid']
+        for tv in (self.tv_calls,self.tv_puts):
+            tv['columns']=tuple(cols)
+            for c in cols: tv.heading(c,text=c if c not in ('Delta','Gamma','Theta','Vega') else {'Delta':'Δ','Gamma':'Γ','Theta':'Θ','Vega':'Vega'}[c]);tv.column(c,width=76,anchor='center',stretch=False)
+        self.update_chain()
+    def chain_select(self,e,tv):
+        iid=tv.identify_row(e.y)
+        if not iid:return
+        for x in (self.tv_calls,self.tv_strike,self.tv_puts):
+            x.selection_remove(x.selection())
+        tv.selection_set(iid);tv.focus(iid);self.selected_strike=int(iid);self.selected_side='CALL' if tv is self.tv_calls else 'PUT';self.info()
     def apply_symbol(self):
         s=self.entry.get().strip().upper();a=self.market.get_asset(s)
         if not a:self.info_lbl.config(text=f'{s}: ticker not found');return
         if self.expiry.get()=='0DTE' and a.symbol not in {'SPX','NDX','RUT','DJI','ES=F','NQ=F'}: self.expiry.set('1D')
         self.info_lbl.config(text=f'Loaded {a.symbol} — {a.name}')
     def apply_correlated_filter(self):
-        sec=self.sector_filter.get();self.corr_cb['values']=['Underlying']+([a.symbol for a in self.market.stocks if a.category==sec][:40] if sec!='ALL' else ['Sector ETF','Index','Commodity','FX'])
+        sec=self.sector_filter.get()
+        if sec!='ALL':
+            candidates=[a.symbol for a in self.market.stocks if a.category==sec][:40]
+            if candidates:self.corr_cb['values']=['Underlying']+candidates
+        else:self.corr_cb['values']=['Underlying','Sector ETF','Index','Commodity','FX']
     def asset(self):return self.market.get_asset(self.entry.get().strip().upper()) or self.market.get_asset('SPX')
     def owned_contract(self,a,k,typ,days):
+        needle=(a.symbol,int(k),typ.lower(),int(days));
         for s in self.portfolio.options:
             for l in s.legs:
                 c=l.contract
-                if (c.underlying.symbol,int(c.strike),c.option_type.lower(),int(c.days))==(a.symbol,int(k),typ.lower(),int(days)):return True
+                if (c.underlying.symbol,int(c.strike),c.option_type.lower(),int(c.days))==needle:return True
         return False
     def update_chain(self):
         try:
-            a=self.asset();days=dict(EXPIRATIONS).get(self.expiry.get(),0);span={'ATM ±5 Strikes':5,'ATM ±10 Strikes':10,'ATM ±20 Strikes':20,'ATM ±50 Strikes':50}.get(self.span.get(),20)
-            cs=option_chain(a,days,span);calls={int(c.strike):c for c in cs if c.option_type=='call'};puts={int(c.strike):c for c in cs if c.option_type=='put'};ks=sorted(calls);center=round(a.price)
-            if self.span.get()!='All':ks=[k for k in ks if abs(k-center)<=span]
+            self.rebuild_chain_columns_no_refresh()
+            a=self.asset();days=dict(EXPIRATIONS).get(self.expiry.get(),0);span={'ATM ±5 Strikes':5,'ATM ±10 Strikes':10,'ATM ±20 Strikes':20,'ATM ±50 Strikes':50}.get(self.span.get(),20);cs=option_chain(a,days,span);calls={int(c.strike):c for c in cs if c.option_type=='call'};puts={int(c.strike):c for c in cs if c.option_type=='put'};ks=sorted(calls);center=round(a.price);rng=self.span.get()
+            if rng!='All':ks=[k for k in ks if abs(k-center)<=int(rng.split('±')[1].split()[0])]
             if self.sort.get()!='Strike':
                 def m(k):
                     c=calls[k];return {'Volume':c.volume,'Open Interest':c.open_interest,'IV':c.volatility,'Delta':abs(c.stats['delta']),'Gamma':c.stats['gamma']}.get(self.sort.get(),k)
                 ks=sorted(ks,key=m,reverse=True)
-            prior=self.tv.selection();prior_iid=prior[0] if prior else None;self.tv.delete(*self.tv.get_children())
-            cols=self.tv['columns']
+            for tv in (self.tv_calls,self.tv_strike,self.tv_puts):tv.delete(*tv.get_children())
+            visible=[k for k,v in self.visible_cols.items() if v] or ['Bid']
             for k in ks:
-                c,p=calls[k],puts[k];cs,ps=c.stats,p.stats
-                # OTM is side-specific. A row is red when either displayed option is OTM; ATM stays gold.
-                call_otm=k>center;put_otm=k<center;tag='atm' if k==center else 'otm' if (call_otm or put_otm) else 'itm'
-                if self.owned_contract(a,k,'call',days) or self.owned_contract(a,k,'put',days):tag='owned'
-                data={'cbid':f'{c.bid:.2f}','cask':f'{c.ask:.2f}','clast':f'{c.mid:.2f}','cvol':f'{c.volume:,}','coi':f'{c.open_interest:,}','civ':f'{c.volatility*100:.1f}%','cd':f'{cs["delta"]:+.2f}','cg':f'{cs["gamma"]:.4f}','ct':f'{cs["theta"]:.3f}','cv':f'{cs["vega"]:.3f}',
-                      'pd':f'{ps["delta"]:+.2f}','pg':f'{ps["gamma"]:.4f}','pt':f'{ps["theta"]:.3f}','pv':f'{ps["vega"]:.3f}','piv':f'{p.volatility*100:.1f}%','poi':f'{p.open_interest:,}','pvol':f'{p.volume:,}','plast':f'{p.mid:.2f}','pbid':f'{p.bid:.2f}','pask':f'{p.ask:.2f}','strike':f'${k:,.0f}'}
-                vals=[data[cname] for cname in cols];self.tv.insert('','end',iid=str(k),values=vals,tags=(tag,))
-            if prior_iid and prior_iid in self.tv.get_children():self.tv.selection_set(prior_iid);self.tv.focus(prior_iid)
+                c,p=calls[k],puts[k];cs_,ps_=c.stats,p.stats
+                ctag='atm' if k==center else 'itm' if c.itm() else 'otm'; ptag='atm' if k==center else 'itm' if p.itm() else 'otm'
+                if self.owned_contract(a,k,'call',days):ctag='owned'
+                if self.owned_contract(a,k,'put',days):ptag='owned'
+                cv={'Bid':f'{c.bid:.2f}','Ask':f'{c.ask:.2f}','Last':f'{c.mid:.2f}','Vol':f'{c.volume:,}','OI':f'{c.open_interest:,}','IV':f'{c.volatility*100:.1f}%','Delta':f'{cs_["delta"]:+.2f}','Gamma':f'{cs_["gamma"]:.4f}','Theta':f'{cs_["theta"]:.3f}','Vega':f'{cs_["vega"]:.3f}'}
+                pv={'Bid':f'{p.bid:.2f}','Ask':f'{p.ask:.2f}','Last':f'{p.mid:.2f}','Vol':f'{p.volume:,}','OI':f'{p.open_interest:,}','IV':f'{p.volatility*100:.1f}%','Delta':f'{ps_["delta"]:+.2f}','Gamma':f'{ps_["gamma"]:.4f}','Theta':f'{ps_["theta"]:.3f}','Vega':f'{ps_["vega"]:.3f}'}
+                self.tv_calls.insert('','end',iid=str(k),values=tuple(cv[x] for x in visible),tags=(ctag,));self.tv_strike.insert('','end',iid=str(k),values=(f'${k:,.0f}',),tags=('atm' if k==center else '',));self.tv_puts.insert('','end',iid=str(k),values=tuple(pv[x] for x in visible),tags=(ptag,))
             self.live.config(text=f'● LIVE  {a.symbol} ${a.price:,.2f}  {self.market.clock.time}  ATM ${center:,.0f}  {days}D')
         except Exception as e:self.info_lbl.config(text=f'Chain recovered: {e}')
         if self.winfo_exists():self.after(self.rate_ms,self.update_chain)
+    def rebuild_chain_columns_no_refresh(self):
+        cols=[k for k,v in self.visible_cols.items() if v] or ['Bid']
+        for tv in (self.tv_calls,self.tv_puts):
+            if tuple(tv['columns'])!=tuple(cols):
+                tv['columns']=tuple(cols)
+                for c in cols:tv.heading(c,text=c if c not in ('Delta','Gamma','Theta','Vega') else {'Delta':'Δ','Gamma':'Γ','Theta':'Θ','Vega':'Vega'}[c]);tv.column(c,width=76,anchor='center',stretch=False)
+    
     def info(self):
         it=self.tv.selection()
         if not it:return
@@ -216,27 +244,34 @@ class OptionsWindow(ToolWindow):
     def selected_contract(self,side=None):
         it=self.tv.selection()
         if not it:return None
-        k=int(it[0]);a=self.asset();days=dict(EXPIRATIONS).get(self.expiry.get(),0);return OptionContract(a,k,days,(side or self.selected_side).lower())
+        k=int(it[0]);a=self.asset();days=dict(EXPIRATIONS).get(self.expiry.get(),0);typ=(side or self.selected_side).lower();return OptionContract(a,k,days,typ)
     def context(self,e):
-        iid=self.tv.identify_row(e.y)
+        tv=e.widget;iid=tv.identify_row(e.y)
         if not iid:return
-        self.tv.selection_set(iid);self.tv.focus(iid);col=self.tv.identify_column(e.x);self.selected_side='CALL' if col in {f'#{i+1}' for i,x in enumerate(self.tv['columns']) if x.startswith('c')} else 'PUT';c=self.selected_contract();m=tk.Menu(self,tearoff=0);m.add_command(label=f'BUY {c}',command=lambda:self.trade_action('BUY'));m.add_command(label=f'SELL {c}',command=lambda:self.trade_action('SELL'));m.add_command(label='BUY / SELL WITH QUANTITY',command=lambda:self.option_order('MARKET'));m.add_separator();m.add_command(label='Set LIMIT',command=lambda:self.option_order('LIMIT'));m.add_command(label='Set STOP',command=lambda:self.option_order('STOP'));m.add_separator();m.add_command(label='Add Leg to Spread',command=self.add_leg_to_spread);m.add_command(label='Open Spread Builder',command=self.spread_builder);m.tk_popup(e.x_root,e.y_root)
+        self.selected_strike=int(iid);self.selected_side='CALL' if tv is self.tv_calls else 'PUT';tv.selection_set(iid);tv.focus(iid);m=tk.Menu(self,tearoff=0);c=self.selected_contract();m.add_command(label=f'BUY {c}',command=lambda:self.trade_action('BUY'));m.add_command(label=f'SELL/CLOSE {c}',command=lambda:self.trade_action('SELL'));m.add_command(label='Set LIMIT',command=lambda:self.option_order('LIMIT'));m.add_command(label='Set STOP',command=lambda:self.option_order('STOP'));m.add_separator();m.add_command(label='Add Leg to Spread',command=self.add_leg_to_spread);m.add_command(label='Open Spread Builder',command=self.spread_builder);m.add_command(label='Liquidate Matching Contract',command=self.liquidate_matching);m.tk_popup(e.x_root,e.y_root)
     def trade_action(self,action):
-        c=self.selected_contract()
+        c=self.selected_contract();q=1
         if not c:return
-        w=OptionOrderWindow(self,c,self.portfolio,self.refresh_main,'MARKET',default_action=action);w.grab_set()
+        s=OptionStrategy(f'{action} {c}');s.add_leg(c,q,'BUY' if action=='BUY' else 'SELL');ok,msg=self.portfolio.execute_strategy(s)
+        if ok:self.info_lbl.config(text=msg);self.refresh_main()
+        else:messagebox.showerror('Option order',msg)
     def option_order(self,typ):
-        c=self.selected_contract();
-        if c:OptionOrderWindow(self,c,self.portfolio,self.refresh_main,typ).grab_set()
+        c=self.selected_contract();w=OptionOrderWindow(self,c,self.portfolio,self.refresh_main,typ);w.grab_set()
     def add_leg_to_spread(self):self.spread_builder(self.selected_contract())
     def spread_builder(self,first=None):SpreadBuilder(self,self.market,self.portfolio,self.refresh_main,first)
-    def liquidate_matching(self):messagebox.showinfo('Options','Use the Positions tab to liquidate an opened option strategy.')
+    def liquidate_matching(self):
+        c=self.selected_contract();
+        if not c:return
+        for i,s in enumerate(list(self.portfolio.options)):
+            if any(l.contract.underlying.symbol==c.underlying.symbol and int(l.contract.strike)==int(c.strike) and l.contract.option_type==c.option_type for l in s.legs):
+                ok,msg=self.portfolio.liquidate_strategy(i);messagebox.showinfo('Liquidation',msg) if ok else messagebox.showerror('Liquidation',msg);self.refresh_main();return
+        messagebox.showwarning('Contract','No matching owned contract found.')
     def trade(self):self.trade_action('BUY')
 
 class OptionOrderWindow(ToolWindow):
-    def __init__(self,parent,contract,portfolio,refresh,order_type,default_action='BUY'):
-        super().__init__(parent);self.contract=contract;self.portfolio=portfolio;self.refresh=refresh;self.style_window('OPTION ORDER','480x430');f=ttk.Frame(self);f.pack(fill='both',expand=True,padx=16,pady=16);self.action=tk.StringVar(value=default_action);self.qty=tk.IntVar(value=1);self.typ=tk.StringVar(value=order_type);self.price=tk.DoubleVar(value=round(contract.mid,2));
-        ttk.Label(f,text=str(contract),font=('Arial',12,'bold')).pack(anchor='w',pady=5);ttk.Label(f,text='Action').pack(anchor='w');ttk.Combobox(f,textvariable=self.action,values=['BUY','SELL'],state='readonly').pack(fill='x',pady=4);ttk.Label(f,text='Order type').pack(anchor='w');ttk.Combobox(f,textvariable=self.typ,values=['MARKET','LIMIT','STOP'],state='readonly').pack(fill='x',pady=4);ttk.Label(f,text='Quantity').pack(anchor='w');ttk.Entry(f,textvariable=self.qty).pack(fill='x',pady=4);ttk.Label(f,text='Trigger / limit price').pack(anchor='w');ttk.Entry(f,textvariable=self.price).pack(fill='x',pady=4);self.margin=ttk.Label(f,text='');self.margin.pack(fill='x',pady=8);ttk.Button(f,text='PLACE WORKING OPTION ORDER',command=self.submit).pack(fill='x');self.update_margin()
+    def __init__(self,parent,contract,portfolio,refresh,order_type):
+        super().__init__(parent);self.contract=contract;self.portfolio=portfolio;self.refresh=refresh;self.style_window('OPTION ORDER','480x430');f=ttk.Frame(self);f.pack(fill='both',expand=True,padx=16,pady=16);self.action=tk.StringVar(value='BUY');self.qty=tk.IntVar(value=1);self.typ=tk.StringVar(value=order_type);self.price=tk.DoubleVar(value=round(contract.mid,2));
+        ttk.Label(f,text=str(contract),font=('Arial',12,'bold')).pack(anchor='w',pady=5);ttk.Label(f,text='Action').pack(anchor='w');ttk.Combobox(f,textvariable=self.action,values=['BUY','SELL'],state='readonly').pack(fill='x',pady=4);ttk.Label(f,text='Order type').pack(anchor='w');ttk.Combobox(f,textvariable=self.typ,values=['LIMIT','STOP'],state='readonly').pack(fill='x',pady=4);ttk.Label(f,text='Quantity').pack(anchor='w');ttk.Entry(f,textvariable=self.qty).pack(fill='x',pady=4);ttk.Label(f,text='Trigger / limit price').pack(anchor='w');ttk.Entry(f,textvariable=self.price).pack(fill='x',pady=4);self.margin=ttk.Label(f,text='');self.margin.pack(fill='x',pady=8);ttk.Button(f,text='PLACE WORKING OPTION ORDER',command=self.submit).pack(fill='x');self.update_margin()
     def update_margin(self):
         q=max(1,self.qty.get());self.margin.config(text=f'Estimated mark ${self.contract.mid:,.2f} • notional ${self.contract.mid*q*100:,.2f} • short margin estimate ${max(0,self.contract.ask*q*100*1.5):,.2f}')
     def submit(self):
@@ -245,70 +280,65 @@ class OptionOrderWindow(ToolWindow):
         o=self.portfolio # market retrieved through parent
         market=getattr(self.master,'market',None) or getattr(self.master,'app',None) and self.master.app.market
         if market is None:return messagebox.showerror('Option order','Market engine unavailable.')
-        side=self.action.get()
-        if self.typ.get()=='MARKET':
-            s=OptionStrategy(f'{side} {self.contract} x{q}');s.add_leg(self.contract,q,side);ok,msg=self.portfolio.execute_strategy(s)
-            if not ok:return messagebox.showerror('Option order',msg)
-        else:
-            market.submit_option_pending(side,self.contract,q,self.typ.get(),p)
-        self.refresh();self.destroy()
+        side=self.action.get();market.submit_option_pending(side,self.contract,q,self.typ.get(),p);self.refresh();self.destroy()
 
 class SpreadBuilder(ToolWindow):
-    """Strategy builder with payoff preview and multi-contract sizing."""
     def __init__(self,parent,market,portfolio,refresh,first=None):
-        super().__init__(parent);self.market=market;self.portfolio=portfolio;self.refresh=refresh;self.style_window('ADVANCED SPREAD BUILDER — PAYOFF LAB','1250x900');self.rows=[];self.exp=tk.StringVar(value='30D');self.ticker=tk.StringVar(value=first.underlying.symbol if first else 'SPY');self.preset=tk.StringVar(value='Call Debit Spread');self.order_type=tk.StringVar(value='MARKET');self.action=tk.StringVar(value='BUY');self.strategy_qty=tk.IntVar(value=1)
-        top=ttk.Frame(self);top.pack(fill='x',padx=10,pady=8)
-        for label,var,vals,w in [('Ticker',self.ticker,None,10),('Expiry',self.exp,[x[0] for x in EXPIRATIONS if x[0]!='0DTE'],8),('Preset',self.preset,['Call Debit Spread','Call Credit Spread','Put Debit Spread','Put Credit Spread','Bull Call Spread','Bear Put Spread','Long Straddle','Short Straddle','Iron Condor'],18)]:
-            ttk.Label(top,text=label).pack(side='left',padx=(4,2));wid=ttk.Combobox(top,textvariable=var,values=vals,state='readonly',width=w) if vals else ttk.Entry(top,textvariable=var,width=w);wid.pack(side='left',padx=4)
-        ttk.Button(top,text='LOAD PRESET',command=self.template).pack(side='left',padx=6);ttk.Label(top,text='Spread Qty').pack(side='left',padx=(12,2));ttk.Spinbox(top,from_=1,to=10000,textvariable=self.strategy_qty,width=8,command=self.refresh_table).pack(side='left')
-        body=ttk.PanedWindow(self,orient='horizontal');body.pack(fill='both',expand=True,padx=10,pady=8);left=ttk.Frame(body);right=ttk.Frame(body);body.add(left,weight=4);body.add(right,weight=6)
-        self.tv=ttk.Treeview(left,columns=('action','type','strike','qty','mark','delta','iv'),show='headings',height=14);[self.tv.heading(c,text=c.upper()) for c in self.tv['columns']];[self.tv.column(c,width=80,anchor='center') for c in self.tv['columns']];self.tv.pack(fill='both',expand=True);self.tv.bind('<Double-1>',self.edit_qty)
-        controls=ttk.Frame(left);controls.pack(fill='x',pady=6);ttk.Button(controls,text='REMOVE SELECTED',command=self.remove).pack(side='left');ttk.Button(controls,text='EDIT LEG QTY',command=self.edit_qty).pack(side='left',padx=5)
-        self.preview=ttk.Label(left,text='No legs',font=('Arial',11,'bold'));self.preview.pack(fill='x',pady=5)
-        self.canvas=tk.Canvas(right,bg='#0b131d',highlightthickness=0);self.canvas.pack(fill='both',expand=True);self.canvas.bind('<Configure>',lambda e:self.draw_payoff())
-        bar=ttk.Frame(self);bar.pack(fill='x',padx=10,pady=7);ttk.Label(bar,text='Order').pack(side='left');ttk.Combobox(bar,textvariable=self.action,values=['BUY','SELL'],state='readonly',width=8).pack(side='left',padx=4);ttk.Combobox(bar,textvariable=self.order_type,values=['MARKET','LIMIT','STOP'],state='readonly',width=10).pack(side='left',padx=4);self.price=tk.DoubleVar(value=0);ttk.Entry(bar,textvariable=self.price,width=10).pack(side='left',padx=4);ttk.Button(bar,text='EXECUTE / WORK',command=self.execute).pack(side='left',padx=8);self.template()
+        super().__init__(parent);self.market=market;self.portfolio=portfolio;self.refresh=refresh;self.style_window('ADVANCED SPREAD BUILDER','900x720');self.rows=[];self.exp=tk.StringVar(value='30D');self.ticker=tk.StringVar(value=first.underlying.symbol if first else 'SPY');self.net=tk.DoubleVar(value=0);self.order_type=tk.StringVar(value='MARKET');self.action=tk.StringVar(value='BUY')
+        top=ttk.Frame(self);top.pack(fill='x',padx=10,pady=8);ttk.Label(top,text='Ticker').pack(side='left');ttk.Entry(top,textvariable=self.ticker,width=10).pack(side='left',padx=4);ttk.Label(top,text='Expiry').pack(side='left',padx=(12,2));ttk.Combobox(top,textvariable=self.exp,values=[x[0] for x in EXPIRATIONS if x[0] != '0DTE'],state='readonly',width=8).pack(side='left');ttk.Label(top,text='Preset').pack(side='left',padx=(12,2));self.preset=tk.StringVar(value='Call Debit Spread');ttk.Combobox(top,textvariable=self.preset,values=['Call Debit Spread','Call Credit Spread','Put Debit Spread','Put Credit Spread','Bull Call Spread','Bear Put Spread','Long Straddle','Short Straddle','Iron Condor'],state='readonly',width=18).pack(side='left');ttk.Button(top,text='LOAD PRESET',command=self.template).pack(side='left',padx=6)
+        self.tv=ttk.Treeview(self,columns=('action','type','strike','qty','mark'),show='headings',height=8);[self.tv.heading(c,text=c.upper()) for c in self.tv['columns']];self.tv.pack(fill='x',padx=10,pady=8);qbar=ttk.Frame(self);qbar.pack(fill='x',padx=10);ttk.Label(qbar,text='Selected leg quantity').pack(side='left');self.leg_qty=tk.IntVar(value=1);ttk.Spinbox(qbar,from_=1,to=100000, textvariable=self.leg_qty,width=10,command=self.set_selected_qty).pack(side='left',padx=6);ttk.Button(qbar,text='APPLY QTY',command=self.set_selected_qty).pack(side='left');self.preview=ttk.Label(self,text='No legs');self.preview.pack(fill='x',padx=10,pady=8);self.payoff=tk.Canvas(self,bg='#081018',height=240,highlightthickness=0);self.payoff.pack(fill='x',padx=10,pady=8);bar=ttk.Frame(self);bar.pack(fill='x',padx=10);ttk.Label(bar,text='Order').pack(side='left');ttk.Combobox(bar,textvariable=self.action,values=['BUY','SELL'],state='readonly',width=8).pack(side='left',padx=4);ttk.Combobox(bar,textvariable=self.order_type,values=['MARKET','LIMIT','STOP'],state='readonly',width=10).pack(side='left',padx=4);self.price=tk.DoubleVar(value=0);ttk.Entry(bar,textvariable=self.price,width=10).pack(side='left',padx=4);ttk.Button(bar,text='EXECUTE / WORK',command=self.execute).pack(side='left',padx=8);ttk.Button(bar,text='REMOVE SELECTED',command=self.remove).pack(side='left');self.template()
         if first:self.rows.append({'action':'BUY','type':first.option_type.upper(),'strike':first.strike,'qty':1,'contract':first});self.refresh_table()
     def template(self):
-        a=self.market.get_asset(self.ticker.get().upper());
+        a=self.market.get_asset(self.ticker.get().upper())
         if not a:return
-        d=dict(EXPIRATIONS).get(self.exp.get(),30);center=round(a.price);w=max(1,round(a.price*.01));name=self.preset.get();presets={'Call Debit Spread':[('BUY','CALL',center),('SELL','CALL',center+w)],'Call Credit Spread':[('SELL','CALL',center),('BUY','CALL',center+w)],'Put Debit Spread':[('BUY','PUT',center),('SELL','PUT',center-w)],'Put Credit Spread':[('SELL','PUT',center),('BUY','PUT',center-w)],'Bull Call Spread':[('BUY','CALL',center),('SELL','CALL',center+w)],'Bear Put Spread':[('BUY','PUT',center),('SELL','PUT',center-w)],'Long Straddle':[('BUY','CALL',center),('BUY','PUT',center)],'Short Straddle':[('SELL','CALL',center),('SELL','PUT',center)],'Iron Condor':[('BUY','PUT',center-2*w),('SELL','PUT',center-w),('SELL','CALL',center+w),('BUY','CALL',center+2*w)]}
+        d=dict(EXPIRATIONS).get(self.exp.get(),30);center=round(a.price);w=5;name=self.preset.get()
+        presets={
+            'Call Debit Spread':[('BUY','CALL',center),('SELL','CALL',center+w)],
+            'Call Credit Spread':[('SELL','CALL',center),('BUY','CALL',center+w)],
+            'Put Debit Spread':[('BUY','PUT',center),('SELL','PUT',center-w)],
+            'Put Credit Spread':[('SELL','PUT',center),('BUY','PUT',center-w)],
+            'Bull Call Spread':[('BUY','CALL',center),('SELL','CALL',center+w)],
+            'Bear Put Spread':[('BUY','PUT',center),('SELL','PUT',center-w)],
+            'Long Straddle':[('BUY','CALL',center),('BUY','PUT',center)],
+            'Short Straddle':[('SELL','CALL',center),('SELL','PUT',center)],
+            'Iron Condor':[('BUY','PUT',center-2*w),('SELL','PUT',center-w),('SELL','CALL',center+w),('BUY','CALL',center+2*w)]}
         self.rows=[{'action':x,'type':t,'strike':k,'qty':1} for x,t,k in presets.get(name,presets['Call Debit Spread'])];self.refresh_table(d)
-    def edit_qty(self,event=None):
-        it=self.tv.selection()
-        if not it:return
-        idx=int(it[0]);r=self.rows[idx];w=tk.Toplevel(self);w.title('EDIT LEG');w.geometry('300x180');v=tk.IntVar(value=r['qty']);ttk.Label(w,text=f'{r["action"]} {r["type"]} {r["strike"]:,.0f}').pack(pady=12);ttk.Spinbox(w,from_=1,to=100000,textvariable=v,width=12).pack();ttk.Button(w,text='APPLY',command=lambda:(r.update(qty=max(1,int(v.get()))),self.refresh_table(),w.destroy())).pack(pady=12)
     def refresh_table(self,d=None):
         self.tv.delete(*self.tv.get_children());a=self.market.get_asset(self.ticker.get().upper());days=d if d is not None else dict(EXPIRATIONS).get(self.exp.get(),30);net=0;greeks={k:0 for k in ['delta','gamma','theta','vega']}
         for i,r in enumerate(self.rows):
-            c=OptionContract(a,r['strike'],days,r['type'].lower());r['contract']=c;sign=1 if r['action']=='BUY' else -1;net+=sign*c.mid*r['qty']*100*self.strategy_qty.get();st=c.stats
-            for k in greeks:greeks[k]+=sign*st[k]*r['qty']*100*self.strategy_qty.get()
-            self.tv.insert('','end',iid=str(i),values=(r['action'],r['type'],f'{c.strike:,.0f}',r['qty'],f'${c.mid:.2f}',f'{st["delta"]:+.2f}',f'{c.volatility*100:.1f}%'))
-        self.price.set(round(abs(net)/100,2));self.preview.config(text=f'NET {"DEBIT" if net>0 else "CREDIT"} ${abs(net):,.2f} • Qty {self.strategy_qty.get()} • Δ {greeks["delta"]:+.2f} Γ {greeks["gamma"]:+.4f} Θ {greeks["theta"]:+.2f} Vega {greeks["vega"]:+.2f}');self.draw_payoff()
-    def draw_payoff(self):
-        c=self.canvas;c.delete('all');a=self.market.get_asset(self.ticker.get().upper()) if hasattr(self,'market') else None
-        if not a or not self.rows:return
-        days=dict(EXPIRATIONS).get(self.exp.get(),30);contracts=[]
-        for r in self.rows:contracts.append((OptionContract(a,r['strike'],days,r['type'].lower()),1 if r['action']=='BUY' else -1,r['qty']*self.strategy_qty.get()))
-        spot=a.price;lo=max(.01,spot*.70);hi=spot*1.30;N=180;ys=[]
-        for j in range(N+1):
-            x=lo+(hi-lo)*j/N;ys.append(sum(sign*q*con.contract_size if False else sign*q*con.intrinsic(x)*100 for con,sign,q in contracts))
-        # subtract opening debit as cash outflow
-        open_cost=sum(sign*con.mid*q*100 for con,sign,q in contracts);ys=[y-open_cost for y in ys]
-        mn,mx=min(ys),max(ys);pad=(mx-mn)*.12 or 1;w=max(500,c.winfo_width());h=max(400,c.winfo_height());L,R,T,B=55,w-20,30,h-45
-        def X(x):return L+(x-lo)/(hi-lo)*(R-L)
-        def Y(y):return B-(y-(mn-pad))/(mx-mn+2*pad)*(B-T)
-        c.create_text(20,20,anchor='w',text='EXPIRATION PAYOFF',fill='#f5d06f',font=('Arial',12,'bold'));c.create_line(L,Y(0),R,Y(0),fill='#536577');c.create_line(X(spot),T,X(spot),B,fill='#55d6e6',dash=(4,3));pts=[]
-        for j,y in enumerate(ys):pts += [X(lo+(hi-lo)*j/N),Y(y)]
-        c.create_line(*pts,fill='#26d69a',width=3,smooth=True);c.create_text(X(spot),B-8,text=f'SPOT ${spot:,.2f}',fill='#55d6e6',anchor='s');c.create_text(L,T,text=f'+${mx:,.0f}',fill='#91a3b6',anchor='w');c.create_text(L,B,text=f'${mn:,.0f}',fill='#91a3b6',anchor='w');c.create_text(R,B+8,text=f'${hi:,.0f}',fill='#91a3b6',anchor='e');c.create_text(L,B+8,text=f'${lo:,.0f}',fill='#91a3b6',anchor='w')
+            c=r.get('contract') or OptionContract(a,r['strike'],days,r['type'].lower());r['contract']=c;sign=1 if r['action']=='BUY' else -1;net+=sign*c.mid*r['qty']*100;s=c.stats
+            for k in greeks:greeks[k]+=sign*s[k]*r['qty']*100
+            self.tv.insert('','end',iid=str(i),values=(r['action'],r['type'],f'{c.strike:,.0f}',r['qty'],f'${c.mid:.2f}'))
+        self.price.set(round(abs(net)/100,2));self.preview.config(text=f'Net debit/credit ${net:,.2f} • Δ {greeks["delta"]:+.2f} Γ {greeks["gamma"]:+.4f} Θ {greeks["theta"]:+.2f} Vega {greeks["vega"]:+.2f} • Contracts are multiplied by each leg quantity');self.draw_payoff(a)
+    def set_selected_qty(self):
+        it=self.tv.selection()
+        if not it:return
+        try:self.rows[int(it[0])]['qty']=max(1,int(self.leg_qty.get()))
+        except:pass
+        self.refresh_table()
+    def draw_payoff(self,a):
+        c=self.payoff;c.delete('all');w=max(600,c.winfo_width());h=max(180,c.winfo_height());center=a.price;span=max(center*.25,10);lo=max(.01,center-span);hi=center+span;pts=[]
+        vals=[]
+        for i in range(101):
+            spot=lo+(hi-lo)*i/100;pnl=0
+            for r in self.rows:
+                oc=r.get('contract') or OptionContract(a,r['strike'],dict(EXPIRATIONS).get(self.exp.get(),30),r['type'].lower());pnl+=(1 if r['action']=='BUY' else -1)*r['qty']*oc.intrinsic(spot)*100
+            vals.append(pnl)
+        mn,mx=min(vals+[0]),max(vals+[0]);rng=max(1,mx-mn);base=h-30
+        for i,pnl in enumerate(vals):
+            x=20+(w-40)*i/100;y=base-(pnl-mn)/rng*(h-55);pts.extend([x,y])
+        c.create_line(20,base-(0-mn)/rng*(h-55),w-20,base-(0-mn)/rng*(h-55),fill='#607080',dash=(4,3));
+        if len(pts)>3:c.create_line(*pts,fill=GREEN,width=3)
+        c.create_text(22,10,anchor='nw',text='PAYOFF PREVIEW',fill=TEXT,font=('Arial',10,'bold'));c.create_text(w-22,10,anchor='ne',text=f'Underlying ${a.price:,.2f}',fill=MUTED,font=('Arial',9))
     def remove(self):
         it=self.tv.selection();
         if it:self.rows.pop(int(it[0]));self.refresh_table()
     def execute(self):
         a=self.market.get_asset(self.ticker.get().upper());d=dict(EXPIRATIONS).get(self.exp.get(),30);s=OptionStrategy('CUSTOM SPREAD')
-        mult=max(1,int(self.strategy_qty.get()))
-        for r in self.rows:s.add_leg(OptionContract(a,r['strike'],d,r['type'].lower()),r['qty']*mult,r['action'])
+        for r in self.rows:
+            c=OptionContract(a,r['strike'],d,r['type'].lower());s.add_leg(c,r['qty'],r['action'])
         if self.order_type.get()=='MARKET':ok,msg=self.portfolio.execute_strategy(s)
-        else:self.market.submit_spread_pending(self.action.get(),s,self.order_type.get(),self.price.get());ok=True;msg=f'Working {self.order_type.get()} spread x{mult} at ${self.price.get():,.2f}'
+        else:self.market.submit_spread_pending(self.action.get(),s,self.order_type.get(),self.price.get());ok=True;msg=f'Working {self.order_type.get()} spread at ${self.price.get():,.2f}'
         if ok:self.refresh();messagebox.showinfo('Spread',msg);self.destroy()
         else:messagebox.showerror('Spread rejected',msg)
 
@@ -346,29 +376,40 @@ class MarketMapWindow(ToolWindow):
         return out
     def draw(self):
         if not self.winfo_exists():return
-        c=self.cv;c.delete('all');self.rects=[];w=max(900,c.winfo_width());h=max(650,c.winfo_height());pad=10;ox=pad;oy=pad;W=w-2*pad;H=h-2*pad
-        assets=[a for a in self.market.stocks if self.sec.get()=='ALL' or a.category==self.sec.get()];groups={}
+        c=self.cv;c.delete('all');self.rects=[];w=max(900,c.winfo_width());h=max(650,c.winfo_height());pad=8;W=w-2*pad;H=h-2*pad
+        assets=[a for a in self.market.stocks if self.sec.get()=='ALL' or a.category==self.sec.get()]
+        groups={}
         for a in assets:groups.setdefault(a.category,[]).append(a)
-        groups={k:sorted(v,key=lambda a:a.market_cap,reverse=True) for k,v in groups.items()};ordered=sorted(groups.items(),key=lambda kv:sum(max(1,a.market_cap) for a in kv[1]),reverse=True)
-        total=sum(sum(max(1,a.market_cap) if self.mode.get()=='Market Cap' else 1 for a in v) for _,v in ordered) or 1
-        # Sector strips across the square; each sector gets a large readable header.
-        sx=ox; sy=oy; remaining=H; colmode=True
-        for idx,(sector,arr) in enumerate(ordered):
-            weight=sum(max(1,a.market_cap) if self.mode.get()=='Market Cap' else 1 for a in arr)/total
-            sw=W*weight if len(ordered)<=4 else W*(0.5 if idx%2==0 else 0.5)
-            if len(ordered)<=4:
-                rect=(sx,sy,sw,H);sx+=sw
-            else:
-                rows=2; row=idx%rows; col=idx//rows; sw=W/max(1,math.ceil(len(ordered)/rows)); sh=H/rows; rect=(ox+col*sw,oy+row*sh,sw,sh)
-            x0,y0,x1,y1=rect; c.create_rectangle(x0,y0,x1,y1,fill='#0b1420',outline='#31465b',width=2);c.create_text(x0+7,y0+6,anchor='nw',text=f'{sector}  •  {len(arr)} stocks',fill=TEXT,font=('Arial',10,'bold'))
-            inner=(x0+3,y0+25,x1-3,y1-3); iw=max(1,inner[2]-inner[0]);ih=max(1,inner[3]-inner[1]);
-            ncols=max(1,math.ceil(math.sqrt(len(arr)*iw/max(1,ih)))); nrows=max(1,math.ceil(len(arr)/ncols));
-            # Weighted rows within each sector, with a cap on text density.
-            for j,a in enumerate(arr):
-                col=j%ncols;row=j//ncols;cw=iw/ncols;ch=ih/nrows;x=inner[0]+col*cw;y=inner[1]+row*ch;xx=min(inner[2],x+cw);yy=min(inner[3],y+ch);chg=a.change_percent();fill='#0f8f65' if chg>=0 else '#b33b54';self.rects.append((x,y,xx,yy,a));c.create_rectangle(x+1,y+1,xx-1,yy-1,fill=fill,outline='#071017')
-                if cw>=self.min_tile.get() and ch>=24:
-                    fs=max(7,min(13,int(min(cw/8.5,ch/3.1))));txt=f'{a.symbol}\n{chg:+.2f}%' if self.detail.get() else a.symbol;c.create_text((x+xx)/2,(y+yy)/2,text=txt,fill='white',font=('Arial',fs,'bold'),justify='center')
-        c.create_text(ox+8,oy+8,anchor='nw',text='MARKET MAP  •  AREA = MARKET CAP  •  COLOR = DAILY CHANGE  •  RIGHT-CLICK = TRADE / CHART / OPTIONS',fill=TEXT,font=('Arial',10,'bold'))
+        groups={k:sorted(v,key=lambda a:a.market_cap,reverse=True) for k,v in groups.items()}
+        ordered=sorted(groups.items(),key=lambda kv:sum(max(1,a.market_cap) for a in kv[1]),reverse=True)
+        total=sum(sum(max(1,a.market_cap) for a in v) for _,v in ordered) or 1
+        # Give each sector area proportional to its total market cap, then pack sectors in rows.
+        nsec=len(ordered);sector_cols=max(1,min(4,math.ceil(math.sqrt(nsec))))
+        row_count=math.ceil(nsec/sector_cols);row_h=H/row_count
+        for si,(sector,arr) in enumerate(ordered):
+            col=si%sector_cols;row=si//sector_cols;cell_w=W/sector_cols;x0=pad+col*cell_w;y0=pad+row*row_h
+            sector_total=sum(max(1,a.market_cap) for a in arr);sector_share=sector_total/total
+            # Within the sector, use a recursive alternating split so tile AREA follows market cap.
+            inner=(x0+3,y0+27,x0+cell_w-3,y0+row_h-3);ix,iy,ix2,iy2=inner;iw=max(1,ix2-ix);ih=max(1,iy2-iy)
+            c.create_rectangle(x0,y0,x0+cell_w,y0+row_h,fill='#0b1420',outline='#31465b',width=2);c.create_text(x0+7,y0+6,anchor='nw',text=f'{sector} • {len(arr)}',fill=TEXT,font=('Arial',10,'bold'))
+            items=sorted(arr,key=lambda a:max(1,a.market_cap),reverse=True)
+            rects=[(items,ix,iy,iw,ih)];sector_rects=[]
+            while rects:
+                group,x,y,ww,hh=rects.pop()
+                if not group:continue
+                if len(group)==1:
+                    a=group[0];sector_rects.append((x,y,x+ww,y+hh,a));continue
+                vals=[max(1,a.market_cap) for a in group];cut=max(1,int(len(group)/2));a1=group[:cut];a2=group[cut:];s1=sum(max(1,a.market_cap) for a in a1);ratio=s1/(s1+sum(max(1,a.market_cap) for a in a2))
+                if ww>=hh:
+                    w1=ww*ratio;rects.append((a2,x+w1,y,ww-w1,hh));rects.append((a1,x,y,w1,hh))
+                else:
+                    h1=hh*ratio;rects.append((a2,x,y+h1,ww,hh-h1));rects.append((a1,x,y,ww,h1))
+            for x,y,xx,yy,a in sector_rects:
+                self.rects.append((x,y,xx,yy,a))
+                chg=a.change_percent();fill='#0f8f65' if chg>=0 else '#b33b54';c.create_rectangle(x+1,y+1,xx-1,yy-1,fill=fill,outline='#071017');cw=xx-x;ch=yy-y
+                if cw>=self.min_tile.get() and ch>=22:
+                    fs=max(7,min(14,int(min(cw/8.5,ch/3.0))));txt=f'{a.symbol}\n{chg:+.2f}%' if self.detail.get() else a.symbol;c.create_text((x+xx)/2,(y+yy)/2,text=txt,fill='white',font=('Arial',fs,'bold'),justify='center')
+        c.create_text(pad+8,pad+8,anchor='nw',text='MARKET MAP • TILE AREA = MARKET CAP • COLOR = DAILY CHANGE • RIGHT-CLICK = TRADE / CHART / OPTIONS',fill=TEXT,font=('Arial',10,'bold'))
         self.after(900,self.draw)
     def _asset_at(self,e):
         for x1,y1,x2,y2,a in reversed(self.rects):
@@ -432,7 +473,7 @@ class GlobalMarketWindow(ToolWindow):
     def __init__(self,parent,market,code):
         super().__init__(parent);self.market=market;self.code=code;self.style_window(f'GLOBAL MARKET — {SESSIONS[code].name}','1100x720');ttk.Label(self,text=f'{SESSIONS[code].name} • {"OPEN" if market_status(code,market.clock.current) else "CLOSED"}',font=('Arial',15,'bold')).pack(anchor='w',padx=12,pady=10);self.tv=ttk.Treeview(self,columns=('symbol','name','price','chg','status'),show='headings');
         for c in self.tv['columns']:self.tv.heading(c,text=c.upper());self.tv.column(c,width=180 if c=='name' else 120)
-        self.tv.pack(fill='both',expand=True,padx=10,pady=10);self.tv.bind('<Double-1>',self.trade);self.after(200,self.refresh)
+        self.tv.pack(fill='both',expand=True,padx=10,pady=10);self.tv.bind('<Double-1>',self.trade);bar=ttk.Frame(self);bar.pack(fill='x',padx=10,pady=6);ttk.Button(bar,text='OPEN SELECTED IN MARKET FEED',command=self.open_feed).pack(side='left');ttk.Button(bar,text='OPTIONS',command=self.open_options).pack(side='left',padx=6);ttk.Button(bar,text='ADVANCED CHART',command=self.open_chart).pack(side='left');self.after(200,self.refresh)
     def refresh(self):
         if not self.winfo_exists():return
         self.tv.delete(*self.tv.get_children());assets=[a for a in self.market.all_assets() if getattr(a,'session','US')==self.code]
@@ -442,6 +483,16 @@ class GlobalMarketWindow(ToolWindow):
         if self.code=='CRYPTO':assets=self.market.crypto
         for a in assets:self.tv.insert('','end',iid=a.symbol,values=(a.symbol,a.name,f'${a.price:,.2f}',f'{a.change_percent():+.2f}%', 'OPEN' if market_status(self.code,self.market.clock.current) else 'CLOSED'))
         self.after(600,self.refresh)
+    def open_feed(self):
+        it=self.tv.selection()
+        if it:
+            a=self.market.get_asset(it[0]);self.market.ui_app.load_asset_auto(a);self.market.ui_app.refresh_watch();self.market.ui_app.status_flash(f'{a.symbol} loaded from {self.code} into market feed')
+    def open_options(self):
+        it=self.tv.selection()
+        if it:self.market.ui_app.options_for(self.market.get_asset(it[0]))
+    def open_chart(self):
+        it=self.tv.selection()
+        if it:self.market.ui_app.advanced_chart(self.market.get_asset(it[0]))
     def trade(self,e):
         it=self.tv.selection();
         if it:
@@ -465,54 +516,60 @@ class MarketListWindow(ToolWindow):
         self.tv.selection_set(iid);a=self.market.get_asset(iid);m=tk.Menu(self,tearoff=0);m.add_command(label=f'Buy {a.symbol}',command=lambda:self.market.ui_app.order_window(a,'BUY','MARKET',None));m.add_command(label=f'Sell {a.symbol}',command=lambda:self.market.ui_app.order_window(a,'SELL','MARKET',None));m.add_command(label='Open Options',command=lambda:self.market.ui_app.options_for(a));m.add_command(label='Advanced Chart',command=lambda:self.market.ui_app.load_asset_auto(a));m.tk_popup(e.x_root,e.y_root)
 
 class BlackjackWindow(ToolWindow):
-    """Multi-hand blackjack table with split-pair support and side-by-side hands."""
+    """Multi-hand blackjack training table with persistent cards and count education."""
     DEALERS=[('Aiko','#ffd6e7'),('Mina','#ffe4c4'),('Yuna','#d7e8ff'),('Rei','#e7d7ff'),('Sora','#d7ffe8'),('Emi','#ffe7d0')]
     def __init__(self,parent,portfolio,market):
-        super().__init__(parent);self.portfolio=portfolio;self.market=market;self.style_window('BLACKJACK TRAINER — CARD COUNTING LAB','1450x900');self.deck_count=tk.IntVar(value=6);self.count_mode=tk.StringVar(value='Hi-Lo');self.bet=tk.IntVar(value=100);self.hand_count=tk.IntVar(value=1);self.running=0;self.shoe=[];self.hands=[];self.dealer=[];self.active=False;self.bet_amounts=[];self.dealer_name=random.choice(self.DEALERS);self.history=[]
+        super().__init__(parent);self.portfolio=portfolio;self.market=market;self.style_window('BLACKJACK TRAINER — CARD COUNTING LAB','1280x820')
+        self.deck_count=tk.IntVar(value=6);self.count_mode=tk.StringVar(value='Hi-Lo');self.bet=tk.IntVar(value=100);self.hand_count=tk.IntVar(value=1);self.running=0;self.shoe=[];self.hands=[];self.dealer=[];self.active=False;self.bet_amounts=[];self.dealer_name=random.choice(self.DEALERS)[0];self.history=[];self.active_hand=0;self.split_used=set()
         top=ttk.Frame(self);top.pack(fill='x',padx=10,pady=8)
-        for label,var,vals in [('Decks',self.deck_count,[1,2,6]),('Count',self.count_mode,['None','Hi-Lo','KO']),('Hands',self.hand_count,[1,2,3,4,5])]:ttk.Label(top,text=label).pack(side='left',padx=(5,2));ttk.Combobox(top,textvariable=var,values=vals,state='readonly',width=8).pack(side='left',padx=3)
+        for label,var,vals in [('Decks',self.deck_count,[1,2,6]),('Count',self.count_mode,['None','Hi-Lo','KO']),('Hands',self.hand_count,[1,2,3,4,5])]:
+            ttk.Label(top,text=label).pack(side='left',padx=(5,2));ttk.Combobox(top,textvariable=var,values=vals,state='readonly',width=8).pack(side='left',padx=3)
         ttk.Label(top,text='Bet / hand').pack(side='left',padx=(14,2));ttk.Entry(top,textvariable=self.bet,width=10).pack(side='left')
         for chips in (25,100,500,1000,5000,10000):ttk.Button(top,text=f'${chips:,}',command=lambda x=chips:self.bet.set(x),width=7).pack(side='left',padx=2)
         ttk.Button(top,text='NEW SHOE',command=self.new_shoe).pack(side='left',padx=8);ttk.Button(top,text='COUNTING HELP',command=self.help).pack(side='left')
         self.canvas=tk.Canvas(self,bg='#064b32',highlightthickness=0);self.canvas.pack(fill='both',expand=True,padx=10,pady=8)
-        bar=ttk.Frame(self);bar.pack(fill='x',padx=10,pady=5);ttk.Button(bar,text='DEAL',command=self.deal).pack(side='left');ttk.Button(bar,text='HIT',command=self.hit).pack(side='left',padx=5);ttk.Button(bar,text='DOUBLE',command=self.double).pack(side='left');ttk.Button(bar,text='SPLIT PAIR',command=self.split_pair).pack(side='left',padx=5);ttk.Button(bar,text='STAND',command=self.stand).pack(side='left',padx=5);self.info=ttk.Label(bar,text='');self.info.pack(side='right');self.new_shoe()
-    def help(self):messagebox.showinfo('Card-counting trainer','Hi-Lo: 2–6 = +1, 7–9 = 0, 10/J/Q/K/A = -1.\nTrue count = running count / estimated decks remaining.\nKO removes the true-count conversion. Split is available only on equal-rank opening pairs.')
+        bar=ttk.Frame(self);bar.pack(fill='x',padx=10,pady=5);ttk.Button(bar,text='DEAL',command=self.deal).pack(side='left');ttk.Button(bar,text='HIT',command=self.hit).pack(side='left',padx=5);ttk.Button(bar,text='DOUBLE',command=self.double).pack(side='left');ttk.Button(bar,text='SPLIT PAIR',command=self.split_pair).pack(side='left',padx=5);ttk.Button(bar,text='STAND',command=self.stand).pack(side='left',padx=5);self.info=ttk.Label(bar,text='');self.info.pack(side='right')
+        self.new_shoe()
+    def help(self):
+        messagebox.showinfo('Card-counting trainer','Hi-Lo: 2–6 = +1, 7–9 = 0, 10/J/Q/K/A = -1.\nTrue count = running count / estimated decks remaining.\nKO removes the true-count conversion. Use this as a training aid, not a guarantee of advantage.')
     def new_shoe(self):
-        suits=['♠','♥','♦','♣'];ranks=list(range(1,14));self.shoe=[(rank,s) for _ in range(self.deck_count.get()) for s in suits for rank in ranks];random.shuffle(self.shoe);self.running=0;self.active=False;self.hands=[];self.dealer=[];self.history=[];self.draw_table()
+        import random as r
+        suits=['♠','♥','♦','♣'];ranks=list(range(1,14));self.shoe=[(rank,s) for _ in range(self.deck_count.get()) for s in suits for rank in ranks];r.shuffle(self.shoe);self.running=0;self.active=False;self.hands=[];self.dealer=[];self.history=[];self.draw_table()
     def card(self):
+        import random as r
         if len(self.shoe)<max(10,int(52*self.deck_count.get()*.18)):self.new_shoe()
-        rank,s=self.shoe.pop();v=1 if rank==1 else min(10,rank)
+        card=self.shoe.pop();rank,s=card;v=1 if rank==1 else min(10,rank)
         if self.count_mode.get()=='Hi-Lo':self.running += 1 if 2<=v<=6 else -1 if v==10 else 0
         elif self.count_mode.get()=='KO':self.running += 1 if 2<=v<=7 else -1 if v in (10,1) else 0
-        return (rank,s)
+        return card
     def val(self,h):
         total=sum(1 if r==1 else min(10,r) for r,s in h);aces=sum(r==1 for r,s in h)
         while aces and total+10<=21:total+=10;aces-=1
         return total
     def deal(self):
-        try:b=max(1,int(self.bet.get()));n=max(1,int(self.hand_count.get()))
+        try:b=int(self.bet.get());n=int(self.hand_count.get())
         except:return
-        if b*n>self.portfolio.cash:return messagebox.showerror('Blackjack','Insufficient cash.')
-        self.portfolio.cash-=b*n;self.bet_amounts=[b]*n;self.hands=[[self.card(),self.card()] for _ in range(n)];self.dealer=[self.card(),self.card()];self.active=True;self.draw_table()
+        if b<=0 or n<1 or b*n>self.portfolio.cash:return messagebox.showerror('Blackjack','Invalid bet or insufficient cash.')
+        self.portfolio.cash-=b*n;self.bet_amounts=[b]*n;self.hands=[[self.card(),self.card()] for _ in range(n)];self.dealer=[self.card(),self.card()];self.active=True;self.active_hand=0;self.split_used=set();self.draw_table()
     def hit(self):
-        if not self.active:return
-        for h in self.hands:
-            if self.val(h)<21:h.append(self.card())
-        self.draw_table()
-    def double(self):
-        if not self.active:return
-        for i,h in enumerate(self.hands):
-            if len(h)==2 and self.portfolio.cash>=self.bet_amounts[i]:self.portfolio.cash-=self.bet_amounts[i];self.bet_amounts[i]*=2;h.append(self.card())
+        if not self.active or self.active_hand>=len(self.hands):return
+        h=self.hands[self.active_hand]
+        if self.val(h)<21:h.append(self.card())
+        if self.val(h)>=21 and self.active_hand<len(self.hands)-1:self.active_hand+=1
         self.draw_table()
     def split_pair(self):
+        if not self.active or self.active_hand>=len(self.hands) or self.active_hand in self.split_used:return
+        h=self.hands[self.active_hand]
+        if len(h)!=2 or h[0][0]!=h[1][0]:return
+        b=self.bet_amounts[self.active_hand]
+        if self.portfolio.cash<b:return messagebox.showerror('Blackjack','Insufficient cash to split.')
+        self.portfolio.cash-=b;card=h.pop();new=[card,self.card()];h.append(self.card());self.hands.insert(self.active_hand+1,new);self.bet_amounts.insert(self.active_hand+1,b);self.split_used.add(self.active_hand);self.draw_table()
+    def double(self):
         if not self.active:return
-        # Split the first eligible pair; repeated clicking can split another pair up to 5 hands.
-        for i,h in enumerate(list(self.hands)):
-            if len(h)==2 and h[0][0]==h[1][0] and len(self.hands)<5:
-                b=self.bet_amounts[i]
-                if self.portfolio.cash<b:return messagebox.showerror('Blackjack','Not enough cash to split this pair.')
-                self.portfolio.cash-=b;h1=[h[0],self.card()];h2=[h[1],self.card()];self.hands[i:i+1]=[h1,h2];self.bet_amounts[i:i+1]=[b,b];self.draw_table();return
-        messagebox.showinfo('Split Pair','No eligible opening pair. Pairs must have equal ranks and be an opening two-card hand.')
+        if self.active_hand>=len(self.hands):return
+        i=self.active_hand;h=self.hands[i]
+        if len(h)==2 and self.portfolio.cash>=self.bet_amounts[i]:self.portfolio.cash-=self.bet_amounts[i];self.bet_amounts[i]*=2;h.append(self.card());self.active_hand=min(self.active_hand+1,len(self.hands)-1)
+        self.draw_table()
     def stand(self):
         if not self.active:return
         while self.val(self.dealer)<17:self.dealer.append(self.card())
@@ -520,25 +577,26 @@ class BlackjackWindow(ToolWindow):
         for i,h in enumerate(self.hands):
             pv=self.val(h);b=self.bet_amounts[i]
             if pv>21:continue
-            if len(h)==2 and pv==21 and dv!=21:payout+=int(b*2.5)
-            elif dv>21 or pv>dv:payout+=b*2
+            if dv>21 or pv>dv:payout+=b*2
             elif pv==dv:payout+=b
-        self.portfolio.cash+=payout;self.history.append((self.dealer_name[0],self.running,len(self.shoe)));self.active=False;self.draw_table()
+        self.portfolio.cash+=payout;self.history.append((self.dealer_name,self.running,len(self.shoe)));self.active=False;self.draw_table()
     def draw_card(self,c,x,y,hidden=False):
-        r,s=c;w,h=66,92;self.canvas.create_rectangle(x,y,x+w,y+h,fill='#ffffff',outline='#d7e0ea',width=2)
-        if hidden:self.canvas.create_text(x+w/2,y+h/2,text='?',fill='#23364a',font=('Arial',26,'bold'));return
-        txt='A' if r==1 else 'J' if r==11 else 'Q' if r==12 else 'K' if r==13 else str(r);col='#d52e4d' if s in '♥♦' else '#111827';self.canvas.create_text(x+9,y+16,text=txt,fill=col,font=('Arial',13,'bold'));self.canvas.create_text(x+w/2,y+h/2+8,text=s,fill=col,font=('Arial',24,'bold'))
+        r,s=c;w,h=78,108;self.canvas.create_rectangle(x,y,x+w,y+h,fill='#ffffff',outline='#d7e0ea',width=2)
+        if hidden:self.canvas.create_text(x+w/2,y+h/2,text='?',fill='#23364a',font=('Arial',30,'bold'));return
+        txt='A' if r==1 else 'J' if r==11 else 'Q' if r==12 else 'K' if r==13 else str(r);col='#d52e4d' if s in '♥♦' else '#111827';self.canvas.create_text(x+12,y+18,text=txt,fill=col,font=('Arial',15,'bold'));self.canvas.create_text(x+w/2,y+h/2+8,text=s,fill=col,font=('Arial',27,'bold'))
     def draw_table(self):
-        c=self.canvas;c.delete('all');w=max(1100,c.winfo_width());h=max(600,c.winfo_height());dealer_name=self.dealer_name[0];c.create_text(w/2,24,text=f'BLACKJACK • {dealer_name} DEALER',fill='#f6e6b5',font=('Arial',20,'bold'))
-        c.create_text(35,60,anchor='w',text='DEALER',fill='#cfe9dc',font=('Arial',11,'bold'));x=w/2-80
-        for i,card in enumerate(self.dealer):self.draw_card(card,x+i*78,72,hidden=self.active and i==1)
-        n=max(1,len(self.hands));gap=12;slot=max(180,min(250,(w-60-gap*(n-1))/n));y=h*.47
+        c=self.canvas;c.delete('all');w=max(1000,c.winfo_width());h=max(550,c.winfo_height());c.create_text(w/2,25,text=f'BLACKJACK • {self.dealer_name} DEALER',fill='#f6e6b5',font=('Arial',20,'bold'))
+        c.create_text(30,65,anchor='w',text='DEALER',fill='#cfe9dc',font=('Arial',11,'bold'));x=150
+        for i,card in enumerate(self.dealer):self.draw_card(card,x+i*90,80,hidden=self.active and i==1)
+        base=h/2+10
+        cols=max(1,min(4,len(self.hands)));gap=w/(cols+1);base=h*.48
         for j,hnd in enumerate(self.hands):
-            x=30+j*(slot+gap);active_fill='#0e6f4b' if self.active else '#0a3f2d';c.create_rectangle(x,y,x+slot,y+205,fill=active_fill,outline='#d8b96a',width=2);b=self.bet_amounts[j] if j<len(self.bet_amounts) else 0;c.create_text(x+10,y+12,anchor='w',text=f'HAND {j+1} • ${b:,}',fill='#f6e6b5',font=('Arial',11,'bold'))
-            for i,card in enumerate(hnd[:4]):self.draw_card(card,x+12+i*70,y+30)
-            if len(hnd)>4:c.create_text(x+12,y+132,anchor='w',text=f'+{len(hnd)-4} cards',fill='#91a3b6')
-            c.create_text(x+slot-16,y+155,text=str(self.val(hnd)),fill='#f6e6b5',font=('Arial',22,'bold'),anchor='e')
-        decks=max(.01,len(self.shoe)/52);true=self.running/decks if self.count_mode.get()=='Hi-Lo' else self.running;edge='—' if self.count_mode.get()=='None' else f'{true:+.2f}';self.info.config(text=f'Balance ${self.portfolio.cash:,.2f} • Running {self.running:+d} • True {edge} • Decks left {decks:.2f} • Cards {len(self.shoe)}')
+            col=j%cols;row=j//cols;x0=gap*(col+1)-90;y=base+row*170;c.create_text(x0,y-18,anchor='w',text=f'HAND {j+1}  ${self.bet_amounts[j] if j<len(self.bet_amounts) else 0:,}',fill='#cfe9dc',font=('Arial',11,'bold'))
+            for i,card in enumerate(hnd):self.draw_card(card,x0+i*82,y)
+            c.create_text(x0+300,y+45,text=f'{self.val(hnd)}',fill='#f6e6b5',font=('Arial',22,'bold'))
+        c.create_text(30,h-24,anchor='w',text=f'ACTIVE HAND {self.active_hand+1 if self.hands else 0} • SPLIT PAIRS ENABLED',fill='#b9d6c7',font=('Arial',10,'bold'))
+        decks=max(.01,len(self.shoe)/52);true=self.running/decks if self.count_mode.get()=='Hi-Lo' else self.running;edge='—' if self.count_mode.get()=='None' else f'{true:+.2f}'
+        self.info.config(text=f'Balance ${self.portfolio.cash:,.2f} • Running {self.running:+d} • True {edge} • Decks left {decks:.2f} • Cards in shoe {len(self.shoe)}')
 
 class CasinoWindow(ToolWindow):
     def __init__(self,parent,portfolio,market):
@@ -546,42 +604,50 @@ class CasinoWindow(ToolWindow):
 
 class RouletteWindow(ToolWindow):
     REDS={1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
-    WHEEL=[0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26]
     def __init__(self,parent,portfolio,market):
-        super().__init__(parent);self.portfolio=portfolio;self.market=market;self.style_window('ROULETTE — EUROPEAN TABLE','1600x950');self.chips=[25,100,500,1000,5000,10000];self.chip=tk.IntVar(value=100);self.bets={};self.history=[];self.spinning=False;self.wheel_angle=0.;self.ball_angle=0.;self.target=None;self.dealer=random.choice(BlackjackWindow.DEALERS)
-        top=ttk.Frame(self);top.pack(fill='x',padx=10,pady=7);ttk.Label(top,text=f'DEALER: {self.dealer[0]}  •  Balance').pack(side='left');self.balance=ttk.Label(top,text='');self.balance.pack(side='left',padx=6)
+        super().__init__(parent);self.portfolio=portfolio;self.market=market;self.style_window('ROULETTE — FULL TABLE','1650x980');self.resizable(True,True);self.chips=[25,100,500,1000,5000,10000];self.chip=tk.IntVar(value=100);self.bets={};self.history=[];self.spinning=False;self.dealer=random.choice(BlackjackWindow.DEALERS)[0];self.target=0;self.anim=0
+        top=ttk.Frame(self);top.pack(fill='x',padx=12,pady=7);ttk.Label(top,text=f'DEALER: {self.dealer}  •  Balance').pack(side='left');self.balance=ttk.Label(top,text='');self.balance.pack(side='left',padx=6)
         for v in self.chips:ttk.Button(top,text=f'${v:,}',command=lambda x=v:self.chip.set(x),width=7).pack(side='left',padx=2)
         ttk.Button(top,text='CLEAR BETS',command=self.clear_bets).pack(side='right');ttk.Button(top,text='SPIN',command=self.spin).pack(side='right',padx=6)
-        self.cv=tk.Canvas(self,bg='#0b1219',highlightthickness=0);self.cv.pack(fill='both',expand=True,padx=10,pady=6);self.result=ttk.Label(self,text='European roulette: click a number, third, column, color, parity or range.');self.result.pack(fill='x',padx=10,pady=5);self.cv.bind('<Button-1>',self.board_click);self.after(100,self.draw)
+        self.cv=tk.Canvas(self,bg='#0a1118',highlightthickness=0);self.cv.pack(fill='both',expand=True,padx=10,pady=6);self.result=ttk.Label(self,text='Click a number, edge, corner, split, street, dozen, column, or outside bet.');self.result.pack(fill='x',padx=10,pady=5);self.cv.bind('<Button-1>',self.board_click);self.after(100,self.draw)
     def add_bet(self,key):self.bets[key]=self.bets.get(key,0)+self.chip.get();self.draw()
     def clear_bets(self):self.bets.clear();self.draw()
-    def geom(self):
-        w=max(1100,self.cv.winfo_width());h=max(650,self.cv.winfo_height());bx=w*.48;by=120;cellw=min(72,(w*.46)/12);cellh=44;return w,h,bx,by,cellw,cellh
     def board_click(self,e):
-        w,h,bx,by,cellw,cellh=self.geom();
-        if bx-cellw<=e.x<=bx and by<=e.y<=by+cellh*3:self.add_bet(0);return
-        # 12 columns, each with 3 numbers vertically.
-        for col in range(12):
-            for row in range(3):
-                x=bx+col*cellw;y=by+row*cellh;n=col*3+(3-row)
-                if x<=e.x<=x+cellw and y<=e.y<=y+cellh:self.add_bet(n);return
-        oy=by+cellh*3+14;rw=cellw*12/6
-        labels=['1-18','EVEN','RED','BLACK','ODD','19-36']
-        for i,k in enumerate(labels):
+        w=max(1100,self.cv.winfo_width());h=max(700,self.cv.winfo_height());bx=w*.42;by=h*.39;cw=min(82,(w*.48)/12);ch=max(48,min(64,h*.075));zero_w=cw*.72
+        if bx-zero_w<=e.x<=bx and by<=e.y<=by+ch*3:self.add_bet(0);return
+        # numbers: 12 columns, rows 1/2/3. Boundaries create split/corner bets.
+        for n in range(1,37):
+            col=(n-1)//3;row=(n-1)%3;x=bx+col*cw;y=by+row*ch
+            if x<=e.x<=x+cw and y<=e.y<=y+ch:
+                edge=7
+                near_left=abs(e.x-x)<edge;near_right=abs(e.x-(x+cw))<edge;near_top=abs(e.y-y)<edge;near_bottom=abs(e.y-(y+ch))<edge
+                if near_right and col<11:
+                    other=n+3;self.add_bet(tuple(sorted((n,other))))
+                elif near_left and col>0:
+                    other=n-3;self.add_bet(tuple(sorted((n,other))))
+                elif near_bottom and row<2:
+                    other=n+1;self.add_bet(tuple(sorted((n,other))))
+                elif near_top and row>0:
+                    other=n-1;self.add_bet(tuple(sorted((n,other))))
+                else:self.add_bet(n)
+                return
+        # column 2:1 squares at end
+        for row,key in enumerate(('2:1_ROW1','2:1_ROW2','2:1_ROW3')):
+            x=bx+12*cw;y=by+row*ch
+            if x<=e.x<=x+cw*.85 and y<=e.y<=y+ch:self.add_bet(key);return
+        # dozens below
+        oy=by+3*ch+12;rw=cw*4
+        for i,key in enumerate(('1-12','13-24','25-36')):
             x=bx+i*rw
-            if x<=e.x<=x+rw and oy<=e.y<=oy+44:self.add_bet(k);return
-        # thirds row
-        ty=oy+54;tw=cellw*12/3
-        for i,k in enumerate(['1-12','13-24','25-36']):
-            x=bx+i*tw
-            if x<=e.x<=x+tw and ty<=e.y<=ty+44:self.add_bet(k);return
-        # columns (2:1) row beneath thirds
-        cy=ty+54;cw=cellw*12/3
-        for i,k in enumerate(['2TO1-C1','2TO1-C2','2TO1-C3']):
-            x=bx+i*cw
-            if x<=e.x<=x+cw and cy<=e.y<=cy+44:self.add_bet(k);return
+            if x<=e.x<=x+rw and oy<=e.y<=oy+ch*.9:self.add_bet(key);return
+        # outside bets
+        oy2=oy+ch+10;labels=('1-18','EVEN','RED','BLACK','ODD','19-36');rw=(cw*12)/6
+        for i,key in enumerate(labels):
+            x=bx+i*rw
+            if x<=e.x<=x+rw and oy2<=e.y<=oy2+ch*.9:self.add_bet(key);return
     def win_for(self,key,n):
         if isinstance(key,int):return n==key,35
+        if isinstance(key,tuple):return n in key,17 if len(key)==2 else 8
         if key=='RED':return n in self.REDS,1
         if key=='BLACK':return n>0 and n not in self.REDS,1
         if key=='ODD':return n>0 and n%2==1,1
@@ -591,43 +657,52 @@ class RouletteWindow(ToolWindow):
         if key=='1-12':return 1<=n<=12,2
         if key=='13-24':return 13<=n<=24,2
         if key=='25-36':return 25<=n<=36,2
-        if key=='2TO1-C1':return n>0 and n%3==1,2
-        if key=='2TO1-C2':return n>0 and n%3==2,2
-        if key=='2TO1-C3':return n>0 and n%3==0,2
+        if key=='2:1_ROW1':return n>0 and (n-1)%3==0,2
+        if key=='2:1_ROW2':return n>0 and (n-1)%3==1,2
+        if key=='2:1_ROW3':return n>0 and (n-1)%3==2,2
         return False,0
     def spin(self):
         if self.spinning or not self.bets:return
         total=sum(self.bets.values())
         if total>self.portfolio.cash:return messagebox.showerror('Roulette','Insufficient balance for selected chips.')
-        self.portfolio.cash-=total;self.spinning=True;self.target=random.choice(self.WHEEL);self._spin_step(0,72)
-    def _spin_step(self,i,steps):
-        progress=i/steps;ease=1-(1-progress)**3;self.wheel_angle=progress*math.pi*14;target_idx=self.WHEEL.index(self.target);self.ball_angle=progress*math.pi*22 + target_idx*2*math.pi/37;self.draw(wheel_number=self.target if i==steps else None,anim=True)
-        if i<steps:self.after(22+int(progress*18),lambda:self._spin_step(i+1,steps));return
-        payout=0;wins=[]
+        self.portfolio.cash-=total;self.spinning=True;self.target=random.randint(0,36);self.anim=0;self._spin_step()
+    def _spin_step(self):
+        steps=72
+        if self.anim<steps:
+            self.draw(wheel_number=random.randint(0,36),ball_phase=self.anim/steps,spinning=True);self.anim+=1;self.after(28+int(self.anim*.7),self._spin_step);return
+        target=self.target;payout=0;wins=[]
         for key,amt in self.bets.items():
-            win,m=self.win_for(key,self.target)
+            win,m=self.win_for(key,target)
             if win:payout+=amt*(m+1);wins.append(key)
-        self.portfolio.cash+=payout;self.history.append(self.target);self.history=self.history[-20:];self.bets.clear();self.spinning=False;self.result.config(text=f'BALL: {self.target} • {"WIN" if wins else "LOSS"} • {", ".join(map(str,wins)) or "No winning bets"} • Payout ${payout:,.0f}');self.draw(wheel_number=self.target)
-    def draw(self,wheel_number=None,anim=False):
-        c=self.cv;c.delete('all');w,h,bx,by,cellw,cellh=self.geom();cx=w*.20;cy=h*.42;r=min(h*.30,w*.17);c.create_text(cx,32,text=f'{self.dealer[0]} • EUROPEAN ROULETTE',fill='#f6e6b5',font=('Arial',20,'bold'));# outer wheel and wood-like rings
-        c.create_oval(cx-r,cy-r,cx+r,cy+r,fill='#083622',outline='#d8b96a',width=6);c.create_oval(cx-r*.78,cy-r*.78,cx+r*.78,cy+r*.78,fill='#121a20',outline='#8f7040',width=3);c.create_oval(cx-r*.27,cy-r*.27,cx+r*.27,cy+r*.27,fill='#0a0f14',outline='#d8b96a',width=3)
-        for i,n in enumerate(self.WHEEL):
-            ang=2*math.pi*i/37 - math.pi/2 + self.wheel_angle;fill='#0e8b5d' if n==0 else '#b52e45' if n in self.REDS else '#11151a';x=cx+math.cos(ang)*r*.67;y=cy+math.sin(ang)*r*.67;c.create_oval(x-15,y-15,x+15,y+15,fill=fill,outline='#d8b96a',width=1);c.create_text(x,y,text=str(n),fill='white',font=('Arial',8,'bold'))
-        if self.spinning:
-            bx2=cx+math.cos(self.ball_angle)*r*.82;by2=cy+math.sin(self.ball_angle)*r*.82;c.create_oval(bx2-6,by2-6,bx2+6,by2+6,fill='white',outline='#dce7ef',width=2)
-        elif wheel_number is not None:c.create_text(cx,cy,text=str(wheel_number),fill='#f6e6b5',font=('Arial',25,'bold'))
-        # betting board: exact same geometry is used for hit testing, eliminating cursor offset.
-        c.create_rectangle(bx,by,bx+cellw*12,by+cellh*3,fill='#0b5a3c',outline='#d8b96a',width=2);c.create_rectangle(bx-cellw,by,bx,by+cellh*3,fill='#0e8b5d',outline='#d8b96a');c.create_text(bx-cellw/2,by+cellh*1.5,text='0',fill='white',font=('Arial',16,'bold'))
-        for col in range(12):
-            for row in range(3):
-                n=col*3+(3-row);x=bx+col*cellw;y=by+row*cellh;fill='#b52e45' if n in self.REDS else '#15191e';amt=self.bets.get(n,0);c.create_rectangle(x,y,x+cellw,y+cellh,fill=fill,outline='#d8b96a');c.create_text(x+cellw/2,y+cellh/2,text=f'{n}\n${amt:,}' if amt else str(n),fill='white',font=('Arial',9,'bold'))
-        oy=by+cellh*3+14;rw=cellw*12/6
-        for i,k in enumerate(['1-18','EVEN','RED','BLACK','ODD','19-36']):x=bx+i*rw;fill='#b52e45' if k=='RED' else '#15191e' if k=='BLACK' else '#0e6950';amt=self.bets.get(k,0);c.create_rectangle(x,oy,x+rw,oy+44,fill=fill,outline='#d8b96a');c.create_text(x+rw/2,oy+22,text=f'{k}\n${amt:,}' if amt else k,fill='white',font=('Arial',9,'bold'))
-        ty=oy+54;tw=cellw*12/3
-        for i,k in enumerate(['1-12','13-24','25-36']):x=bx+i*tw;amt=self.bets.get(k,0);c.create_rectangle(x,ty,x+tw,ty+44,fill='#0e6950',outline='#d8b96a');c.create_text(x+tw/2,ty+22,text=f'{k}\n${amt:,}' if amt else k,fill='white',font=('Arial',10,'bold'))
-        cy2=ty+54;cw=cellw*12/3
-        for i,k in enumerate(['2TO1-C1','2TO1-C2','2TO1-C3']):x=bx+i*cw;amt=self.bets.get(k,0);c.create_rectangle(x,cy2,x+cw,cy2+44,fill='#0e6950',outline='#d8b96a');c.create_text(x+cw/2,cy2+22,text=f'{["COL 1","COL 2","COL 3"][i]}  2:1\n${amt:,}' if amt else f'{["COL 1","COL 2","COL 3"][i]}  2:1',fill='white',font=('Arial',10,'bold'))
-        hx=w*.82;c.create_text(hx,90,text='RECENT NUMBERS',fill='#f6e6b5',font=('Arial',13,'bold'));c.create_text(hx,120,text='  '.join(map(str,self.history[-20:])),fill=TEXT,font=('Consolas',11,'bold'),width=w*.28);c.create_text(hx,185,text=f'SELECTED CHIP  ${self.chip.get():,}',fill=CYAN,font=('Arial',14,'bold'));self.balance.config(text=f'${self.portfolio.cash:,.2f}')
+        self.portfolio.cash+=payout;self.history.append(target);self.history=self.history[-500:];self.bets.clear();self.spinning=False;self.result.config(text=f'BALL LANDED ON {target} • {"WIN" if wins else "LOSS"} • Payout ${payout:,.0f}');self.draw(target,0,False)
+    def draw(self,wheel_number=None,ball_phase=0,spinning=False):
+        c=self.cv;c.delete('all');w=max(1100,c.winfo_width());h=max(700,c.winfo_height());cx=w*.18;cy=h*.44;r=min(h*.34,w*.18);c.create_text(cx,30,text=f'{self.dealer} • ROULETTE',fill='#f6e6b5',font=('Arial',21,'bold'))
+        c.create_oval(cx-r,cy-r,cx+r,cy+r,fill='#0d2519',outline='#d8b96a',width=6);c.create_oval(cx-r*.82,cy-r*.82,cx+r*.82,cy+r*.82,fill='#161d23',outline='#8b6d35',width=3)
+        for i,n in enumerate(range(37)):
+            a=2*math.pi*i/37-math.pi/2;col='#13865c' if n==0 else '#b92f48' if n in self.REDS else '#171b20';x=cx+math.cos(a)*r*.70;y=cy+math.sin(a)*r*.70;rr=15;c.create_oval(x-rr,y-rr,x+rr,y+rr,fill=col,outline='#d6c08a');c.create_text(x,y,text=str(n),fill='white',font=('Arial',9,'bold'))
+        c.create_oval(cx-r*.16,cy-r*.16,cx+r*.16,cy+r*.16,fill='#0b1218',outline='#d8b96a',width=2);c.create_text(cx,cy,text=str(wheel_number) if wheel_number is not None else '0',fill='white',font=('Arial',25,'bold'))
+        if wheel_number is not None:
+            a=2*math.pi*(wheel_number%37)/37-math.pi/2 + ball_phase*math.pi*12;bx=cx+math.cos(a)*(r*.88);by=cy+math.sin(a)*(r*.88);c.create_oval(bx-8,by-8,bx+8,by+8,fill='white',outline='#cfd8df',width=2)
+        # table
+        bx=w*.40;by=h*.22;cw=min(88,(w*.50)/12);ch=max(52,min(70,h*.075));c.create_rectangle(bx-cw*.72,by,bx,by+ch*3,fill='#13865c',outline='#d8b96a',width=2);c.create_text(bx-cw*.36,by+ch*1.5,text='0',fill='white',font=('Arial',17,'bold'))
+        for n in range(1,37):
+            col=(n-1)//3;row=(n-1)%3;x=bx+col*cw;y=by+row*ch;fill='#b92f48' if n in self.REDS else '#151b23';c.create_rectangle(x,y,x+cw,y+ch,fill=fill,outline='#d8b96a');self._chip(c,x+cw/2,y+ch/2,self.bets.get(n,0),str(n))
+        for row,key in enumerate(('2:1_ROW1','2:1_ROW2','2:1_ROW3')):
+            x=bx+12*cw;y=by+row*ch;c.create_rectangle(x,y,x+cw*.85,y+ch,fill='#0e6950',outline='#d8b96a');self._chip(c,x+cw*.42,y+ch/2,self.bets.get(key,0),'2:1')
+        oy=by+3*ch+14;rw=cw*4
+        for i,key in enumerate(('1-12','13-24','25-36')):
+            x=bx+i*rw;c.create_rectangle(x,oy,x+rw,oy+ch*.9,fill='#0e6950',outline='#d8b96a');self._chip(c,x+rw/2,oy+ch*.45,self.bets.get(key,0),key)
+        oy2=oy+ch+10;rw=(cw*12)/6
+        for i,key in enumerate(('1-18','EVEN','RED','BLACK','ODD','19-36')):
+            x=bx+i*rw;fill='#b92f48' if key=='RED' else '#151b23' if key=='BLACK' else '#0e6950';c.create_rectangle(x,oy2,x+rw,oy2+ch*.9,fill=fill,outline='#d8b96a');self._chip(c,x+rw/2,oy2+ch*.45,self.bets.get(key,0),key)
+        hx=w*.82;c.create_text(hx,by-18,text='LAST 500 SPINS',fill='#f6e6b5',font=('Arial',14,'bold'));hist=self.history[-500:];cols=5
+        for i,n in enumerate(reversed(hist)):
+            row=i//cols;col=i%cols;x=hx-2*70+col*70;y=by+row*26;fill='#13865c' if n==0 else '#b92f48' if n in self.REDS else '#151b23';c.create_oval(x-13,y-13,x+13,y+13,fill=fill,outline='#d8b96a');c.create_text(x,y,text=str(n),fill='white',font=('Arial',8,'bold'))
+        c.create_text(hx,by+min(500//5,18)*26+20,text='Bets use selected chip value. Click near an edge to place split bets.',fill=MUTED,font=('Arial',9),width=w*.28)
+        self.balance.config(text=f'${self.portfolio.cash:,.2f}')
+    def _chip(self,c,x,y,amt,label):
+        if not amt:return
+        c.create_oval(x-15,y-15,x+15,y+15,fill='#d8b96a',outline='#fff2c2',width=2);c.create_text(x,y,text=f'${amt:,}',fill='#111820',font=('Arial',7,'bold'))
 
 class OrderWindow(ToolWindow):
     def __init__(self,parent,app,defaults=None):
@@ -680,7 +755,7 @@ class SmartOrderWindow(ToolWindow):
 
 class App:
     def __init__(self,root,market,portfolio):
-        self.root=root;self.market=market;self.portfolio=portfolio;self.market.ui_app=self;self.active_chart=0;self.ind_vars={k:tk.BooleanVar(value=k in ('Volume',)) for k in ('SMA','EMA','BB','VWAP','RSI','Volume')};self.ind_vars_version=0;self.sort_key='Symbol';self.sort_reverse=False;self.build_style();self.make_menu();self.build();self.set_chart_count(initial=8);self.refresh()
+        self.root=root;self.market=market;self.portfolio=portfolio;self.market.ui_app=self;self.active_chart=0;self.selected_chart=None;self.ind_vars={k:tk.BooleanVar(value=k in ('Volume',)) for k in ('SMA','EMA','BB','VWAP','RSI','Volume')};self.ind_vars_version=0;self.sort_key='Symbol';self.sort_reverse=False;self.build_style();self.make_menu();self.build();self.set_chart_count(initial=8);self.refresh()
     def build_style(self):
         s=ttk.Style();s.theme_use('clam');s.configure('.',background=PANEL,foreground=TEXT);s.configure('TFrame',background=PANEL);s.configure('TLabel',background=PANEL,foreground=TEXT);s.configure('TButton',background=PANEL2,foreground=TEXT,padding=6);s.map('TButton',background=[('active',BLUE)],foreground=[('active','white')]);s.configure('TEntry',fieldbackground='#f4f7fb',foreground='#111827',insertcolor='#111827');s.configure('TCombobox',fieldbackground='#f4f7fb',foreground='#111827',background='#f4f7fb',arrowcolor='#111827');s.map('TCombobox',fieldbackground=[('readonly','#f4f7fb')],foreground=[('readonly','#111827')]);s.configure('Treeview',background='#0c151f',fieldbackground='#0c151f',foreground=TEXT,rowheight=24);s.configure('Treeview.Heading',background='#1e3041',foreground=TEXT);s.map('Treeview',background=[('selected','#1c5f8f')],foreground=[('selected','#ffffff')])
     def make_menu(self):
@@ -707,8 +782,8 @@ class App:
         self.pos.bind('<<TreeviewSelect>>',lambda e:self.position_info());self.pos.bind('<Button-3>',self.position_context);ttk.Button(pos_tab,text='LIQUIDATE SELECTED / CASH',command=self.liquidate).pack(fill='x',padx=6,pady=5)
         self.pred=ttk.Label(acct_tab,text='MODEL',justify='left');self.pred.pack(fill='x',padx=8,pady=7);self.summary=tk.Text(acct_tab,height=18,bg='#0b131d',fg=TEXT,insertbackground=TEXT,relief='flat',wrap='none');self.summary.pack(fill='both',expand=True,padx=6,pady=5)
         self.orders_view=ttk.Treeview(ord_tab,columns=('id','asset','side','type','qty','price','status'),show='headings');self.orders_view.pack(fill='both',expand=True,padx=6,pady=5);[self.orders_view.heading(c,text=c.upper()) for c in self.orders_view['columns']];[self.orders_view.column(c,width=80,stretch=False) for c in self.orders_view['columns']]
-        action=ttk.Frame(right);action.pack(fill='x',pady=3);ttk.Button(action,text='ORDER ENTRY',command=self.order_window).pack(side='left',expand=True,fill='x',padx=2);ttk.Button(action,text='GLOBAL',command=self.globe).pack(side='left',expand=True,fill='x',padx=2);ttk.Button(action,text='MAP',command=self.market_map).pack(side='left',expand=True,fill='x',padx=2);ttk.Button(action,text='OPTIONS / SPREADS',command=self.options).pack(side='left',expand=True,fill='x',padx=2);ttk.Button(action,text='ARCADE',command=self.casino).pack(side='left',expand=True,fill='x',padx=2)
-        newsf=ttk.Frame(self.root);newsf.pack(fill='x',padx=6,pady=4);nh=ttk.Frame(newsf);nh.pack(fill='x');ttk.Label(nh,text='NEWS / MARKET TAPE',font=('Arial',11,'bold')).pack(side='left');self.news_filter=ttk.Combobox(nh,values=['ALL','STOCK','INDEX','COMMODITY','MACRO','GLOBAL'],state='readonly',width=12);self.news_filter.set('ALL');self.news_filter.pack(side='right');self.news_filter.bind('<<ComboboxSelected>>',lambda e:self.refresh_news());self.news=tk.Text(newsf,height=7,bg='#0b131d',fg=TEXT,insertbackground=TEXT,relief='flat');self.news.pack(fill='both');self.status=ttk.Label(self.root,text='');self.status.pack(fill='x',padx=7)
+        action=ttk.Frame(right);action.pack(fill='x',pady=3);ttk.Button(action,text='ORDER ENTRY',command=self.order_window).pack(side='left',expand=True,fill='x',padx=2);ttk.Button(action,text='GLOBAL',command=self.globe).pack(side='left',expand=True,fill='x',padx=2);ttk.Button(action,text='MAP',command=self.market_map).pack(side='left',expand=True,fill='x',padx=2);ttk.Button(action,text='ARCADE',command=self.casino).pack(side='left',expand=True,fill='x',padx=2)
+        newsf=ttk.Frame(self.root);newsf.pack(fill='x',padx=6,pady=4);nh=ttk.Frame(newsf);nh.pack(fill='x');ttk.Label(nh,text='NEWS / MARKET TAPE',font=('Arial',11,'bold')).pack(side='left');ttk.Button(nh,text='POP OUT / RESIZE',command=self.news_popup).pack(side='left',padx=8);self.news_filter=ttk.Combobox(nh,values=['ALL','STOCK','INDEX','COMMODITY','MACRO','GLOBAL'],state='readonly',width=12);self.news_filter.set('ALL');self.news_filter.pack(side='right');self.news_filter.bind('<<ComboboxSelected>>',lambda e:self.refresh_news());self.news=tk.Text(newsf,height=7,bg='#0b131d',fg=TEXT,insertbackground=TEXT,relief='flat');self.news.pack(fill='both');self.status=ttk.Label(self.root,text='');self.status.pack(fill='x',padx=7)
     def add_chart(self):
         if len(self.charts)>=8:return self.status_flash('Maximum 8 charts in the main workspace.')
         self._workspace_count=len(self.charts)+1;self.set_chart_count(initial=self._workspace_count)
@@ -794,7 +869,7 @@ class App:
     def watch_context(self,event):
         iid=self.watch.identify_row(event.y)
         if not iid:return
-        self.watch.selection_set(iid);self.watch.focus(iid);self.watch.see(iid);a=self.market.get_asset(iid);m=tk.Menu(self.watch,tearoff=0);m.add_command(label=f'BUY {a.symbol}',command=lambda:self.order_window(a,'BUY','MARKET',None));m.add_command(label=f'SELL {a.symbol}',command=lambda:self.order_window(a,'SELL','MARKET',None));m.add_command(label=f'SHORT {a.symbol}',command=lambda:self.order_window(a,'SHORT','MARKET',None));m.add_command(label='COVER',command=lambda:self.order_window(a,'COVER','MARKET',None));m.add_separator();m.add_command(label='Open Options Chain',command=lambda:self.options_for(a));m.add_command(label='Advanced Chart',command=lambda:self.load_asset_auto(a));m.add_command(label='Level 2 / Level 3',command=lambda:self.depth_for(a));m.tk_popup(event.x_root,event.y_root)
+        self.watch.selection_set(iid);self.watch.focus(iid);self.watch.see(iid);a=self.market.get_asset(iid);m=tk.Menu(self.watch,tearoff=0);m.add_command(label=f'BUY {a.symbol}',command=lambda:self.order_window(a,'BUY','MARKET',None));m.add_command(label=f'SELL {a.symbol}',command=lambda:self.order_window(a,'SELL','MARKET',None));m.add_command(label=f'SHORT {a.symbol}',command=lambda:self.order_window(a,'SHORT','MARKET',None));m.add_command(label='COVER',command=lambda:self.order_window(a,'COVER','MARKET',None));m.add_separator();m.add_command(label='Open Options Chain',command=lambda:self.options_for(a));m.add_command(label='Advanced Chart',command=lambda:self.load_asset_auto(a));m.add_command(label='Level 2 / Level 3',command=lambda:self.depth_for(a));m.add_command(label='WATCHLIST VARIABLES',command=self.watch_variables);m.tk_popup(event.x_root,event.y_root)
     def load_asset_auto(self,a):self.charts[self.active_chart].set_asset(a);self.sync_chart_controls();self.status_flash(f'{a.symbol} loaded into Chart {self.active_chart+1}')
     def load_active(self):
         a=self.selected();
@@ -805,6 +880,8 @@ class App:
     def chart_trade(self,side,otype='MARKET'):
         a=self.charts[self.active_chart].asset
         if a:self.order_window(a,side,otype,None if otype=='MARKET' else self.charts[self.active_chart].y_to_price(self.charts[self.active_chart].winfo_height()/2))
+    def advanced_chart(self,a):
+        w=ToolWindow(self.root);w.style_window(f'ADVANCED CHART — {a.symbol}','1200x760');w.resizable(True,True);c=Chart(w,self,self.active_chart);c.pack(fill='both',expand=True,padx=8,pady=8);c.set_asset(a);c.selected_popup=True
     def options(self):OptionsWindow(self.root,self.market,self.portfolio,self.refresh)
     def market_map(self):MarketMapWindow(self.root,self.market)
     def globe(self):GlobeWindow(self.root,self.market)
@@ -831,7 +908,16 @@ class App:
     def position_context(self,e):
         iid=self.pos.identify_row(e.y)
         if not iid:return
-        self.pos.selection_set(iid);m=tk.Menu(self.pos,tearoff=0);m.add_command(label='Liquidate / Cash',command=self.liquidate);m.tk_popup(e.x_root,e.y_root)
+        self.pos.selection_set(iid);m=tk.Menu(self.pos,tearoff=0);m.add_command(label='Liquidate / Cash',command=self.liquidate);m.add_command(label='PORTFOLIO VARIABLES',command=self.position_variables);m.tk_popup(e.x_root,e.y_root)
+    def position_variables(self):
+        self.column_variables(self.pos, {'Symbol':'symbol','Qty':'qty','Last':'last','Value':'value','P/L':'pnl','P/L %':'pct','Type':'type'})
+    def watch_variables(self):
+        self.column_variables(self.watch, {'Symbol':'symbol','Name':'name','Price':'price','Chg %':'chg','Sector':'sector'})
+    def column_variables(self,tv,names):
+        w=tk.Toplevel(self.root);w.title('TABLE VARIABLES');w.geometry('360x420');w.resizable(True,True);ttk.Label(w,text='Visible columns',font=('Arial',12,'bold')).pack(anchor='w',padx=12,pady=10)
+        for label,key in names.items():
+            v=tk.BooleanVar(value=tv.column(key,'width')>0);ttk.Checkbutton(w,text=label,variable=v,command=lambda k=key,var=v:self.toggle_table_column(tv,k,var)).pack(anchor='w',padx=20,pady=4)
+    def toggle_table_column(self,tv,key,var):tv.column(key,width=0 if not var.get() else (130 if key=='name' else 90),stretch=False)
     def position_info(self):
         it=self.pos.selection();
         if it:self.status_flash(f'{it[0]} selected — selection preserved during refresh')
@@ -853,6 +939,10 @@ class App:
         for i,o in enumerate(self.market.pending_spread_orders):
             self.orders_view.insert('','end',values=(f'SP{i}',getattr(o.get('strategy'),'name','SPREAD'),o.get('side',''),o.get('type',''),len(getattr(o.get('strategy'),'legs',[])),f"${o.get('price') or 0:,.2f}",'WORKING'))
 
+    def news_popup(self):
+        w=ToolWindow(self.root);w.style_window('NEWS — POP OUT','900x600');w.resizable(True,True);top=ttk.Frame(w);top.pack(fill='x',padx=8,pady=6);ttk.Label(top,text='NEWS / MARKET TAPE',font=('Arial',13,'bold')).pack(side='left');tv=tk.Text(w,bg='#0b131d',fg=TEXT,insertbackground=TEXT,relief='flat',wrap='word');tv.pack(fill='both',expand=True,padx=8,pady=8)
+        for n in self.market.news[-500:]:tv.insert('end',f'[{{getattr(n,"severity","NORMAL")}}] {{n}}\n')
+        w.transient(self.root)
     def refresh_news(self):
         filt=self.news_filter.get();self.news.delete('1.0','end');idx={x.symbol for x in self.market.indexes};com={x.symbol for x in self.market.commodities};stocks={x.symbol for x in self.market.stocks}
         for n in self.market.news[-35:]:
