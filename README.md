@@ -1,4 +1,4 @@
-STOCK GAME PRO — BEEFY V2
+STOCK GAME PRO
 
 This build includes UI/gameplay revisions:
 
