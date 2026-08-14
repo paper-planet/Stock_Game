@@ -17,7 +17,3 @@ Build Windows executable:
 - The executable will be in dist\StockGamePro\StockGamePro.exe
 
 This package is intentionally source-first because an executable built on Linux is not a usable Windows .exe.
-
-IMPORTANT: On this PC the Windows 'where' command is unavailable, so the batch files no longer use it. The diagnostic compile test uses Python glob instead of the Windows shell wildcard.
-
-If normal startup fails, run run_guest.bat. It bypasses account/menu code and is useful for isolating GUI/engine problems.

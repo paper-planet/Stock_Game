@@ -45,7 +45,7 @@ class Market:
         self.books[a.symbol].update(a.price,0,a.volatility/.001)
         return self.books[a.symbol]
     def predict(self,a):
-        h=list(a.history);mom=(h[-1]/h[-20]-1) if len(h)>=20 else 0;vol=a.volatility;label='BULLISH' if mom>.01 else 'BEARISH' if mom<-.01 else 'NEUTRAL';return {'label':label,'confidence':min(.99,.5+abs(mom)*4),'momentum':mom,'volatility':vol,'score':mom}
+        h=list(a.history);mom=(h[-1]/h[-20]-1) if len(h)>=20 else 0;vol=a.volatility;label='BULLISH' if mom>.01 else 'BEARISH' if mom<-.01 else 'NEUTRAL';return {'label':label,'confidence':min(.99,.5+abs(mom)*4),'momentum':mom,'volatility':vol}
     def load_chart_data(self,a,interval='1d'):return a.chart_candles(interval)
     def load_ipo_history(self,a):return None
     def submit_pending(self,side,a,qty,otype,price):
@@ -93,8 +93,5 @@ class Market:
             latest=fetch_many_latest([a.data_symbol for a in self.stocks[:20]],workers=6)
             for a in self.stocks:
                 c=latest.get(a.data_symbol)
-                if c:
-                    a.last_real_close=c.close
-                    a.last_real_timestamp=c.timestamp
-                    a.update_price(c.close, c.volume, c.timestamp, record=False)
+                if c:a.set_dataset('1d',[c])
         except Exception as e:self.errors.append(f'background data: {e}')
