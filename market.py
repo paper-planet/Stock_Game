@@ -1,36 +1,77 @@
-import asyncio,random,threading,time
+import asyncio,random,threading,time,math,os
 from datetime import datetime,timedelta,timezone
 from zoneinfo import ZoneInfo
-from asset import Stock,Commodity,Index,Future,Crypto,Forex,InternationalStock,Candle
-from orderbook import OrderBook
-from universe import STOCKS,COMMODITIES,INDEXES
-from news import generate_news,major
-from markets import market_status
+from game_core import Stock,Commodity,Index,Future,Crypto,Forex,InternationalStock,Candle
+from game_core import OrderBook
+from game_core import STOCKS,COMMODITIES,INDEXES,GLOBAL_STOCKS,GLOBAL_INDEXES,INCEPTION_FALLBACK
+from game_core import generate_news,major,NewsEvent
+from game_core import market_status,SESSIONS
 
 class GameClock:
     def __init__(self):
         now=datetime.now(ZoneInfo('America/New_York')).replace(tzinfo=None)
-        self.current=now.replace(second=0,microsecond=0);self.running=True
-    def advance(self,minutes):self.current+=timedelta(minutes=minutes)
+        self.current=now.replace(microsecond=0);self.running=True
+    def advance(self,minutes):self.current+=timedelta(minutes=float(minutes))
+    def advance_seconds(self,seconds):self.current+=timedelta(seconds=float(seconds))
     @property
-    def time(self):return self.current.strftime('%Y-%m-%d %H:%M')
+    def time(self):return self.current.strftime('%Y-%m-%d %H:%M:%S')
     @property
-    def utc_time(self):return self.current.replace(tzinfo=ZoneInfo('America/New_York')).astimezone(timezone.utc).strftime('%H:%M UTC')
+    def utc_time(self):return self.current.replace(tzinfo=ZoneInfo('America/New_York')).astimezone(timezone.utc).strftime('%H:%M:%S UTC')
     @property
     def open(self):return market_status('US',self.current.replace(tzinfo=ZoneInfo('America/New_York')))
+    def us_session_countdown(self):
+        dt=self.current
+        wd=dt.weekday();mins=dt.hour*60+dt.minute+dt.second/60
+        open_m,close_m=9*60+30,16*60
+        if wd<5 and open_m<=mins<close_m:
+            sec=max(0,int((close_m-mins)*60));label='CLOSES IN'
+        else:
+            probe=dt
+            while True:
+                target=probe.replace(hour=9,minute=30,second=0,microsecond=0)
+                if probe.weekday()<5 and probe<target:break
+                probe=(probe+timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0)
+                if probe.weekday()<5:
+                    target=probe.replace(hour=9,minute=30,second=0,microsecond=0);break
+            sec=max(0,int((target-dt).total_seconds()));label='OPENS IN'
+        d,sec=divmod(sec,86400);h,sec=divmod(sec,3600);m,sec=divmod(sec,60)
+        text=(f'{d}d {h:02d}:{m:02d}:{sec:02d}' if d else f'{h:02d}:{m:02d}:{sec:02d}')
+        return label,text
 
 class Market:
+    """Fast fictional market/economy simulator.
+
+    Real-time pacing is decoupled from render speed: at 1x, one real second advances
+    one in-game minute. Price dynamics are scaled by elapsed simulated time so higher
+    time-warp changes the entire economy without spawning hundreds of UI callbacks.
+    """
     def __init__(self):
-        self.running=True;self.paused=False;self.speed=.08;self.step_minutes=1;self.difficulty='MEDIUM';self.clock=GameClock();self.errors=[];self.news=[];self.data_status='SIMULATION READY';self.pending_orders=[];self.pending_option_orders=[];self.pending_spread_orders=[];self.order_id=1;self.books={};self.ui_app=None;self._loader_started=False;self._lock=threading.RLock()
+        self.running=True;self.paused=False
+        self.speed=.05                 # engine cadence (~20 Hz); real-time clock remains elapsed-time based
+        self.time_warp=10.0            # 1x => 1 real second = 1 game minute
+        self.step_minutes=1            # retained for compatibility with older controls
+        self.difficulty='MEDIUM';self.clock=GameClock();self.visual_version=0;self.errors=[];self.news=[];self.expiration_events=[];self.data_status='SIMULATION READY';self.pending_orders=[];self.pending_option_orders=[];self.pending_spread_orders=[];self.order_id=1;self.books={};self.ui_app=None;self._loader_started=False;self._lock=threading.RLock();self._last_real_tick=time.monotonic();self._macro_accum_minutes=0.0;self._last_fed_day=self.clock.current.date();self.seed=int(os.environ.get('STOCK_GAME_SEED','0') or 0);random.seed(self.seed if self.seed else None)
+        self.macro={'inflation':2.6,'policy_rate':4.25,'unemployment':4.1,'gdp_growth':2.0,'ten_year':4.35,'dollar':100.0,'sentiment':0.05,'liquidity':1.0,'fed_target':2.0}
+        self._sector_factor={};self._book_cache_time={};self.freight_routes=[];self.shipments=[];self.freight_events=[];self._history_loading=set();self.research_mode=True;self.real_macro_source='SIMULATED'
         prices={'AAPL':210,'MSFT':520,'NVDA':180,'AMZN':225,'META':760,'GOOGL':190,'GOOG':192,'AVGO':300,'TSLA':340,'JPM':290,'V':350,'MA':580,'WMT':100,'COST':960,'NFLX':1150,'ORCL':240,'CRM':310,'AMD':165,'INTC':24,'QCOM':175,'CSCO':70,'IBM':250,'PLTR':160,'UBER':95,'DIS':120,'KO':70,'PEP':150,'MCD':300,'NKE':75,'XOM':110,'CVX':155,'GE':285,'CAT':400,'BA':180,'JNJ':175,'PFE':25,'LLY':800,'UNH':320,'BAC':50,'GS':720,'MS':150,'C':100,'WFC':85,'COIN':330,'HOOD':115,'SHOP':140,'MSTR':400,'ARM':150,'TSM':200,'ASML':700,'BABA':120,'NVO':55,'SAP':280,'SONY':30,'TM':250,'GME':25,'SPY':640,'VIX':18}
         self.stocks=[Stock(s,n,p if (p:=prices.get(s,100)) else 100,v,c) for s,n,c,v in STOCKS]
         self.commodities=[Commodity(s,n,{'CL=F':65,'BZ=F':68,'GC=F':3400,'SI=F':38,'HG=F':4.5,'NG=F':3.2,'ZC=F':450,'ZW=F':520,'ZS=F':1050}.get(s,100),v,c,data_symbol=s) for s,n,c,v in COMMODITIES]
         self.indexes=[Index(s,n,p,com,v) for s,n,p,com,v in INDEXES]
-        self.futures=[Future('ES=F','E-mini S&P 500',6400,.001,'Futures','ES=F',50,.08,'CME'),Future('NQ=F','E-mini Nasdaq 100',23500,.002,'Futures','NQ=F',20,.08,'CME')]
-        self.crypto=[Crypto('BTC-USD','Bitcoin',118000,.01),Crypto('ETH-USD','Ethereum',4200,.012)]
-        self.forex=[Forex('EURUSD=X','EUR/USD',1.17,.0015),Forex('USDJPY=X','USD/JPY',148,.0015),Forex('GBPUSD=X','GBP/USD',1.35,.0015)]
-        self.international=[InternationalStock('LSEG','London Stock Exchange',11500,.0018,'International','LSEG.L','LSE','GBP'),InternationalStock('7203.T','Toyota',2600,.0017,'International','7203.T','TSE','JPY'),InternationalStock('9984.T','SoftBank',12000,.0025,'International','9984.T','TSE','JPY')]
-        self._assets={a.symbol:a for a in self.all_assets()};self.sectors=sorted({a.category for a in self.stocks});self._init_history()
+        for s,n,p,com,v,data_symbol,session in GLOBAL_INDEXES:
+            idx=Index(s,n,p,com,v);idx.data_symbol=data_symbol;idx.session=session;idx.category='Global Index';self.indexes.append(idx)
+        self.futures=[Future('ES=F','E-mini S&P 500',6400,.001,'Futures','ES=F',50,.08,'CME'),Future('NQ=F','E-mini Nasdaq 100',23500,.002,'Futures','NQ=F',20,.08,'CME'),Future('YM=F','E-mini Dow',42000,.0012,'Futures','YM=F',5,.08,'CME'),Future('RTY=F','E-mini Russell 2000',2250,.0015,'Futures','RTY=F',50,.08,'CME')]
+        self.crypto=[Crypto('BTC-USD','Bitcoin',118000,.01),Crypto('ETH-USD','Ethereum',4200,.012),Crypto('SOL-USD','Solana',180,.016),Crypto('XRP-USD','XRP',2.8,.018)]
+        self.forex=[Forex('EURUSD=X','EUR/USD',1.17,.0015),Forex('USDJPY=X','USD/JPY',148,.0015),Forex('GBPUSD=X','GBP/USD',1.35,.0015),Forex('AUDUSD=X','AUD/USD',.66,.0015),Forex('USDCAD=X','USD/CAD',1.38,.0014),Forex('USDCHF=X','USD/CHF',.81,.0013)]
+        existing={a.symbol:a for a in self.stocks};self.international=[]
+        for s,n,p,v,c,ds,session,currency in GLOBAL_STOCKS:
+            if s in existing:
+                a=existing[s];a.session=session;a.currency=currency;a.data_symbol=ds
+            else:self.international.append(InternationalStock(s,n,p,v,c,ds,session,currency))
+        self._assets={a.symbol:a for a in self.all_assets()};self.sectors=sorted({a.category for a in self.stocks+self.international})
+        for a in self.all_assets():
+            if a.symbol in INCEPTION_FALLBACK:
+                ds,px=INCEPTION_FALLBACK[a.symbol];a.inception_date=ds;a.inception_price=px
+        self._init_history();self._init_freight()
     def _init_history(self):
         base=self.clock.current-timedelta(days=60)
         for a in self.all_assets():
@@ -42,56 +83,910 @@ class Market:
     def get_asset(self,symbol):return self._assets.get(symbol)
     def get_book(self,a):
         if a.symbol not in self.books:self.books[a.symbol]=OrderBook(a)
-        self.books[a.symbol].update(a.price,0,a.volatility/.001)
+        now=time.monotonic();last=self._book_cache_time.get(a.symbol,0)
+        if now-last>.12:
+            mom=max(-1.0,min(1.0,a.change_percent()/4.0));pressure=max(-.95,min(.95,mom*.7+self.macro.get('sentiment',0)*.35))
+            self.books[a.symbol].update(a.price,pressure,max(.2,a.volatility/.001));self._book_cache_time[a.symbol]=now
         return self.books[a.symbol]
     def predict(self,a):
         h=list(a.history);mom=(h[-1]/h[-20]-1) if len(h)>=20 else 0;vol=a.volatility;label='BULLISH' if mom>.01 else 'BEARISH' if mom<-.01 else 'NEUTRAL';return {'label':label,'confidence':min(.99,.5+abs(mom)*4),'momentum':mom,'volatility':vol}
     def load_chart_data(self,a,interval='1d'):return a.chart_candles(interval)
-    def load_ipo_history(self,a):return None
+    def load_ipo_history(self,a):
+        if a is None or a.symbol in self._history_loading:return False
+        self._history_loading.add(a.symbol);self.data_status=f'LOADING MAX HISTORY • {a.symbol}'
+        def worker():
+            try:
+                from data import fetch_history_max
+                candles=fetch_history_max(getattr(a,'data_symbol',a.symbol))
+                if candles:
+                    a.set_dataset('1d',candles);a.inception_date=candles[0].timestamp.date().isoformat();a.inception_price=float(candles[0].open);self.visual_version+=1;self.data_status=f'MAX HISTORY READY • {a.symbol} • {a.inception_date}'
+                else:self.data_status=f'MAX HISTORY UNAVAILABLE • {a.symbol}'
+            except Exception as e:self.errors.append(f'MAX history {a.symbol}: {e}')
+            finally:self._history_loading.discard(a.symbol)
+        threading.Thread(target=worker,daemon=True,name=f'History-{a.symbol}').start();return True
     def submit_pending(self,side,a,qty,otype,price):
         o={'id':self.order_id,'side':side,'asset':a,'qty':int(qty),'type':otype,'price':price};self.order_id+=1;self.pending_orders.append(o);return o
     def submit_option_pending(self,side,contract,qty,otype,price):
         o={'id':self.order_id,'side':side,'contract':contract,'qty':int(qty),'type':otype,'price':price};self.order_id+=1;self.pending_option_orders.append(o);return o
     def submit_spread_pending(self,side,strategy,otype,price):
         o={'id':self.order_id,'side':side,'strategy':strategy,'type':otype,'price':price};self.order_id+=1;self.pending_spread_orders.append(o);return o
-    def update_pending_price(self,*args,**kwargs):return None
+    def update_pending_price(self,order_id,price):
+        for o in self.pending_orders:
+            if o.get('id')==order_id:
+                o['price']=max(.0001,float(price));self.visual_version+=1;return True
+        return False
+    def update_pending_option_strike(self,order_id,strike):
+        for o in self.pending_option_orders:
+            if o.get('id')==order_id and o.get('contract') is not None:
+                o['contract'].strike=max(.01,round(float(strike),2));self.visual_version+=1;return True
+        return False
+    def _init_freight(self):
+        self.freight_routes=[
+            {'name':'Shanghai → Los Angeles','points':[(31.2,121.5),(28,145),(30,170),(34,-150),(34,-118)],'days':14},
+            {'name':'Singapore → Rotterdam','points':[(1.3,103.8),(6,80),(12,55),(30,32),(36,15),(52,4.5)],'days':22},
+            {'name':'Rotterdam → New York','points':[(52,4.5),(52,-20),(48,-45),(42,-65),(40.7,-74)],'days':10},
+            {'name':'Santos → Shanghai','points':[(-23.9,-46.3),(-35,-20),(-34,18),(-20,55),(1,100),(31.2,121.5)],'days':28},
+        ]
+        carriers=['ZIM','MATX','SBLK','DAC','FRO','STNG'];owners=['AAPL','AMZN','WMT','TSLA','NVDA','CAT','NKE','BABA','TM','SONY']
+        for i in range(10):self.shipments.append(self._new_shipment(i,random.choice(carriers),random.choice(owners)))
+    def _new_shipment(self,i,carrier=None,owner=None):
+        route=random.choice(self.freight_routes);carrier=carrier or random.choice(['ZIM','MATX','SBLK','DAC','FRO','STNG']);owner=owner or random.choice(['AAPL','AMZN','WMT','TSLA','NVDA','CAT','NKE','BABA','TM','SONY'])
+        hazard=random.choice(['STORM','PIRATES','NONE','NONE']);hpos=random.uniform(.35,.85)
+        return {'id':i,'name':f'Vessel {i+1:02d}','carrier':carrier,'cargo_owner':owner,'route':route,'progress':random.random()*.25,'hazard':hazard,'hazard_progress':hpos,'hazard_resolved':False,'cargo_value':random.randint(40,900)*1_000_000,'status':'IN TRANSIT'}
+    def shipment_position(self,sh):
+        pts=sh['route']['points'];p=max(0,min(.999999,sh['progress']))*(len(pts)-1);i=int(p);f=p-i;(lat1,lon1),(lat2,lon2)=pts[i],pts[min(i+1,len(pts)-1)];return lat1+(lat2-lat1)*f,lon1+(lon2-lon1)*f
+    def shipment_hazard_position(self,sh):
+        temp=dict(sh);temp['progress']=sh['hazard_progress'];return self.shipment_position(temp)
+    def _apply_shipment_shock(self,sh,kind):
+        carrier=self.get_asset(sh['carrier']);owner=self.get_asset(sh['cargo_owner'])
+        severity=random.uniform(.008,.035) if kind=='STORM' else random.uniform(.012,.050)
+        if carrier:carrier.update_price(carrier.price*(1-severity*.7),random.randint(10000,80000),self.clock.current)
+        if owner:owner.update_price(owner.price*(1-severity),random.randint(10000,80000),self.clock.current)
+        sh['status']=f'{kind} IMPACT';self.freight_events.append((self.clock.current,kind,sh['carrier'],sh['cargo_owner'],severity))
+        self.news.append(NewsEvent(f'{kind.title()} disrupts {sh["name"]}: {sh["cargo_owner"]} cargo carried by {sh["carrier"]}.',sh['cargo_owner'],-severity,0,'GLOBAL'))
+    def _update_freight(self,game_minutes):
+        for i,sh in enumerate(list(self.shipments)):
+            sh['progress']+=game_minutes/max(1,sh['route']['days']*1440)
+            if sh['hazard']!='NONE' and not sh['hazard_resolved'] and sh['progress']>=sh['hazard_progress']:
+                sh['hazard_resolved']=True;self._apply_shipment_shock(sh,sh['hazard'])
+            if sh['progress']>=1:
+                owner=self.get_asset(sh['cargo_owner']);carrier=self.get_asset(sh['carrier'])
+                if owner:owner.update_price(owner.price*(1+random.uniform(.001,.006)),random.randint(5000,30000),self.clock.current)
+                if carrier:carrier.update_price(carrier.price*(1+random.uniform(.001,.004)),random.randint(5000,30000),self.clock.current)
+                self.shipments[i]=self._new_shipment(sh['id'])
+
     def _process_orders(self):
         for o in list(self.pending_orders):
-            a=o['asset'];p=a.ask if o['side'] in ('BUY','COVER') else a.bid;target=o['price'];hit=o['type']=='MARKET' or target is None or (o['side'] in ('BUY','COVER') and p<=target) or (o['side'] in ('SELL','SHORT') and p>=target)
+            a=o['asset'];p=a.ask if o['side'] in ('BUY','COVER') else a.bid;target=o['price'];typ=o.get('type','LIMIT')
+            if typ=='STOP':hit=target is None or (o['side'] in ('BUY','COVER') and p>=target) or (o['side'] in ('SELL','SHORT') and p<=target)
+            else:hit=typ=='MARKET' or target is None or (o['side'] in ('BUY','COVER') and p<=target) or (o['side'] in ('SELL','SHORT') and p>=target)
             if hit:
                 try:
                     fn={'BUY':self.portfolio.buy_asset,'SELL':self.portfolio.sell_asset,'SHORT':self.portfolio.short_asset,'COVER':self.portfolio.cover_short}[o['side']];fn(a,o['qty']);self.pending_orders.remove(o)
                 except Exception as e:self.errors.append(f'order {o["id"]}: {e}');self.pending_orders.remove(o)
+        # Working option orders use the contract premium as their limit/stop axis.
+        from game_core import OptionStrategy
+        for o in list(self.pending_option_orders):
+            c=o.get('contract');side=o.get('side','BUY');typ=o.get('type','LIMIT');target=o.get('price');
+            if c is None:continue
+            mark=c.ask if side=='BUY' else c.bid
+            if typ=='STOP':hit=target is None or (side=='BUY' and mark>=target) or (side=='SELL' and mark<=target)
+            else:hit=typ=='MARKET' or target is None or (side=='BUY' and mark<=target) or (side=='SELL' and mark>=target)
+            if hit:
+                try:
+                    st=OptionStrategy(f'{side} {c}');st.add_leg(c,max(1,int(o.get('qty',1))),side);ok,_=self.portfolio.execute_strategy(st)
+                    if ok:self.pending_option_orders.remove(o)
+                except Exception as e:
+                    self.errors.append(f'option order {o.get("id")}: {e}');self.pending_option_orders.remove(o)
+        for o in list(self.pending_spread_orders):
+            st=o.get('strategy');side=o.get('side','BUY');typ=o.get('type','LIMIT');target=o.get('price');
+            if st is None:continue
+            mark=abs(st.current_value())/max(1,len(getattr(st,'legs',[])))
+            hit=typ=='MARKET' or target is None or (side=='BUY' and mark<=target) or (side=='SELL' and mark>=target)
+            if hit:
+                try:
+                    ok,_=self.portfolio.execute_strategy(st)
+                    if ok:self.pending_spread_orders.remove(o)
+                except Exception as e:self.errors.append(f'spread order: {e}');self.pending_spread_orders.remove(o)
+    def _process_expirations(self):
+        if not hasattr(self,'portfolio'):return
+        now=self.clock.current
+        for i in range(len(self.portfolio.options)-1,-1,-1):
+            st=self.portfolio.options[i];exp=getattr(st,'expiry_at',None)
+            if exp is None:continue
+            remain=max(0.0,(exp-now).total_seconds()/86400.0)
+            for leg in st.legs:leg.contract.days=remain;leg.contract._stats_cache=None
+            if now<exp:continue
+            settlement=0.0;legs=[]
+            for leg in st.legs:
+                c=leg.contract;spot=float(c.underlying.price);intr=float(c.intrinsic(spot));leg_cash=leg.sign*intr*leg.quantity*100;settlement+=leg_cash
+                legs.append(f'{leg.action} {leg.quantity} {c.option_type.upper()} {c.strike:g}: intrinsic ${intr:.2f} -> ${leg_cash:,.2f}')
+            pnl=settlement-st.open_cost;self.portfolio.cash+=settlement;self.portfolio.realized+=pnl;self.portfolio.trade_count+=1;self.portfolio.reserved_margin=max(0.0,self.portfolio.reserved_margin-max(0.0,-st.open_cost*1.5))
+            self.portfolio.options.pop(i)
+            if hasattr(self.portfolio,'invalidate_option_cache'):self.portfolio.invalidate_option_cache()
+            self.expiration_events.append({'name':st.name,'settlement':settlement,'pnl':pnl,'underlying':st.legs[0].contract.underlying.symbol if st.legs else '—','spot':st.legs[0].contract.underlying.price if st.legs else 0,'legs':legs,'expired_at':now})
+            if len(self.expiration_events)>50:self.expiration_events=self.expiration_events[-50:]
+
+    def _update_macro(self,game_minutes):
+        self._macro_accum_minutes+=game_minutes
+        if self._macro_accum_minutes<60:return
+        hours=self._macro_accum_minutes/60;self._macro_accum_minutes%=60
+        m=self.macro
+        # Slow-moving macro economy: inflation/growth/unemployment respond to rates and shocks.
+        gap=m['policy_rate']-(2.5+max(0,m['inflation']-2.0)*.35)
+        m['gdp_growth']+=(-.0025*gap-.018*(m['gdp_growth']-2.0)+random.gauss(0,.015))*hours
+        m['unemployment']+=(.0018*max(0,2.0-m['gdp_growth'])-.012*(m['unemployment']-4.1)+random.gauss(0,.006))*hours
+        m['inflation']+=(-.0018*gap+.0015*(m['gdp_growth']-2.0)-.010*(m['inflation']-2.2)+random.gauss(0,.007))*hours
+        m['sentiment']=max(-1,min(1,m['sentiment']+(.002*(m['gdp_growth']-2)-.002*max(0,m['policy_rate']-4)+random.gauss(0,.012))*hours))
+        m['ten_year']+=.06*((m['policy_rate']*.55+m['inflation']*.45)-m['ten_year'])*min(1,hours)+random.gauss(0,.008)*math.sqrt(max(hours,.01))
+        m['dollar']+=.035*(m['policy_rate']-m['inflation']-1.5)*hours+random.gauss(0,.06)*math.sqrt(max(hours,.01))
+        m['liquidity']=max(.4,min(1.6,1.15-.06*m['policy_rate']+.05*m['sentiment']))
+        # Monthly-ish Fed reaction function. It moves in 25bp steps toward a Taylor-style target.
+        days=(self.clock.current.date()-self._last_fed_day).days
+        if days>=30:
+            target=max(.0,min(10.0,2.5+1.35*(m['inflation']-m['fed_target'])+.35*(m['gdp_growth']-2.0)-.20*(m['unemployment']-4.1)))
+            old=m['policy_rate']
+            if target>old+.125:m['policy_rate']=min(old+.25,target)
+            elif target<old-.125:m['policy_rate']=max(old-.25,target)
+            self._last_fed_day=self.clock.current.date()
+            direction='raises' if m['policy_rate']>old else 'cuts' if m['policy_rate']<old else 'holds'
+            self.news.append(NewsEvent(f'Federal Reserve {direction} policy rate at {m["policy_rate"]:.2f}% as inflation runs {m["inflation"]:.2f}%.',None,(-.006 if direction=='raises' else .006 if direction=='cuts' else 0),0,'MACRO'))
+    def _asset_return(self,a,game_minutes,market_z,sector_z):
+        m=self.macro;dt=max(game_minutes,1e-6)
+        # Volatility inputs in this project are roughly short-horizon values; scale them by simulated time.
+        sigma=a.volatility*math.sqrt(dt/5.0)
+        cat=getattr(a,'category','')
+        rate_drag=max(0,m['policy_rate']-3.0)*.000012
+        growth_push=(m['gdp_growth']-2.0)*.000010
+        inflation_drag=max(0,m['inflation']-2.5)*.000008
+        drift=(growth_push-rate_drag-inflation_drag+m['sentiment']*.000012)*dt
+        beta=1.0
+        if cat in ('Tech','Consumer','Media'):beta=1.18
+        elif cat in ('Health','Consumer Staples'):beta=.72
+        elif cat=='Finance':beta=1.05;drift+=(m['policy_rate']-2.5)*.000004*dt
+        elif cat=='Energy':beta=.85;drift+=(m['inflation']-2.0)*.000008*dt
+        if isinstance(a,Crypto):beta=1.65;drift+=m['sentiment']*.000025*dt
+        if isinstance(a,Forex):beta=.35
+        if isinstance(a,Commodity):beta=.55
+        z=.62*beta*market_z+.42*sector_z+.58*random.gauss(0,1)
+        # Momentum/value-like investor behavior adds modest persistent flow rather than pure random walk.
+        h=list(a.history);mom=(h[-1]/h[-10]-1) if len(h)>=10 and h[-10] else 0
+        flow=max(-.00008,min(.00008,mom*.015))*dt
+        return drift+flow+sigma*z
+    def set_research_seed(self,seed):self.seed=int(seed);random.seed(self.seed);return self.seed
+    def macro_snapshot(self):return dict(self.macro,time=self.clock.time,source=self.real_macro_source,seed=self.seed)
+    def correlation(self,a,b):
+        if a is None or b is None:return 0.0
+        if a.symbol==b.symbol:return 1.0
+        ca,cb=getattr(a,'category',''),getattr(b,'category','')
+        corr=.28
+        if ca and ca==cb:corr=.72
+        if isinstance(a,Index) or isinstance(b,Index):corr=max(corr,.68)
+        if isinstance(a,Crypto) and isinstance(b,Crypto):corr=.82
+        if isinstance(a,Forex) and isinstance(b,Forex):corr=.48
+        pairs={frozenset(('CL=F','BZ=F')):.90,frozenset(('GC=F','SI=F')):.72,frozenset(('SPY','ES=F')):.94,frozenset(('BTC-USD','MSTR')):.78,frozenset(('BTC-USD','COIN')):.72,frozenset(('NVDA','AMD')):.78,frozenset(('GOOG','GOOGL')):.99}
+        return pairs.get(frozenset((a.symbol,b.symbol)),corr)
+    def correlated_assets(self,a,limit=10):
+        arr=[(self.correlation(a,b),b) for b in self.all_assets() if b is not a]
+        arr.sort(key=lambda x:abs(x[0]),reverse=True);return arr[:max(1,int(limit))]
     async def tick(self):
         if not self.running:return
-        if self.paused:await asyncio.sleep(.05);return
+        if self.paused:
+            self._last_real_tick=time.monotonic();await asyncio.sleep(.03);return
+        now=time.monotonic();real_dt=max(.001,min(.20,now-self._last_real_tick));self._last_real_tick=now
+        game_seconds=real_dt*60.0*max(.05,float(getattr(self,'time_warp',1.0)));game_minutes=game_seconds/60.0
         try:
-            self.clock.advance(self.step_minutes)
+            self.clock.advance_seconds(game_seconds);self._update_macro(game_minutes)
             with self._lock:
+                market_z=random.gauss(0,1);sector_cache={}
+                index_symbols={x.symbol for x in self.indexes}
                 for a in self.all_assets():
-                    if a.symbol in ('SPX','NDX','DJI','RUT'): continue
-                    shock=random.gauss(0,a.volatility);a.update_price(a.price*(1+shock),random.randint(100,50000),self.clock.current)
+                    if a.symbol in index_symbols:continue
+                    cat=getattr(a,'category','OTHER');sector_z=sector_cache.setdefault(cat,random.gauss(0,1))
+                    r=self._asset_return(a,game_minutes,market_z,sector_z);a.update_price(a.price*max(.75,1+r),random.randint(100,50000),self.clock.current)
                 for idx in self.indexes:
-                    comps=[self.get_asset(s) for s in idx.components if self.get_asset(s)];r=sum(c.change_percent()/100 for c in comps)/max(1,len(comps));idx.update_price(idx.price*(1+r*.08+random.gauss(0,idx.volatility)),random.randint(1000,100000),self.clock.current)
-                if random.random()<.012:self.news.append(generate_news(self.stocks,self.commodities))
-                if random.random()<.001:self.news.append(major())
-                self._process_orders()
-                if hasattr(self,'portfolio'):
-                    self.portfolio.best_net_worth=max(self.portfolio.best_net_worth,self.portfolio.mark_value(self.all_assets()))
-            self.data_status='SIMULATION RUNNING'
+                    comps=[self.get_asset(s) for s in idx.components if self.get_asset(s)]
+                    if comps:
+                        weighted=sum((c.price/max(.0001,c.previous_price)-1) for c in comps)/len(comps)
+                        idx.update_price(idx.price*max(.85,1+weighted+random.gauss(0,idx.volatility*.10*math.sqrt(max(game_minutes,.001)))),random.randint(1000,100000),self.clock.current)
+                event_prob=min(.08,.00018*game_minutes)
+                if random.random()<event_prob:self.news.append(generate_news(self.stocks,self.commodities))
+                if random.random()<event_prob*.03:self.news.append(major())
+                self._update_freight(game_minutes);self._update_geopolitics(game_minutes);self._process_orders();self._process_expirations()
+                if hasattr(self,'portfolio') and time.monotonic()-getattr(self,'_last_networth_calc',0)>2.0:
+                    self._last_networth_calc=time.monotonic();self.portfolio.best_net_worth=max(self.portfolio.best_net_worth,self.portfolio.mark_value(self.all_assets()))
+            self.visual_version+=1;self.data_status=f'SIMULATION RUNNING • {self.time_warp:.2f}x • CPI {self.macro["inflation"]:.2f}% • FED {self.macro["policy_rate"]:.2f}%'
         except Exception as e:
             self.errors.append(f'tick: {type(e).__name__}: {e}')
             if len(self.errors)>100:self.errors=self.errors[-100:]
-        await asyncio.sleep(max(.001,float(self.speed)))
+        await asyncio.sleep(max(.005,float(self.speed)))
     def start_background_loaders(self):
         if self._loader_started:return
         self._loader_started=True;threading.Thread(target=self._background_loader,daemon=True,name='MarketDataLoader').start()
     def _background_loader(self):
         self.data_status='SIMULATION + OPTIONAL LIVE DATA'
         try:
-            from data import fetch_many_latest
-            latest=fetch_many_latest([a.data_symbol for a in self.stocks[:20]],workers=6)
-            for a in self.stocks:
+            from data import fetch_many_latest,fetch_fred_macro_snapshot
+            assets=self.all_assets();latest=fetch_many_latest([a.data_symbol for a in assets],workers=8)
+            for a in assets:
                 c=latest.get(a.data_symbol)
-                if c:a.set_dataset('1d',[c])
+                if c:a.last_real_close=float(c.close);a.last_real_timestamp=c.timestamp;a.update_price(float(c.close),int(c.volume),self.clock.current,record=True)
+            snap=fetch_fred_macro_snapshot()
+            if snap:
+                self.macro.update({k:v for k,v in snap.items() if k in self.macro});self.real_macro_source='FRED';self.data_status='SIMULATION CALIBRATED TO FRED + MARKET QUOTES'
         except Exception as e:self.errors.append(f'background data: {e}')
+
+# ===== Stock Game Pro 1.0 production geopolitical / event-radar patches =====
+_Market_init_before_prod=Market.__init__
+def _sgp_market_init(self):
+    _Market_init_before_prod(self)
+    self._last_networth_calc=0.0
+    self.geopolitical_events=[]
+    self._geo_seq=1
+    self._geo_accum=0.0
+    self._spawn_geopolitical_event(initial=True)
+Market.__init__=_sgp_market_init
+
+def _sgp_spawn_geo(self,initial=False):
+    templates=[
+        ('MARITIME TENSION',24.5,57.0,['Energy','Freight'],['XOM','CVX','SHEL','BP','ZIM','FRO','STNG']),
+        ('REGIONAL CONFLICT RISK',34.5,36.0,['Industrial','Energy'],['BA','GE','PLTR','XOM','GC=F']),
+        ('TRADE ROUTE DISRUPTION',12.0,45.0,['Freight','Consumer'],['ZIM','MATX','SBLK','AMZN','WMT']),
+        ('PACIFIC SECURITY ALERT',22.0,121.0,['Tech','Industrial'],['TSM','NVDA','AAPL','SONY','TM']),
+    ]
+    name,lat,lon,sectors,symbols=random.choice(templates)
+    lead=random.uniform(180,900) if not initial else random.uniform(90,360)
+    ev={'id':self._geo_seq,'name':name,'lat':lat+random.uniform(-4,4),'lon':lon+random.uniform(-5,5),'sectors':sectors,'symbols':symbols,'minutes_to_event':lead,'initial_minutes':lead,'severity':random.uniform(.006,.028),'resolved':False,'status':'WATCH'}
+    self._geo_seq+=1;self.geopolitical_events.append(ev);self.geopolitical_events=self.geopolitical_events[-8:]
+    self.news.append(NewsEvent(f'GLOBAL RISK WATCH: {name} developing. Markets are monitoring possible disruption.',None,0,0,'GLOBAL'))
+    return ev
+Market._spawn_geopolitical_event=_sgp_spawn_geo
+
+def _sgp_update_geo(self,game_minutes):
+    self._geo_accum+=game_minutes
+    for ev in list(self.geopolitical_events):
+        if ev.get('resolved'):continue
+        ev['minutes_to_event']-=game_minutes
+        if ev['minutes_to_event']<=60 and ev.get('status')=='WATCH':
+            ev['status']='ELEVATED';self.news.append(NewsEvent(f'RISK ELEVATED: {ev["name"]} may affect {", ".join(ev["sectors"])} markets.',None,0,0,'GLOBAL'))
+        if ev['minutes_to_event']<=0:
+            ev['resolved']=True;ev['status']='IMPACT'
+            sev=ev['severity'];self.macro['sentiment']=max(-1,self.macro.get('sentiment',0)-sev*5)
+            for sym in ev['symbols']:
+                a=self.get_asset(sym)
+                if not a:continue
+                # Defense/industrial proxies can benefit from conflict spending while
+                # exposed cargo/consumer/tech names generally take risk-off pressure.
+                beneficial=a.category in ('Industrial',) and sym in ('BA','GE','PLTR')
+                shock=sev*(.45 if beneficial else -1.0)
+                a.update_price(a.price*(1+shock),random.randint(10000,120000),self.clock.current)
+            oil=self.get_asset('CL=F');gold=self.get_asset('GC=F')
+            if oil:oil.update_price(oil.price*(1+sev*.7),random.randint(10000,100000),self.clock.current)
+            if gold:gold.update_price(gold.price*(1+sev*.45),random.randint(10000,100000),self.clock.current)
+            self.news.append(NewsEvent(f'GLOBAL EVENT: {ev["name"]} materializes; cross-asset risk repricing underway.',None,-sev,sev*.08,'MAJOR'))
+    if self._geo_accum>=720:
+        self._geo_accum%=720
+        if len([x for x in self.geopolitical_events if not x.get('resolved')])<3 and random.random()<.55:self._spawn_geopolitical_event()
+Market._update_geopolitics=_sgp_update_geo
+
+# ===== Stock Game Pro 1.1 market-session / logistics production patch =====
+_Market_init_v11_base = Market.__init__
+def _sgp_v11_market_init(self):
+    _Market_init_v11_base(self)
+    self._session_open_state = {}
+    self._pending_gap_returns = {}
+    # Futures-style commodities trade on the simulator's CME clock unless explicitly overridden.
+    for a in self.commodities:
+        a.session = getattr(a, 'session', 'CME') or 'CME'
+    for a in self.stocks:
+        if not hasattr(a, 'session'): a.session = 'US'
+    for a in self.indexes:
+        if not hasattr(a, 'session'): a.session = 'US'
+    self.ports = [
+        {'name':'Los Angeles / Long Beach','lat':33.74,'lon':-118.25,'operator':'MATX','region':'US West'},
+        {'name':'New York / New Jersey','lat':40.67,'lon':-74.05,'operator':'AMKBY','region':'US East'},
+        {'name':'Rotterdam','lat':51.95,'lon':4.14,'operator':'DPW.DU','region':'Europe'},
+        {'name':'Jebel Ali / Dubai','lat':25.01,'lon':55.06,'operator':'DPW.DU','region':'Middle East'},
+        {'name':'Shanghai Yangshan','lat':30.62,'lon':122.06,'operator':'1199.HK','region':'China'},
+        {'name':'Hong Kong','lat':22.31,'lon':114.16,'operator':'0144.HK','region':'China'},
+        {'name':'Singapore','lat':1.26,'lon':103.84,'operator':'AMKBY','region':'Asia'},
+        {'name':'Tokyo / Yokohama','lat':35.45,'lon':139.66,'operator':'TM','region':'Japan'},
+    ]
+    # Attach port metadata to routes so the globe can expose investable transport chains.
+    route_ports=[('Shanghai Yangshan','Los Angeles / Long Beach'),('Singapore','Rotterdam'),('Rotterdam','New York / New Jersey'),('Los Angeles / Long Beach','Tokyo / Yokohama')]
+    for i,r in enumerate(self.freight_routes):
+        op,dp=route_ports[i % len(route_ports)];r['origin_port']=op;r['destination_port']=dp
+    self.air_routes=[
+        {'name':'Los Angeles → Tokyo','points':[(34.05,-118.25),(38,-150),(40,170),(35.7,139.7)],'hours':11,'origin':'Los Angeles / Long Beach','destination':'Tokyo / Yokohama'},
+        {'name':'New York → Rotterdam','points':[(40.7,-74),(48,-45),(52,4.5)],'hours':8,'origin':'New York / New Jersey','destination':'Rotterdam'},
+        {'name':'Dubai → Singapore','points':[(25.2,55.3),(18,72),(8,90),(1.3,103.8)],'hours':7,'origin':'Jebel Ali / Dubai','destination':'Singapore'},
+    ]
+    self.air_shipments=[]
+    carriers=['FDX','UPS','CPA'];owners=['AAPL','NVDA','AMZN','NKE','TSLA','BABA','SONY']
+    for i in range(7):
+        route=random.choice(self.air_routes)
+        self.air_shipments.append({'id':i,'name':f'Cargo Flight {i+1:02d}','carrier':random.choice(carriers),'cargo_owner':random.choice(owners),'route':route,'progress':random.random(),'cargo_value':random.randint(15,240)*1_000_000,'status':'AIRBORNE'})
+Market.__init__ = _sgp_v11_market_init
+
+def _sgp_asset_session(self,a):
+    if isinstance(a,Crypto): return 'CRYPTO'
+    if isinstance(a,Forex): return 'FX'
+    if isinstance(a,(Future,Commodity)): return getattr(a,'session','CME') or 'CME'
+    return getattr(a,'session','US') or 'US'
+Market.asset_session = _sgp_asset_session
+
+def _sgp_asset_market_open(self,a):
+    try:return bool(market_status(self.asset_session(a), self.clock.current))
+    except Exception:return True
+Market.asset_market_open = _sgp_asset_market_open
+
+def _sgp_queue_or_apply_return(self,a,r,volume=None):
+    if a is None:return
+    if self.asset_market_open(a):
+        a.update_price(a.price*max(.05,1+float(r)), volume or random.randint(5000,100000), self.clock.current)
+    else:
+        self._pending_gap_returns[a.symbol]=self._pending_gap_returns.get(a.symbol,0.0)+float(r)
+Market.queue_or_apply_return = _sgp_queue_or_apply_return
+
+def _sgp_apply_open_gap(self,a):
+    r=self._pending_gap_returns.pop(a.symbol,0.0)
+    if r:
+        a.update_price(a.price*max(.05,1+r),random.randint(10000,120000),self.clock.current)
+        self.news.append(NewsEvent(f'{a.symbol} opens with a {r*100:+.2f}% event gap after its local market reopened.',a.symbol,r,0,'MARKET'))
+Market._apply_open_gap = _sgp_apply_open_gap
+
+# Preserve the freight mechanics but make closed-market shocks queue for the next local open.
+_old_ship_shock_v11 = Market._apply_shipment_shock
+def _sgp_ship_shock_v11(self,sh,kind):
+    carrier=self.get_asset(sh['carrier']);owner=self.get_asset(sh['cargo_owner'])
+    severity=random.uniform(.008,.035) if kind=='STORM' else random.uniform(.012,.050)
+    self.queue_or_apply_return(carrier,-severity*.7)
+    self.queue_or_apply_return(owner,-severity)
+    self.macro['sentiment']=max(-1,self.macro.get('sentiment',0)-severity*2)
+    self.news.append(NewsEvent(f'{kind}: {sh["name"]} carrying {sh["cargo_owner"]} cargo is disrupted; {sh["carrier"]} logistics risk rises.',sh['cargo_owner'],-severity,0,'GLOBAL'))
+Market._apply_shipment_shock = _sgp_ship_shock_v11
+
+_old_update_freight_v11 = Market._update_freight
+def _sgp_update_transport_v11(self,game_minutes):
+    _old_update_freight_v11(self,game_minutes)
+    # Air cargo moves materially faster than ships. It is visual/gameplay state and
+    # intentionally cheap to update.
+    for fl in self.air_shipments:
+        hours=max(1,float(fl['route'].get('hours',8)));fl['progress'] += game_minutes/(hours*60.0)
+        if fl['progress']>=1:
+            carrier=self.get_asset(fl['carrier']);owner=self.get_asset(fl['cargo_owner'])
+            self.queue_or_apply_return(carrier,random.uniform(.0002,.0012));self.queue_or_apply_return(owner,random.uniform(.0001,.0007))
+            fl['route']=random.choice(self.air_routes);fl['progress']=0.0;fl['cargo_owner']=random.choice(['AAPL','NVDA','AMZN','NKE','TSLA','BABA','SONY']);fl['cargo_value']=random.randint(15,240)*1_000_000
+Market._update_freight = _sgp_update_transport_v11
+
+def _sgp_air_position(self,fl):
+    pts=fl['route']['points'];p=max(0,min(.999999,fl['progress']))*(len(pts)-1);i=int(p);f=p-i;(lat1,lon1),(lat2,lon2)=pts[i],pts[min(i+1,len(pts)-1)];return lat1+(lat2-lat1)*f,lon1+(lon2-lon1)*f
+Market.air_shipment_position = _sgp_air_position
+
+# Session-aware order processing: working stock/options orders wait for the underlying's local market.
+def _sgp_process_orders_v11(self):
+    for o in list(self.pending_orders):
+        a=o['asset']
+        if not self.asset_market_open(a):continue
+        p=a.ask if o['side'] in ('BUY','COVER') else a.bid;target=o['price'];typ=o.get('type','LIMIT')
+        if typ=='STOP':hit=target is None or (o['side'] in ('BUY','COVER') and p>=target) or (o['side'] in ('SELL','SHORT') and p<=target)
+        else:hit=typ=='MARKET' or target is None or (o['side'] in ('BUY','COVER') and p<=target) or (o['side'] in ('SELL','SHORT') and p>=target)
+        if hit:
+            try:
+                fn={'BUY':self.portfolio.buy_asset,'SELL':self.portfolio.sell_asset,'SHORT':self.portfolio.short_asset,'COVER':self.portfolio.cover_short}[o['side']];fn(a,o['qty']);self.pending_orders.remove(o)
+            except Exception as e:self.errors.append(f'order {o["id"]}: {e}');self.pending_orders.remove(o)
+    from game_core import OptionStrategy
+    for o in list(self.pending_option_orders):
+        c=o.get('contract');side=o.get('side','BUY');typ=o.get('type','LIMIT');target=o.get('price')
+        if c is None or not self.asset_market_open(c.underlying):continue
+        mark=c.ask if side=='BUY' else c.bid
+        if typ=='STOP':hit=target is None or (side=='BUY' and mark>=target) or (side=='SELL' and mark<=target)
+        else:hit=typ=='MARKET' or target is None or (side=='BUY' and mark<=target) or (side=='SELL' and mark>=target)
+        if hit:
+            try:
+                st=OptionStrategy(f'{side} {c}');st.add_leg(c,max(1,int(o.get('qty',1))),side);ok,_=self.portfolio.execute_strategy(st)
+                if ok:self.pending_option_orders.remove(o)
+            except Exception as e:self.errors.append(f'option order {o.get("id")}: {e}');self.pending_option_orders.remove(o)
+    for o in list(self.pending_spread_orders):
+        st=o.get('strategy');side=o.get('side','BUY');typ=o.get('type','LIMIT');target=o.get('price')
+        if st is None:continue
+        under=st.legs[0].contract.underlying if getattr(st,'legs',None) else None
+        if under is not None and not self.asset_market_open(under):continue
+        mark=abs(st.current_value())/max(1,len(getattr(st,'legs',[])));hit=typ=='MARKET' or target is None or (side=='BUY' and mark<=target) or (side=='SELL' and mark>=target)
+        if hit:
+            try:
+                ok,_=self.portfolio.execute_strategy(st)
+                if ok:self.pending_spread_orders.remove(o)
+            except Exception as e:self.errors.append(f'spread order: {e}');self.pending_spread_orders.remove(o)
+Market._process_orders = _sgp_process_orders_v11
+
+# Session-aware engine. Prices freeze outside each instrument's correlated exchange,
+# while macro/logistics/geopolitics continue to evolve and can queue an opening gap.
+async def _sgp_tick_v11(self):
+    if not self.running:return
+    if self.paused:
+        self._last_real_tick=time.monotonic();await asyncio.sleep(.03);return
+    now=time.monotonic();real_dt=max(.001,min(.20,now-self._last_real_tick));self._last_real_tick=now
+    game_seconds=real_dt*60.0*max(.05,float(getattr(self,'time_warp',1.0)));game_minutes=game_seconds/60.0
+    try:
+        self.clock.advance_seconds(game_seconds);self._update_macro(game_minutes)
+        with self._lock:
+            market_z=random.gauss(0,1);sector_cache={};index_symbols={x.symbol for x in self.indexes};opened_any=False
+            for a in self.all_assets():
+                session=self.asset_session(a);is_open=self.asset_market_open(a);prev=self._session_open_state.get(a.symbol,is_open);self._session_open_state[a.symbol]=is_open
+                if is_open and not prev:
+                    self._apply_open_gap(a);opened_any=True
+                if a.symbol in index_symbols or not is_open:continue
+                cat=getattr(a,'category','OTHER');sector_z=sector_cache.setdefault(cat,random.gauss(0,1));r=self._asset_return(a,game_minutes,market_z,sector_z);a.update_price(a.price*max(.75,1+r),random.randint(100,50000),self.clock.current)
+            for idx in self.indexes:
+                if not self.asset_market_open(idx):continue
+                comps=[self.get_asset(s) for s in idx.components if self.get_asset(s)]
+                if comps:
+                    weighted=sum((c.price/max(.0001,c.previous_price)-1) for c in comps)/len(comps);idx.update_price(idx.price*max(.85,1+weighted+random.gauss(0,idx.volatility*.10*math.sqrt(max(game_minutes,.001)))),random.randint(1000,100000),self.clock.current)
+            event_prob=min(.08,.00018*game_minutes)
+            if random.random()<event_prob:self.news.append(generate_news(self.stocks,self.commodities))
+            if random.random()<event_prob*.03:self.news.append(major())
+            self._update_freight(game_minutes);self._update_geopolitics(game_minutes);self._process_orders();self._process_expirations()
+            if hasattr(self,'portfolio') and time.monotonic()-getattr(self,'_last_networth_calc',0)>2.0:
+                self._last_networth_calc=time.monotonic();self.portfolio.best_net_worth=max(self.portfolio.best_net_worth,self.portfolio.mark_value(self.all_assets()))
+        self.visual_version+=1
+        if opened_any:self.visual_version+=1
+        self.data_status=f'SESSION-AWARE SIM • {self.time_warp:.2f}x • CPI {self.macro["inflation"]:.2f}% • FED {self.macro["policy_rate"]:.2f}%'
+    except Exception as e:
+        self.errors.append(f'tick: {type(e).__name__}: {e}')
+        if len(self.errors)>100:self.errors=self.errors[-100:]
+    await asyncio.sleep(max(.005,float(self.speed)))
+Market.tick = _sgp_tick_v11
+
+# Session-aware geopolitical impacts: closed securities gap when their market reopens.
+def _sgp_update_geo_v11(self,game_minutes):
+    self._geo_accum+=game_minutes
+    for ev in list(self.geopolitical_events):
+        if ev.get('resolved'):continue
+        ev['minutes_to_event']-=game_minutes
+        if ev['minutes_to_event']<=60 and ev.get('status')=='WATCH':
+            ev['status']='ELEVATED';self.news.append(NewsEvent(f'RISK ELEVATED: {ev["name"]} may affect {", ".join(ev["sectors"])} markets.',None,0,0,'GLOBAL'))
+        if ev['minutes_to_event']<=0:
+            ev['resolved']=True;ev['status']='IMPACT';sev=ev['severity'];self.macro['sentiment']=max(-1,self.macro.get('sentiment',0)-sev*5)
+            for sym in ev['symbols']:
+                a=self.get_asset(sym)
+                if not a:continue
+                beneficial=a.category in ('Industrial',) and sym in ('BA','GE','PLTR');shock=sev*(.45 if beneficial else -1.0);self.queue_or_apply_return(a,shock)
+            self.queue_or_apply_return(self.get_asset('CL=F'),sev*.7);self.queue_or_apply_return(self.get_asset('GC=F'),sev*.45)
+            self.news.append(NewsEvent(f'GLOBAL EVENT: {ev["name"]} materializes; cross-asset risk repricing underway.',None,-sev,sev*.08,'MAJOR'))
+    if self._geo_accum>=720:
+        self._geo_accum%=720
+        if len([x for x in self.geopolitical_events if not x.get('resolved')])<3 and random.random()<.55:self._spawn_geopolitical_event()
+Market._update_geopolitics=_sgp_update_geo_v11
+
+# ===== Stock Game Pro 1.2 extended-hours / skip-to-open patch =====
+# Regular exchange state remains authoritative for order execution.  US equities
+# receive a lower-volatility extended-hours quote stream from 04:00-20:00 ET so
+# the 1D chart can show pre/post-market activity into the following session.
+def _sgp_v12_regular_open(self,a):
+    try:return bool(market_status(self.asset_session(a), self.clock.current))
+    except Exception:return True
+Market.asset_regular_open = _sgp_v12_regular_open
+
+def _sgp_v12_quote_open(self,a):
+    code=self.asset_session(a)
+    if code=='US' and isinstance(a,(Stock,InternationalStock)):
+        try:return bool(market_status('EXT',self.clock.current))
+        except Exception:return self.asset_regular_open(a)
+    return self.asset_regular_open(a)
+Market.asset_quote_open = _sgp_v12_quote_open
+
+def _sgp_v12_next_open(self,a=None):
+    """Return the next regular-session open in the game's New York-naive clock."""
+    code=self.asset_session(a) if a is not None else 'US'
+    if code in ('CRYPTO',):return self.clock.current
+    from zoneinfo import ZoneInfo
+    sess=SESSIONS.get(code,SESSIONS['US'])
+    game=self.clock.current
+    aware=game.replace(tzinfo=ZoneInfo('America/New_York')) if game.tzinfo is None else game
+    local=aware.astimezone(ZoneInfo(sess.tz))
+    # FX is effectively a weekday session; choose next minute if already open.
+    if code=='FX' and market_status(code,game):return game
+    probe=local
+    for _ in range(10):
+        target=probe.replace(hour=sess.open_time.hour,minute=sess.open_time.minute,second=sess.open_time.second,microsecond=0)
+        if probe.weekday() in sess.weekdays and target>probe:break
+        probe=(probe+timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0)
+    # CME opens 17:00 CT Sunday-Thursday; Session helper already expresses 17:00.
+    target=target.astimezone(ZoneInfo('America/New_York')).replace(tzinfo=None)
+    return target
+Market.next_regular_open = _sgp_v12_next_open
+
+def _sgp_v12_skip_to_next_open(self,a=None):
+    target=self.next_regular_open(a)
+    now=self.clock.current
+    if target<=now:return 0.0
+    minutes=(target-now).total_seconds()/60.0
+    # Advance slow world-state once, rather than iterating thousands of engine ticks.
+    try:self._update_macro(minutes)
+    except Exception:pass
+    try:self._update_freight(minutes)
+    except Exception:pass
+    try:self._update_geopolitics(minutes)
+    except Exception:pass
+    self.clock.current=target
+    self._last_real_tick=time.monotonic()
+    try:self._process_expirations()
+    except Exception:pass
+    self.visual_version+=1
+    self.data_status=f'SKIPPED TO {_sgp_asset_session(self,a) if False else self.asset_session(a) if a else "US"} OPEN • {self.clock.time}'
+    return minutes
+Market.skip_to_next_open = _sgp_v12_skip_to_next_open
+
+async def _sgp_tick_v12(self):
+    if not self.running:return
+    if self.paused:
+        self._last_real_tick=time.monotonic();await asyncio.sleep(.03);return
+    now=time.monotonic();real_dt=max(.001,min(.20,now-self._last_real_tick));self._last_real_tick=now
+    game_seconds=real_dt*60.0*max(.05,float(getattr(self,'time_warp',1.0)));game_minutes=game_seconds/60.0
+    try:
+        self.clock.advance_seconds(game_seconds);self._update_macro(game_minutes)
+        with self._lock:
+            market_z=random.gauss(0,1);sector_cache={};index_symbols={x.symbol for x in self.indexes};opened_any=False
+            for a in self.all_assets():
+                regular=self.asset_regular_open(a);prev=self._session_open_state.get(a.symbol,regular);self._session_open_state[a.symbol]=regular
+                if regular and not prev:self._apply_open_gap(a);opened_any=True
+                if a.symbol in index_symbols or not self.asset_quote_open(a):continue
+                cat=getattr(a,'category','OTHER');sector_z=sector_cache.setdefault(cat,random.gauss(0,1));r=self._asset_return(a,game_minutes,market_z,sector_z)
+                # US pre/post-market is intentionally thinner and less volatile than regular hours.
+                if self.asset_session(a)=='US' and not regular:r*=.34
+                a.update_price(a.price*max(.75,1+r),random.randint(30,15000) if not regular else random.randint(100,50000),self.clock.current)
+            for idx in self.indexes:
+                if not self.asset_regular_open(idx):continue
+                comps=[self.get_asset(s) for s in idx.components if self.get_asset(s)]
+                if comps:
+                    weighted=sum((c.price/max(.0001,c.previous_price)-1) for c in comps)/len(comps);idx.update_price(idx.price*max(.85,1+weighted+random.gauss(0,idx.volatility*.10*math.sqrt(max(game_minutes,.001)))),random.randint(1000,100000),self.clock.current)
+            event_prob=min(.08,.00018*game_minutes)
+            if random.random()<event_prob:self.news.append(generate_news(self.stocks,self.commodities))
+            if random.random()<event_prob*.03:self.news.append(major())
+            self._update_freight(game_minutes);self._update_geopolitics(game_minutes);self._process_orders();self._process_expirations()
+            if hasattr(self,'portfolio') and time.monotonic()-getattr(self,'_last_networth_calc',0)>2.0:
+                self._last_networth_calc=time.monotonic();self.portfolio.best_net_worth=max(self.portfolio.best_net_worth,self.portfolio.mark_value(self.all_assets()))
+        self.visual_version+=1+(1 if opened_any else 0)
+        self.data_status=f'EXTENDED-HOURS SIM • {self.time_warp:.2f}x • CPI {self.macro["inflation"]:.2f}% • FED {self.macro["policy_rate"]:.2f}%'
+    except Exception as e:
+        self.errors.append(f'tick: {type(e).__name__}: {e}')
+        if len(self.errors)>100:self.errors=self.errors[-100:]
+    await asyncio.sleep(max(.005,float(self.speed)))
+Market.tick=_sgp_tick_v12
+
+# ===== Stock Game Pro 1.3 global sessions / overnight ECN / history patch =====
+def _sgp_v13_trade_state(self,a):
+    """Human-readable execution state.
+
+    Listed equities use their local exchange as the regular session and a simulated
+    global ECN outside that session on weekdays. Listed options remain local-session only.
+    Futures/FX/crypto keep their native session behavior.
+    """
+    code=self.asset_session(a)
+    if code=='CRYPTO':return '24/7'
+    if isinstance(a,Forex):
+        return 'REGULAR' if self.asset_regular_open(a) else 'CLOSED'
+    if isinstance(a,(Future,Commodity)):
+        return 'REGULAR' if self.asset_regular_open(a) else 'CLOSED'
+    if isinstance(a,(Stock,InternationalStock)):
+        if self.asset_regular_open(a):return 'REGULAR'
+        # Global stock ECN: 24x5 in the simulator, with a short 20:00 ET maintenance pause.
+        dt=self.clock.current
+        if dt.weekday()<5:
+            minute=dt.hour*60+dt.minute
+            if not (20*60 <= minute < 20*60+15):return 'OVERNIGHT ECN'
+        return 'CLOSED'
+    return 'REGULAR' if self.asset_regular_open(a) else 'CLOSED'
+Market.asset_trade_state=_sgp_v13_trade_state
+
+def _sgp_v13_stock_allowed(self,a):
+    if isinstance(a,(Stock,InternationalStock)):return self.asset_trade_state(a) in ('REGULAR','OVERNIGHT ECN')
+    return self.asset_regular_open(a)
+Market.stock_trading_allowed=_sgp_v13_stock_allowed
+
+def _sgp_v13_quote_open(self,a):
+    if isinstance(a,(Stock,InternationalStock)):return self.stock_trading_allowed(a)
+    return self.asset_regular_open(a)
+Market.asset_quote_open=_sgp_v13_quote_open
+
+# Stock working orders can execute on the global stock ECN; listed options wait for
+# the underlying's regular local exchange session.
+def _sgp_process_orders_v13(self):
+    for o in list(self.pending_orders):
+        a=o['asset']
+        if not self.stock_trading_allowed(a):continue
+        p=a.ask if o['side'] in ('BUY','COVER') else a.bid;target=o['price'];typ=o.get('type','LIMIT')
+        if typ=='STOP':hit=target is None or (o['side'] in ('BUY','COVER') and p>=target) or (o['side'] in ('SELL','SHORT') and p<=target)
+        else:hit=typ=='MARKET' or target is None or (o['side'] in ('BUY','COVER') and p<=target) or (o['side'] in ('SELL','SHORT') and p>=target)
+        if hit:
+            try:
+                fn={'BUY':self.portfolio.buy_asset,'SELL':self.portfolio.sell_asset,'SHORT':self.portfolio.short_asset,'COVER':self.portfolio.cover_short}[o['side']]
+                ok,_=fn(a,o['qty'])
+                if ok:self.pending_orders.remove(o)
+            except Exception as e:self.errors.append(f'order {o.get("id")}: {e}');self.pending_orders.remove(o)
+    from game_core import OptionStrategy
+    for o in list(self.pending_option_orders):
+        c=o.get('contract');side=o.get('side','BUY');typ=o.get('type','LIMIT');target=o.get('price')
+        if c is None or not self.asset_regular_open(c.underlying):continue
+        mark=c.ask if side=='BUY' else c.bid
+        if typ=='STOP':hit=target is None or (side=='BUY' and mark>=target) or (side=='SELL' and mark<=target)
+        else:hit=typ=='MARKET' or target is None or (side=='BUY' and mark<=target) or (side=='SELL' and mark>=target)
+        if hit:
+            try:
+                st=OptionStrategy(f'{side} {c}');st.add_leg(c,max(1,int(o.get('qty',1))),side);ok,_=self.portfolio.execute_strategy(st)
+                if ok and o in self.pending_option_orders:self.pending_option_orders.remove(o)
+            except Exception as e:self.errors.append(f'option order {o.get("id")}: {e}');self.pending_option_orders.remove(o)
+    for o in list(self.pending_spread_orders):
+        st=o.get('strategy');under=st.legs[0].contract.underlying if st is not None and getattr(st,'legs',None) else None
+        if st is None or (under is not None and not self.asset_regular_open(under)):continue
+        side=o.get('side','BUY');typ=o.get('type','LIMIT');target=o.get('price');mark=abs(st.current_value())/max(1,len(getattr(st,'legs',[])))
+        hit=typ=='MARKET' or target is None or (side=='BUY' and mark<=target) or (side=='SELL' and mark>=target)
+        if hit:
+            try:
+                ok,_=self.portfolio.execute_strategy(st)
+                if ok and o in self.pending_spread_orders:self.pending_spread_orders.remove(o)
+            except Exception as e:self.errors.append(f'spread order: {e}');self.pending_spread_orders.remove(o)
+Market._process_orders=_sgp_process_orders_v13
+
+# Price engine: regular local sessions get full liquidity; global-stock ECN gets a
+# thinner overnight quote stream. International stocks therefore retain their local
+# open/close semantics but are still tradable during US hours through the ECN layer.
+_tick_v13_base=Market.tick
+async def _sgp_tick_v13(self):
+    if not self.running:return
+    if self.paused:
+        self._last_real_tick=time.monotonic();await asyncio.sleep(.03);return
+    now=time.monotonic();real_dt=max(.001,min(.20,now-self._last_real_tick));self._last_real_tick=now
+    game_seconds=real_dt*60.0*max(.05,float(getattr(self,'time_warp',1.0)));game_minutes=game_seconds/60.0
+    try:
+        self.clock.advance_seconds(game_seconds);self._update_macro(game_minutes)
+        with self._lock:
+            market_z=random.gauss(0,1);sector_cache={};index_symbols={x.symbol for x in self.indexes};opened_any=False
+            for a in self.all_assets():
+                regular=self.asset_regular_open(a);prev=self._session_open_state.get(a.symbol,regular);self._session_open_state[a.symbol]=regular
+                if regular and not prev:self._apply_open_gap(a);opened_any=True
+                if a.symbol in index_symbols or not self.asset_quote_open(a):continue
+                cat=getattr(a,'category','OTHER');sector_z=sector_cache.setdefault(cat,random.gauss(0,1));r=self._asset_return(a,game_minutes,market_z,sector_z)
+                state=self.asset_trade_state(a)
+                if state=='OVERNIGHT ECN':r*=.28;vol=random.randint(10,7000)
+                else:vol=random.randint(100,50000)
+                a.update_price(a.price*max(.75,1+r),vol,self.clock.current)
+            for idx in self.indexes:
+                # Index cash levels only update during their own local cash session.
+                if not self.asset_regular_open(idx):continue
+                comps=[self.get_asset(s) for s in idx.components if self.get_asset(s)]
+                if comps:
+                    weighted=sum((c.price/max(.0001,c.previous_price)-1) for c in comps)/len(comps);idx.update_price(idx.price*max(.85,1+weighted+random.gauss(0,idx.volatility*.10*math.sqrt(max(game_minutes,.001)))),random.randint(1000,100000),self.clock.current)
+            event_prob=min(.08,.00018*game_minutes)
+            if random.random()<event_prob:self.news.append(generate_news(self.stocks,self.commodities))
+            if random.random()<event_prob*.03:self.news.append(major())
+            self._update_freight(game_minutes);self._update_geopolitics(game_minutes);self._process_orders();self._process_expirations()
+            if hasattr(self,'portfolio') and time.monotonic()-getattr(self,'_last_networth_calc',0)>2.0:
+                self._last_networth_calc=time.monotonic();self.portfolio.best_net_worth=max(self.portfolio.best_net_worth,self.portfolio.mark_value(self.all_assets()))
+        self.visual_version+=1+(1 if opened_any else 0)
+        self.data_status=f'GLOBAL SESSION + ECN • {self.time_warp:.2f}x • CPI {self.macro["inflation"]:.2f}% • FED {self.macro["policy_rate"]:.2f}%'
+    except Exception as e:
+        self.errors.append(f'tick: {type(e).__name__}: {e}')
+        if len(self.errors)>100:self.errors=self.errors[-100:]
+    await asyncio.sleep(max(.008,float(self.speed)))
+Market.tick=_sgp_tick_v13
+
+# More realistic listed port operators for the logistics view.
+_Market_init_v13_base=Market.__init__
+def _sgp_market_init_v13(self):
+    _Market_init_v13_base(self)
+    by_name={p['name']:p for p in getattr(self,'ports',[])}
+    upgrades={
+      'Rotterdam':'HHFA.DE','Jebel Ali / Dubai':'DPW.DU','Shanghai Yangshan':'1199.HK','Hong Kong':'0144.HK',
+      'Singapore':'5246.KL','Tokyo / Yokohama':'POT.NZ','Los Angeles / Long Beach':'MATX','New York / New Jersey':'AMKBY'
+    }
+    for name,sym in upgrades.items():
+        if name in by_name:by_name[name]['operator']=sym
+    # Extra investable ports.
+    extras=[
+      {'name':'Manila','lat':14.59,'lon':120.95,'operator':'ICT.PS','region':'Southeast Asia'},
+      {'name':'Mundra','lat':22.74,'lon':69.70,'operator':'ADANIPORTS.NS','region':'India'},
+      {'name':'Santos','lat':-23.96,'lon':-46.30,'operator':'STBP3.SA','region':'Brazil'},
+      {'name':'Tauranga','lat':-37.67,'lon':176.17,'operator':'POT.NZ','region':'New Zealand'},
+    ]
+    existing={p['name'] for p in self.ports};self.ports.extend([p for p in extras if p['name'] not in existing])
+Market.__init__=_sgp_market_init_v13
+
+# Background full-history hydrator. It uses data.py's persistent cache, runs at low
+# concurrency, and never resets the simulator's live price when a dataset arrives.
+def _sgp_weekly_from_daily(candles):
+    if not candles:return []
+    out=[];bucket=[];key=None
+    for c in candles:
+        k=c.timestamp.isocalendar()[:2]
+        if key is not None and k!=key and bucket:
+            out.append(Candle(bucket[0].timestamp,bucket[0].open,max(x.high for x in bucket),min(x.low for x in bucket),bucket[-1].close,sum(x.volume for x in bucket)))
+            bucket=[]
+        key=k;bucket.append(c)
+    if bucket:out.append(Candle(bucket[0].timestamp,bucket[0].open,max(x.high for x in bucket),min(x.low for x in bucket),bucket[-1].close,sum(x.volume for x in bucket)))
+    return out
+
+_start_loaders_v13_base=Market.start_background_loaders
+def _sgp_start_loaders_v13(self):
+    _start_loaders_v13_base(self)
+    if getattr(self,'_full_history_loader_started',False):return
+    self._full_history_loader_started=True
+    def hydrate():
+        try:
+            from data import fetch_history_max
+            from concurrent.futures import ThreadPoolExecutor,as_completed
+            assets=list(self.all_assets())
+            def one(a):return a,fetch_history_max(getattr(a,'data_symbol',a.symbol))
+            done=0
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                futs=[ex.submit(one,a) for a in assets]
+                for fut in as_completed(futs):
+                    try:a,candles=fut.result()
+                    except Exception:continue
+                    if candles:
+                        with a.data_lock:
+                            # Historical dataset only; preserve the live simulator mark.
+                            a.datasets['1d']=candles
+                            a.datasets['1wk']=_sgp_weekly_from_daily(candles)
+                            a.inception_date=candles[0].timestamp.date().isoformat();a.inception_price=float(candles[0].open);a.data_loaded=True
+                        done+=1
+                    if done%10==0:self.data_status=f'HISTORY CACHE • {done}/{len(assets)} assets ready'
+            self.data_status=f'REAL HISTORY READY • {done}/{len(assets)} assets • simulation overlay active'
+            self.visual_version+=1
+        except Exception as e:self.errors.append(f'history hydrator: {e}')
+    threading.Thread(target=hydrate,daemon=True,name='FullHistoryHydrator').start()
+Market.start_background_loaders=_sgp_start_loaders_v13
+
+
+# ===== Stock Game Pro 1.4 production polish =====
+# Make weekends immediately obvious everywhere the authoritative game clock is shown.
+def _sgp_clock_time_v14(self):
+    return self.current.strftime('%a %Y-%m-%d %H:%M:%S')
+GameClock.time=property(_sgp_clock_time_v14)
+
+def _sgp_clock_utc_v14(self):
+    return self.current.replace(tzinfo=ZoneInfo('America/New_York')).astimezone(timezone.utc).strftime('%a %H:%M:%S UTC')
+GameClock.utc_time=property(_sgp_clock_utc_v14)
+
+# Corporate actions are deliberately infrequent and occur only on regular-session days.
+# Splits preserve investor value mechanically, dilution/buybacks change shares outstanding,
+# and dividends are paid to long shareholders. All actions are surfaced through the news tape.
+_Market_init_v14_base=Market.__init__
+def _sgp_market_init_v14(self):
+    _Market_init_v14_base(self)
+    self.corporate_events=[];self._corp_last_date=None
+Market.__init__=_sgp_market_init_v14
+
+def _sgp_corporate_action_cycle(self):
+    d=self.clock.current.date()
+    if self._corp_last_date==d:return
+    self._corp_last_date=d
+    if self.clock.current.weekday()>=5:return
+    liquid=[a for a in self.stocks if getattr(a,'price',0)>2]
+    if not liquid:return
+    # About one event every ~18 simulated weekdays for the whole universe.
+    if random.random()>.055:return
+    a=random.choice(liquid);r=random.random();event=None
+    if r<.28 and a.price>20:
+        ratio=random.choice((2,3,4,5,10));a.split(ratio);event=f'{a.symbol} announces and executes a {ratio}-for-1 stock split.'
+    elif r<.52:
+        pct=random.uniform(.015,.08);a.shares_outstanding*=1+pct;a.market_cap=a.price*a.shares_outstanding
+        # Dilution is a genuine per-share supply shock, not an accounting-only label.
+        a.update_price(a.price/(1+pct*.80),random.randint(20000,150000),self.clock.current)
+        event=f'{a.symbol} issues new equity equal to {pct*100:.1f}% of shares outstanding; dilution pressures the share price.'
+    elif r<.76:
+        pct=random.uniform(.01,.06);a.shares_outstanding=max(1,a.shares_outstanding*(1-pct));a.market_cap=a.price*a.shares_outstanding
+        a.update_price(a.price*(1+pct*.45),random.randint(20000,150000),self.clock.current)
+        event=f'{a.symbol} completes a {pct*100:.1f}% share-count buyback; remaining shares receive a modest repricing benefit.'
+    else:
+        y=random.uniform(.001,.012);div=a.price*y
+        if hasattr(self,'portfolio'):
+            q=max(0,self.portfolio.positions.get(a.symbol,0));self.portfolio.cash+=q*div
+        event=f'{a.symbol} pays a ${div:.2f} simulated cash dividend per share.'
+    if event:
+        rec={'time':self.clock.current,'symbol':a.symbol,'text':event};self.corporate_events.append(rec);self.corporate_events=self.corporate_events[-200:]
+        self.news.append(NewsEvent(event,a.symbol,0,0,'CORPORATE'))
+Market._corporate_action_cycle=_sgp_corporate_action_cycle
+
+_tick_v14_base=Market.tick
+async def _sgp_tick_v14(self):
+    await _tick_v14_base(self)
+    # Base tick has already advanced the clock. Corporate action check is O(1) on most ticks.
+    try:self._corporate_action_cycle()
+    except Exception as e:
+        self.errors.append(f'corporate action: {e}')
+Market.tick=_sgp_tick_v14
+
+
+# ===== Stock Game Pro 1.6 final polish: earnings + logistics fundamentals =====
+from datetime import timedelta as _sgp_td_v16
+
+_Market_init_v16_base = Market.__init__
+def _sgp_market_init_v16(self):
+    _Market_init_v16_base(self)
+    self.company_fundamentals={}
+    self.logistics_losses={}
+    self.earnings_events=[]
+    now=self.clock.current.date()
+    for a in self.stocks:
+        base_rev=max(50_000_000.0, float(getattr(a,'market_cap',1e9))*random.uniform(.08,.35))
+        margin=random.uniform(.04,.28)
+        self.company_fundamentals[a.symbol]={
+            'quarter_revenue':base_rev,
+            'quarter_eps':max(.01,base_rev*margin/max(1.0,getattr(a,'shares_outstanding',1e7))),
+            'margin':margin,
+            'growth':random.uniform(-.03,.12),
+            'next_earnings':now+_sgp_td_v16(days=random.randint(12,85)),
+            'last_report':None,
+            'last_surprise':0.0,
+            'logistics_drag':0.0,
+        }
+Market.__init__=_sgp_market_init_v16
+
+_ship_shock_v16_base=Market._apply_shipment_shock
+def _sgp_ship_shock_v16(self,sh,kind):
+    _ship_shock_v16_base(self,sh,kind)
+    sev=.0
+    try:
+        sev=float(self.freight_events[-1][-1]) if self.freight_events else random.uniform(.01,.04)
+    except Exception:sev=.02
+    value=float(sh.get('cargo_value',0.0));owner=sh.get('cargo_owner');carrier=sh.get('carrier')
+    # Damaged/intercepted cargo reduces the next reported quarter's realized revenue.
+    if owner:self.logistics_losses[owner]=self.logistics_losses.get(owner,0.0)+value*min(.65,.18+sev*6)
+    if carrier:self.logistics_losses[carrier]=self.logistics_losses.get(carrier,0.0)+value*min(.20,.04+sev*2)
+    sh['damage_value']=value*min(.65,.18+sev*6);sh['status']=f'{kind} • EST LOSS ${sh["damage_value"]/1e6:,.0f}M'
+Market._apply_shipment_shock=_sgp_ship_shock_v16
+
+_update_freight_v16_base=Market._update_freight
+def _sgp_update_freight_v16(self,game_minutes):
+    # Hazards move with world time. Pirates travel along the same route in the ship's
+    # direction at ~55% vessel speed; storms drift more slowly. Camera FPS never changes this.
+    for sh in getattr(self,'shipments',[]):
+        if sh.get('hazard')=='PIRATES' and not sh.get('hazard_resolved'):
+            sh['hazard_progress']=min(.995,float(sh.get('hazard_progress',.6))+game_minutes/max(1,sh['route']['days']*1440)*.55)
+        elif sh.get('hazard')=='STORM' and not sh.get('hazard_resolved'):
+            sh['hazard_progress']=min(.995,float(sh.get('hazard_progress',.6))+game_minutes/max(1,sh['route']['days']*1440)*.12)
+    _update_freight_v16_base(self,game_minutes)
+Market._update_freight=_sgp_update_freight_v16
+
+def _sgp_process_earnings_v16(self):
+    today=self.clock.current.date()
+    if getattr(self,'_earnings_check_day_v16',None)==today:return
+    self._earnings_check_day_v16=today
+    for a in self.stocks:
+        f=self.company_fundamentals.get(a.symbol)
+        if not f or today < f['next_earnings']:continue
+        macro=getattr(self,'macro',{})
+        demand=(float(macro.get('gdp_growth',2.0))-2.0)*.012 - max(0,float(macro.get('policy_rate',4.0))-4.0)*.004
+        sector_noise=random.gauss(0,.035)
+        growth=max(-.35,min(.45,float(f.get('growth',0))+demand+sector_noise))
+        expected=float(f['quarter_revenue'])*(1+float(f.get('growth',0)))
+        logistics=float(self.logistics_losses.pop(a.symbol,0.0))
+        realized=max(1e6,float(f['quarter_revenue'])*(1+growth)-logistics)
+        surprise=(realized-expected)/max(1.0,expected)
+        margin=max(.01,min(.45,float(f['margin'])+random.gauss(0,.012)-min(.08,logistics/max(realized,1)*.3)))
+        eps=max(-20.0,min(100.0,realized*margin/max(1.0,getattr(a,'shares_outstanding',1e7))))
+        guide=random.gauss(growth*.35,.025)
+        impact=max(-.14,min(.14,surprise*.65+guide*.45-(logistics/max(expected,1))*1.2))
+        self.queue_or_apply_return(a,impact,random.randint(30000,250000))
+        f.update(quarter_revenue=realized,quarter_eps=eps,margin=margin,growth=max(-.15,min(.25,growth*.65+random.gauss(0,.025))),next_earnings=today+_sgp_td_v16(days=random.randint(82,98)),last_report=today,last_surprise=surprise,logistics_drag=logistics)
+        miss='BEAT' if surprise>=0 else 'MISS';drag=f' • logistics loss ${logistics/1e6:,.0f}M' if logistics>0 else ''
+        headline=f'{a.symbol} EARNINGS {miss}: revenue ${realized/1e9:,.2f}B ({surprise*100:+.1f}% vs estimate), EPS ${eps:.2f}, guidance {guide*100:+.1f}%{drag}.'
+        ev=NewsEvent(headline,a.symbol,impact,0,'EARNINGS');self.news.append(ev);self.earnings_events.append({'time':self.clock.current,'symbol':a.symbol,'revenue':realized,'eps':eps,'surprise':surprise,'impact':impact,'logistics_loss':logistics})
+        self.earnings_events=self.earnings_events[-500:]
+Market._process_earnings_v16=_sgp_process_earnings_v16
+
+_tick_v16_base=Market.tick
+async def _sgp_tick_v16(self):
+    await _tick_v16_base(self)
+    if not self.paused:
+        try:self._process_earnings_v16()
+        except Exception as e:self.errors.append(f'earnings v1.6: {e}')
+Market.tick=_sgp_tick_v16
+
+def _sgp_asset_fundamentals_v16(self,a):
+    f=self.company_fundamentals.get(getattr(a,'symbol',''),{})
+    if not f:return {}
+    return dict(f, logistics_pending=float(self.logistics_losses.get(a.symbol,0.0)))
+Market.asset_fundamentals=_sgp_asset_fundamentals_v16
