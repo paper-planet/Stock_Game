@@ -4499,3 +4499,194 @@ class CasinoWindow(CasinoWindow):
 
 def _sgp_casino_v18_final(self):return CasinoWindow(self.root,self.portfolio,self.market)
 App.casino=_sgp_casino_v18_final
+
+# ===== Stock Game Pro 1.9 chart sync / professional order controls / experiment lab =====
+from game_core import Candle as _SGP_Candle_v19
+
+# Keep the newest visible candle pinned to the same live price shown in the ticker/watchlist.
+_Chart_data_v19_base=Chart.data
+def _sgp_chart_data_v19(self):
+    d=list(_Chart_data_v19_base(self))
+    if not d or self.asset is None:return d
+    if int(getattr(self,'view_offset',0))>0 or (getattr(self,'pan_mode',False) and not getattr(self,'follow_latest',True)):
+        return d
+    p=float(self.asset.price);now=getattr(self.app.market.clock,'current',d[-1].timestamp)
+    last=d[-1]
+    # Copy rather than mutating historical/cache candles. If the latest bar is from the
+    # current simulator day, treat the live quote as its close; otherwise append a live print.
+    if getattr(last.timestamp,'date',lambda:None)()==getattr(now,'date',lambda:None)():
+        d[-1]=_SGP_Candle_v19(last.timestamp,float(last.open),max(float(last.high),p),min(float(last.low),p),p,int(last.volume))
+    else:
+        prev=float(getattr(self.asset,'previous_price',p));d.append(_SGP_Candle_v19(now,prev,max(prev,p),min(prev,p),p,int(max(0,getattr(self.asset,'volume',0)))))
+    return d
+Chart.data=_sgp_chart_data_v19
+
+_Chart_init_v19_base=Chart.__init__
+def _sgp_chart_init_v19(self,parent,app,index):
+    _Chart_init_v19_base(self,parent,app,index);self.vertical_scale=1.0
+Chart.__init__=_sgp_chart_init_v19
+
+def _sgp_price_bounds_v19(self):
+    d=self.data()
+    if not d:return (0,1)
+    lo=min(float(x.low) for x in d);hi=max(float(x.high) for x in d)
+    if self.asset is not None and int(getattr(self,'view_offset',0))==0:
+        p=float(self.asset.price);lo=min(lo,p);hi=max(hi,p)
+    raw=max(1e-8,hi-lo);scale=max(.25,min(8.0,float(getattr(self,'vertical_scale',1.0))))
+    center=float(self.asset.price) if self.asset is not None and int(getattr(self,'view_offset',0))==0 else (hi+lo)/2
+    half=max(raw/(2*scale),max(abs(center)*.00005,1e-6));return center-half,center+half
+Chart.price_bounds=_sgp_price_bounds_v19
+
+def _sgp_set_vertical_scale_v19(self,value):
+    try:self.vertical_scale=max(.25,min(8.0,float(value)))
+    except Exception:self.vertical_scale=1.0
+    self._key=None;self.request_draw(force=True)
+Chart.set_vertical_scale=_sgp_set_vertical_scale_v19
+
+# Stable order rows with explicit cancellation support.
+def _sgp_refresh_orders_v19(self):
+    if not hasattr(self,'orders_view'):return
+    keep=self.orders_view.selection();keep=keep[0] if keep else None
+    wanted=[]
+    for o in self.market.pending_orders:
+        a=o.get('asset');iid=f"STOCK:{o.get('id')}";wanted.append((iid,(o.get('id',''),getattr(a,'symbol',''),o.get('side',''),o.get('type',''),f"{o.get('qty',0):,}",f"${float(o.get('price') or 0):,.2f}",'WORKING')))
+    for o in self.market.pending_option_orders:
+        c=o.get('contract');iid=f"OPTION:{o.get('id')}";wanted.append((iid,(o.get('id',''),getattr(getattr(c,'underlying',None),'symbol',''),o.get('side',''),f"OPT {o.get('type','')}",o.get('qty',1),f"${float(o.get('price') or 0):,.2f}",'WORKING')))
+    for o in self.market.pending_spread_orders:
+        iid=f"SPREAD:{o.get('id')}";st=o.get('strategy');wanted.append((iid,(o.get('id',''),getattr(st,'name','SPREAD'),o.get('side',''),f"SPREAD {o.get('type','')}",len(getattr(st,'legs',[])),f"${float(o.get('price') or 0):,.2f}",'WORKING')))
+    existing=set(self.orders_view.get_children());need={i for i,_ in wanted}
+    for iid in existing-need:self.orders_view.delete(iid)
+    for idx,(iid,vals) in enumerate(wanted):
+        if self.orders_view.exists(iid):self.orders_view.item(iid,values=vals);self.orders_view.move(iid,'end',idx)
+        else:self.orders_view.insert('','end',iid=iid,values=vals)
+    if keep and self.orders_view.exists(keep):self.orders_view.selection_set(keep);self.orders_view.focus(keep)
+App.refresh_orders=_sgp_refresh_orders_v19
+
+def _sgp_cancel_selected_order_v19(self):
+    sel=self.orders_view.selection() if hasattr(self,'orders_view') else ()
+    if not sel:return messagebox.showwarning('Cancel order','Select a working order first.')
+    iid=sel[0]
+    try:kind,oid=iid.split(':',1)
+    except Exception:return messagebox.showerror('Cancel order','Unable to identify the selected working order.')
+    ok,msg=self.market.cancel_order(oid,kind);self.refresh_orders();self.status_flash(msg)
+    if not ok:messagebox.showwarning('Cancel order',msg)
+    for c in list(getattr(self,'charts',()))+list(getattr(self,'extra_charts',())):
+        try:c.request_draw(force=True)
+        except Exception:pass
+App.cancel_selected_order=_sgp_cancel_selected_order_v19
+
+def _sgp_orders_context_v19(self,e):
+    iid=self.orders_view.identify_row(e.y)
+    if iid:self.orders_view.selection_set(iid);self.orders_view.focus(iid)
+    m=tk.Menu(self.orders_view,tearoff=0);m.add_command(label='CANCEL SELECTED ORDER',command=self.cancel_selected_order);m.add_command(label='REFRESH ORDERS',command=self.refresh_orders);m.tk_popup(e.x_root,e.y_root)
+App.orders_context=_sgp_orders_context_v19
+
+# Market-conditions / whale / options experimentation workstation.
+def _sgp_market_conditions_lab_v19(self):
+    w=ToolWindow(self.root);w.style_window('MARKET CONDITIONS • WHALE / OPTIONS LAB','720x700');w.resizable(True,True)
+    ttk.Label(w,text='MARKET CONDITIONS EXPERIMENT LAB',font=('Arial',16,'bold')).pack(anchor='w',padx=16,pady=(16,3))
+    ttk.Label(w,text='Change simulated volatility, liquidity, macro sentiment and directional whale flow. These settings affect the entire simulated market and option IV/spreads.',wraplength=670,foreground=MUTED).pack(anchor='w',padx=16,pady=(0,12))
+    vars={
+        'Volatility':tk.DoubleVar(value=float(getattr(self.market,'scenario_volatility',1.0))),
+        'Liquidity':tk.DoubleVar(value=float(getattr(self.market,'scenario_liquidity',1.0))),
+        'Whale flow':tk.DoubleVar(value=float(getattr(self.market,'scenario_whale_flow',0.0))),
+        'Event intensity':tk.DoubleVar(value=float(getattr(self.market,'scenario_event_intensity',1.0))),
+        'Sentiment':tk.DoubleVar(value=float(self.market.macro.get('sentiment',0))),
+        'Inflation':tk.DoubleVar(value=float(self.market.macro.get('inflation',2.5))),
+        'Fed rate':tk.DoubleVar(value=float(self.market.macro.get('policy_rate',4.0))),
+    }
+    specs=[('Volatility',.25,4.0,.05,'×'),('Liquidity',.25,4.0,.05,'×'),('Whale flow',-1,1,.02,''),('Event intensity',.25,3,.05,'×'),('Sentiment',-1,1,.02,''),('Inflation',0,15,.1,'%'),('Fed rate',0,15,.1,'%')]
+    readouts={}
+    for name,lo,hi,res,suffix in specs:
+        row=ttk.Frame(w);row.pack(fill='x',padx=16,pady=5);ttk.Label(row,text=name,width=16).pack(side='left');sc=tk.Scale(row,from_=lo,to=hi,resolution=res,orient='horizontal',variable=vars[name],length=390,bg=PANEL,fg=TEXT,highlightthickness=0);sc.pack(side='left',fill='x',expand=True);lab=ttk.Label(row,width=10);lab.pack(side='right');readouts[name]=(lab,suffix)
+        vars[name].trace_add('write',lambda *_x,n=name:readouts[n][0].config(text=f'{vars[n].get():.2f}{readouts[n][1]}'))
+        lab.config(text=f'{vars[name].get():.2f}{suffix}')
+    sym=tk.StringVar(value=str(getattr(self.market,'scenario_whale_symbol','') or 'SPY'));r=ttk.Frame(w);r.pack(fill='x',padx=16,pady=8);ttk.Label(r,text='Whale target',width=16).pack(side='left');cb=ttk.Combobox(r,textvariable=sym,values=[a.symbol for a in self.market.all_assets()],width=18);cb.pack(side='left');ttk.Label(r,text='Target receives stronger flow than the broad market.',foreground=MUTED).pack(side='left',padx=8)
+    status=ttk.Label(w,text='');status.pack(fill='x',padx=16,pady=8)
+    def apply():
+        self.market.scenario_volatility=vars['Volatility'].get();self.market.scenario_liquidity=vars['Liquidity'].get();self.market.scenario_whale_flow=vars['Whale flow'].get();self.market.scenario_event_intensity=vars['Event intensity'].get();self.market.scenario_whale_symbol=sym.get().upper().strip();self.market.macro['sentiment']=vars['Sentiment'].get();self.market.macro['inflation']=vars['Inflation'].get();self.market.macro['policy_rate']=vars['Fed rate'].get()
+        for a in self.market.all_assets():a.scenario_vol_mult=self.market.scenario_volatility;a.scenario_liquidity=self.market.scenario_liquidity
+        self.market.visual_version+=1;status.config(text=f'Applied • vol {self.market.scenario_volatility:.2f}× • liquidity {self.market.scenario_liquidity:.2f}× • whale {self.market.scenario_whale_flow:+.2f} → {self.market.scenario_whale_symbol or "BROAD"}')
+    def preset(name):
+        vals={'CALM':(.55,1.8,0,0.5,.15,2.1,3.5),'RISK ON':(.85,1.4,.18,.8,.55,2.6,4.0),'PANIC':(2.8,.45,-.65,2.6,-.85,6.5,6.0),'WHALE BUY':(1.25,.75,.85,1.2,.25,3.0,4.5),'WHALE SELL':(1.6,.55,-.90,1.4,-.35,3.5,4.5),'VOL CRUSH':(.40,2.2,0,.4,.10,2.2,3.5)}[name]
+        for k,v in zip(['Volatility','Liquidity','Whale flow','Event intensity','Sentiment','Inflation','Fed rate'],vals):vars[k].set(v)
+        apply()
+    p=ttk.Frame(w);p.pack(fill='x',padx=16,pady=8)
+    for name in ('CALM','RISK ON','PANIC','WHALE BUY','WHALE SELL','VOL CRUSH'):ttk.Button(p,text=name,command=lambda n=name:preset(n)).pack(side='left',expand=True,fill='x',padx=2)
+    ttk.Button(w,text='APPLY CONDITIONS',command=apply).pack(fill='x',padx=16,pady=6);ttk.Button(w,text='RESET NORMAL',command=lambda:preset('RISK ON')).pack(fill='x',padx=16,pady=(0,10))
+App.market_conditions_lab=_sgp_market_conditions_lab_v19
+
+# Explicit +24H button. Unlike "next open", this actually runs a full market-aware day.
+def _sgp_next_day_v19(self):
+    self.status_flash('Simulating a full 24-hour market day…');self.root.update_idletasks()
+    try:
+        end=self.market.advance_one_day();self.refresh_watch();self.refresh_positions();self.refresh_orders()
+        for c in list(getattr(self,'charts',()))+list(getattr(self,'extra_charts',())):
+            try:c.request_draw(force=True)
+            except Exception:pass
+        self.status_flash(f'Advanced one full day → {end:%A %Y-%m-%d %H:%M:%S}')
+    except Exception as e:messagebox.showerror('Next day',f'Unable to advance one day: {e}')
+App.next_day=_sgp_next_day_v19
+
+# Final 1.9 app wiring.
+_App_init_v19_base=App.__init__
+def _sgp_app_init_v19(self,root,market,portfolio):
+    _App_init_v19_base(self,root,market,portfolio)
+    # Working-order cancellation controls.
+    try:
+        obar=ttk.Frame(self.orders_view.master);obar.pack(fill='x',padx=6,pady=(4,0),before=self.orders_view);ttk.Button(obar,text='CANCEL SELECTED',command=self.cancel_selected_order).pack(side='left');ttk.Label(obar,text='Right-click a working order to cancel it.',foreground=MUTED).pack(side='left',padx=8);self.orders_view.bind('<Button-3>',self.orders_context)
+    except Exception:pass
+    # NEXT DAY is intentionally distinct from NEXT OPEN and performs a complete 24-hour simulation.
+    try:
+        top=self.tf.master;self.next_day_button=ttk.Button(top,text='NEXT DAY +24H',command=self.next_day,width=13);self.next_day_button.pack(side='left',padx=(5,3),before=self.clock_label)
+    except Exception:pass
+    # Experiment menu is intentionally separate from order-entry/options menus.
+    try:
+        mb=self.root.nametowidget(self.root.cget('menu'));exp=tk.Menu(mb,tearoff=0);exp.add_command(label='Market Conditions / Whale & Options Lab',command=self.market_conditions_lab);mb.add_cascade(label='Experiment',menu=exp)
+    except Exception:pass
+App.__init__=_sgp_app_init_v19
+
+# Advanced chart vertical stretch / fit controls and quick access to scenario lab.
+_Advanced_v19_base=AdvancedChartWindow
+class AdvancedChartWindow(_Advanced_v19_base):
+    def __init__(self,parent,app,asset):
+        super().__init__(parent,app,asset)
+        top=None
+        for ch in self.winfo_children():
+            if isinstance(ch,ttk.Frame):top=ch;break
+        if top is not None:
+            ttk.Label(top,text='V Zoom').pack(side='left',padx=(8,2));self.vscale=tk.DoubleVar(value=float(getattr(self.chart,'vertical_scale',1.0)));vs=ttk.Scale(top,from_=.5,to=5.0,variable=self.vscale,orient='horizontal',length=105,command=lambda v:self.chart.set_vertical_scale(v));vs.pack(side='left');self.vscale_label=ttk.Label(top,text='1.00×',width=6);self.vscale_label.pack(side='left');self.vscale.trace_add('write',lambda *_:self.vscale_label.config(text=f'{self.vscale.get():.2f}×'));ttk.Button(top,text='FIT Y',command=self.fit_vertical,width=6).pack(side='left',padx=2);ttk.Button(top,text='CONDITIONS',command=app.market_conditions_lab,width=10).pack(side='left',padx=3)
+    def fit_vertical(self):
+        self.vscale.set(1.0);self.chart.set_vertical_scale(1.0)
+
+def _sgp_open_adv_v19(self,a):return AdvancedChartWindow(self.root,self,a)
+App.advanced_chart=_sgp_open_adv_v19
+
+# Smoother round-robin chart service: render up to two due canvases only while the pulse
+# remains inside a small time budget, keeping menus responsive while reducing visible skew.
+def _sgp_chart_refresh_pulse_v19(self):
+    if not getattr(self,'_chart_refresh_running',True):return
+    try:
+        if not self.root.winfo_exists():return
+    except tk.TclError:return
+    now_ms=time.monotonic()*1000.0;live_extra=[]
+    for chart in tuple(getattr(self,'extra_charts',())):
+        try:
+            if chart.winfo_exists():live_extra.append(chart)
+        except tk.TclError:pass
+    self.extra_charts=live_extra;allcharts=list(getattr(self,'charts',()))+live_extra
+    if allcharts:
+        start=int(getattr(self,'_chart_rr',0))%len(allcharts);deadline=time.perf_counter()+.006;drawn=0
+        for off in range(len(allcharts)):
+            chart=allcharts[(start+off)%len(allcharts)]
+            try:
+                if chart.winfo_exists() and chart.due_for_refresh(now_ms):
+                    chart.request_draw(force=False);chart.mark_refreshed(now_ms);drawn+=1;self._chart_rr=(start+off+1)%len(allcharts)
+                    if drawn>=2 or time.perf_counter()>=deadline:break
+            except tk.TclError:pass
+            except Exception as e:
+                try:self.market.errors.append(f'chart scheduler v1.9: {type(e).__name__}: {e}')
+                except Exception:pass
+        else:self._chart_rr=(start+1)%len(allcharts)
+    self._chart_refresh_job=self.root.after(10,self._chart_refresh_pulse)
+App._chart_refresh_pulse=_sgp_chart_refresh_pulse_v19

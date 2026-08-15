@@ -990,3 +990,118 @@ def _sgp_asset_fundamentals_v16(self,a):
     if not f:return {}
     return dict(f, logistics_pending=float(self.logistics_losses.get(a.symbol,0.0)))
 Market.asset_fundamentals=_sgp_asset_fundamentals_v16
+
+# ===== Stock Game Pro 1.9 smooth engine / order controls / experiment lab =====
+# Final production patch: smoother engine cadence, per-session % baselines, cancellable
+# working orders, scenario controls, and an explicit one-full-day simulation action.
+_Market_init_v19_base=Market.__init__
+def _sgp_market_init_v19(self):
+    _Market_init_v19_base(self)
+    self.speed=.025  # ~40 Hz engine cadence for smoother prints without tying UI FPS to market FPS.
+    self.scenario_volatility=1.0
+    self.scenario_liquidity=1.0
+    self.scenario_whale_flow=0.0       # -1 .. +1
+    self.scenario_whale_symbol=''
+    self.scenario_event_intensity=1.0
+    self._pct_open_state={a.symbol:self.asset_regular_open(a) for a in self.all_assets()}
+    for a in self.all_assets():
+        a.scenario_vol_mult=1.0;a.scenario_liquidity=1.0
+Market.__init__=_sgp_market_init_v19
+
+_asset_return_v19_base=Market._asset_return
+def _sgp_asset_return_v19(self,a,game_minutes,market_z,sector_z):
+    base=_asset_return_v19_base(self,a,game_minutes,market_z,sector_z)
+    vol=max(.10,min(6.0,float(getattr(self,'scenario_volatility',1.0))))
+    event=max(.10,min(4.0,float(getattr(self,'scenario_event_intensity',1.0))))
+    vol*=math.sqrt(event)
+    # Scale stochastic component approximately without multiplying the macro drift by the full factor.
+    base*=math.sqrt(vol)
+    whale=max(-1.0,min(1.0,float(getattr(self,'scenario_whale_flow',0.0))))
+    target=str(getattr(self,'scenario_whale_symbol','') or '').upper().strip()
+    if whale:
+        strength=.000010*max(.001,float(game_minutes))*whale
+        base+=strength*(4.0 if target and a.symbol.upper()==target else .35)
+    return base
+Market._asset_return=_sgp_asset_return_v19
+
+_get_book_v19_base=Market.get_book
+def _sgp_get_book_v19(self,a):
+    a.scenario_liquidity=max(.10,min(5.0,float(getattr(self,'scenario_liquidity',1.0))))
+    a.scenario_vol_mult=max(.10,min(6.0,float(getattr(self,'scenario_volatility',1.0))))
+    book=_get_book_v19_base(self,a)
+    # OrderBook.update rebuilds levels before this wrapper runs; scaling once per cache refresh is stable.
+    stamp=getattr(self,'_book_cache_time',{}).get(a.symbol,0)
+    if getattr(book,'_sgp_liq_stamp',None)!=stamp:
+        liq=a.scenario_liquidity
+        for lvl in list(getattr(book,'bids',[]))+list(getattr(book,'asks',[])):
+            lvl.size=max(1,int(lvl.size*liq));lvl.hidden=max(0,int(lvl.hidden*liq))
+        book._sgp_liq_stamp=stamp
+    return book
+Market.get_book=_sgp_get_book_v19
+
+_tick_v19_base=Market.tick
+async def _sgp_tick_v19(self):
+    await _tick_v19_base(self)
+    # Each security's percentage-change baseline rolls exactly when its own regular cash
+    # session opens. Overnight ECN movement therefore carries into the opening gap and the
+    # new day's % begins from the first regular-session print.
+    try:
+        opened=False
+        for a in self.all_assets():
+            regular=self.asset_regular_open(a);prev=self._pct_open_state.get(a.symbol,regular)
+            if regular and not prev:
+                a.reset_day();opened=True
+            self._pct_open_state[a.symbol]=regular
+        if opened:self.visual_version+=1
+    except Exception as e:
+        self.errors.append(f'open baseline: {type(e).__name__}: {e}')
+Market.tick=_sgp_tick_v19
+
+def _sgp_cancel_order(self,order_id,kind=None):
+    sid=str(order_id)
+    groups=[('STOCK',self.pending_orders),('OPTION',self.pending_option_orders),('SPREAD',self.pending_spread_orders)]
+    for label,arr in groups:
+        if kind and str(kind).upper()!=label:continue
+        for o in list(arr):
+            if str(o.get('id'))==sid:
+                arr.remove(o);self.visual_version+=1;return True,f'Cancelled {label.lower()} order #{sid}'
+    return False,f'Working order #{sid} was not found.'
+Market.cancel_order=_sgp_cancel_order
+
+def _sgp_advance_one_day(self):
+    """Advance exactly 24 simulated hours in 30-minute market-aware substeps."""
+    was_paused=bool(self.paused);self.paused=True
+    step_minutes=30.0;steps=48
+    try:
+        with self._lock:
+            for _ in range(steps):
+                self.clock.advance_seconds(step_minutes*60);self._update_macro(step_minutes)
+                market_z=random.gauss(0,1);sector_cache={};index_symbols={x.symbol for x in self.indexes}
+                for a in self.all_assets():
+                    regular=self.asset_regular_open(a);prev=self._pct_open_state.get(a.symbol,regular)
+                    if regular and not prev:
+                        try:self._apply_open_gap(a)
+                        except Exception:pass
+                        a.reset_day()
+                    self._pct_open_state[a.symbol]=regular
+                    if a.symbol in index_symbols or not self.asset_quote_open(a):continue
+                    cat=getattr(a,'category','OTHER');sector_z=sector_cache.setdefault(cat,random.gauss(0,1));r=self._asset_return(a,step_minutes,market_z,sector_z)
+                    state=self.asset_trade_state(a);vol=random.randint(10,7000) if state=='OVERNIGHT ECN' else random.randint(100,50000)
+                    a.update_price(a.price*max(.65,1+r),vol,self.clock.current)
+                for idx in self.indexes:
+                    if not self.asset_regular_open(idx):continue
+                    comps=[self.get_asset(s) for s in idx.components if self.get_asset(s)]
+                    if comps:
+                        ret=sum((c.price/max(.0001,c.previous_price)-1) for c in comps)/len(comps)
+                        idx.update_price(idx.price*max(.75,1+ret+random.gauss(0,idx.volatility*.10*math.sqrt(step_minutes))),random.randint(1000,100000),self.clock.current)
+                try:self._update_freight(step_minutes);self._update_geopolitics(step_minutes)
+                except Exception:pass
+                self._process_orders();self._process_expirations()
+            try:self._corporate_action_cycle()
+            except Exception:pass
+            self.visual_version+=1
+            self.data_status=f'ADVANCED ONE FULL DAY • {self.clock.time}'
+    finally:
+        self._last_real_tick=time.monotonic();self.paused=was_paused
+    return self.clock.current
+Market.advance_one_day=_sgp_advance_one_day

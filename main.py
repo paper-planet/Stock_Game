@@ -12,7 +12,7 @@ def simulation(market):
     except Exception as e:market.errors.append(f'simulation thread: {type(e).__name__}: {e}')
 
 def main_menu(root,accounts):
-    """Stock Game Pro 1.7 trader portal with fitted port-to-port commerce."""
+    """Stock Game Pro 1.9 trader portal with fitted port-to-port commerce."""
     result={'action':'cancel','mode':'MEDIUM','cash':250000,'username':None,'profile':{}}
     w=tk.Toplevel(root);w.title('Stock Game Pro • Global Trader Portal');w.geometry('1360x820');w.minsize(1120,720);w.configure(bg='#02070c');w.protocol('WM_DELETE_WINDOW',w.destroy)
     style=ttk.Style(w);style.configure('Login.Treeview',rowheight=29,font=('Segoe UI',9),background='#071623',fieldbackground='#071623',foreground='#dceaf2');style.configure('Login.Treeview.Heading',font=('Segoe UI',9,'bold'),background='#102b3c',foreground='#b8dff1');style.map('Login.Treeview',background=[('selected','#174e6d')],foreground=[('selected','#ffffff')])
@@ -79,7 +79,7 @@ def main_menu(root,accounts):
     panel=tk.Frame(w,bg='#07131e',highlightbackground='#1e617e',highlightthickness=1);panel.place(relx=.555,rely=.035,relwidth=.42,relheight=.93)
     header=tk.Frame(panel,bg='#07131e');header.pack(fill='x',padx=22,pady=(18,8))
     tk.Label(header,text='STOCK GAME PRO',bg='#07131e',fg='#f3f8fb',font=('Segoe UI',24,'bold')).pack(anchor='w')
-    tk.Label(header,text='1.7  •  GLOBAL TRADER PORTAL',bg='#07131e',fg='#57cce9',font=('Segoe UI',10,'bold')).pack(anchor='w',pady=(2,0))
+    tk.Label(header,text='1.9  •  GLOBAL TRADER PORTAL',bg='#07131e',fg='#57cce9',font=('Segoe UI',10,'bold')).pack(anchor='w',pady=(2,0))
     tk.Label(header,text='Select a saved account, review the profile, then enter the workstation.',bg='#07131e',fg='#8fa9b8',font=('Segoe UI',10),wraplength=440,justify='left').pack(anchor='w',pady=(8,0))
     table_wrap=tk.Frame(panel,bg='#07131e');table_wrap.pack(fill='both',expand=True,padx=20,pady=(4,6))
     tv=ttk.Treeview(table_wrap,style='Login.Treeview',columns=('account','mode','cash','credit','xp','last'),show='headings',selectmode='browse',height=10)
@@ -121,7 +121,7 @@ def main_menu(root,accounts):
 def main():
     root=tk.Tk();root.withdraw();accounts=AccountManager();choice={'action':'start','username':None,'mode':'MEDIUM','cash':250000} if '--guest' in sys.argv else main_menu(root,accounts)
     if choice['action']!='start':root.destroy();return
-    root.deiconify();market=Market();market.difficulty=choice['mode'];market.speed=.05;market.time_warp=10.0;portfolio=Portfolio(choice['cash']);profile=choice.get('profile') or {};portfolio.xp=int(profile.get('xp',0));portfolio.credit_score=int(profile.get('credit_score',700));portfolio.loan_balance=float(profile.get('loan_balance',0.0));portfolio.loan_apr=float(profile.get('loan_apr',0.0));portfolio.loan_origin=profile.get('loan_origin');portfolio.last_loan_payment=profile.get('last_loan_payment');portfolio.tutorials=dict(profile.get('tutorials',{}));portfolio.career=dict(profile.get('career',portfolio.career));portfolio.market=market;market.portfolio=portfolio;app=App(root,market,portfolio);app.account_username=choice.get('username');app.account_manager=accounts
+    root.deiconify();market=Market();market.difficulty=choice['mode'];market.speed=.025;market.time_warp=10.0;portfolio=Portfolio(choice['cash']);profile=choice.get('profile') or {};portfolio.xp=int(profile.get('xp',0));portfolio.credit_score=int(profile.get('credit_score',700));portfolio.loan_balance=float(profile.get('loan_balance',0.0));portfolio.loan_apr=float(profile.get('loan_apr',0.0));portfolio.loan_origin=profile.get('loan_origin');portfolio.last_loan_payment=profile.get('last_loan_payment');portfolio.tutorials=dict(profile.get('tutorials',{}));portfolio.career=dict(profile.get('career',portfolio.career));portfolio.market=market;market.portfolio=portfolio;app=App(root,market,portfolio);app.account_username=choice.get('username');app.account_manager=accounts
     sim=threading.Thread(target=simulation,args=(market,),daemon=True,name='MarketSimulation');sim.start();root.after(800,market.start_background_loaders)
     def stop():
         market.running=False

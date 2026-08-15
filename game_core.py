@@ -728,3 +728,15 @@ _Portfolio_mark_value_v15_base=Portfolio.mark_value
 def _sgp_mark_value_v15(self,assets):
     return _Portfolio_mark_value_v15_base(self,assets)-float(getattr(self,'loan_balance',0.0))
 Portfolio.mark_value=_sgp_mark_value_v15
+
+# ===== Stock Game Pro 1.9 scenario-aware options / depth =====
+# Market-condition experiments affect option IV/spreads and visible order-book depth too.
+def _sgp_option_volatility_v19(self):
+    mult=max(.10,min(6.0,float(getattr(self.underlying,'scenario_vol_mult',1.0))))
+    return max(.05,(self.underlying.volatility*20+.12+abs(self.strike/self.underlying.price-1)*.30)*math.sqrt(mult))
+OptionContract.volatility=property(_sgp_option_volatility_v19)
+
+def _sgp_option_spread_v19(self):
+    liq=max(.10,min(5.0,float(getattr(self.underlying,'scenario_liquidity',1.0))))
+    return max(.005,self.premium*(.004+.020*(1-self.liquidity))/math.sqrt(liq))
+OptionContract.spread=property(_sgp_option_spread_v19)
