@@ -1105,3 +1105,222 @@ def _sgp_advance_one_day(self):
         self._last_real_tick=time.monotonic();self.paused=was_paused
     return self.clock.current
 Market.advance_one_day=_sgp_advance_one_day
+
+
+# ===== Stock Game Pro 2.0 engine pacing / autosave overhaul =====
+# The previous engine repriced every asset on every 25ms cycle. With ~200 instruments
+# this produced thousands of Python object allocations per second and steadily increased
+# GC/UI latency. The 2.0 engine keeps the clock at 40Hz but updates assets in rotating
+# batches, so every symbol still receives a smooth ~8-12Hz quote stream.
+_Market_init_v20_base=Market.__init__
+def _sgp_market_init_v20(self):
+    _Market_init_v20_base(self)
+    self.speed=.025;self._v20_assets=[a for a in self.all_assets() if a not in self.indexes];self._v20_cursor=0;self._v20_batch=max(20,min(56,(len(self._v20_assets)+3)//4));self._v20_last_asset_time={a.symbol:time.monotonic() for a in self._v20_assets};self._v20_last_housekeeping=time.monotonic();self._v20_last_index=time.monotonic();self._v20_last_risk=time.monotonic();self._v20_us_open=market_status('US',self.clock.current);self._v20_last_autosave_day=None;self.autosave_callback=None
+Market.__init__=_sgp_market_init_v20
+
+async def _sgp_tick_v20(self):
+    if not self.running:return
+    if self.paused:
+        self._last_real_tick=time.monotonic();await asyncio.sleep(.025);return
+    now=time.monotonic();real_dt=max(.001,min(.12,now-self._last_real_tick));self._last_real_tick=now
+    game_seconds=real_dt*60.0*max(.05,float(getattr(self,'time_warp',1.0)));game_minutes=game_seconds/60.0
+    try:
+        self.clock.advance_seconds(game_seconds);self._update_macro(game_minutes)
+        with self._lock:
+            assets=self._v20_assets;n=len(assets)
+            if n:
+                start=self._v20_cursor;count=min(self._v20_batch,n);market_z=random.gauss(0,1);sector_cache={}
+                for j in range(count):
+                    a=assets[(start+j)%n]
+                    if not self.asset_quote_open(a):continue
+                    last=self._v20_last_asset_time.get(a.symbol,now);elapsed=max(.005,min(.8,now-last));self._v20_last_asset_time[a.symbol]=now
+                    # Convert this asset's actual elapsed wall time to its own simulated minutes.
+                    amin=elapsed*max(.05,float(getattr(self,'time_warp',1.0)))
+                    cat=getattr(a,'category','OTHER');sector_z=sector_cache.setdefault(cat,random.gauss(0,1));r=self._asset_return(a,amin,market_z,sector_z)
+                    state=self.asset_trade_state(a)
+                    if state=='OVERNIGHT ECN':r*=.28;vol=random.randint(10,7000)
+                    else:vol=random.randint(100,50000)
+                    a.update_price(a.price*max(.75,1+r),vol,self.clock.current)
+                self._v20_cursor=(start+count)%n
+            # Indexes do not need 40Hz recomputation; 8-10Hz is visually continuous.
+            if now-self._v20_last_index>=.10:
+                self._v20_last_index=now
+                for idx in self.indexes:
+                    if not self.asset_regular_open(idx):continue
+                    comps=[self.get_asset(s) for s in idx.components if self.get_asset(s)]
+                    if not comps:continue
+                    # Use a gentle current-component move rather than requiring every component
+                    # to have updated in exactly the same scheduler slice.
+                    weighted=sum((c.price/max(.0001,c.open_price)-1) for c in comps)/len(comps)
+                    target=idx.open_price*(1+weighted);blend=.16;new=idx.price+(target-idx.price)*blend+idx.price*random.gauss(0,idx.volatility*.018)
+                    idx.update_price(max(.0001,new),random.randint(1000,100000),self.clock.current)
+            if now-self._v20_last_risk>=.10:
+                elapsed=now-self._v20_last_risk;self._v20_last_risk=now;gm=elapsed*max(.05,float(getattr(self,'time_warp',1.0)))
+                self._update_freight(gm);self._update_geopolitics(gm);self._process_orders();self._process_expirations()
+            # Session transitions, earnings, corporate actions and autosave are low-frequency.
+            if now-self._v20_last_housekeeping>=.25:
+                self._v20_last_housekeeping=now;opened=False
+                for a in self.all_assets():
+                    regular=self.asset_regular_open(a);prev=self._pct_open_state.get(a.symbol,regular)
+                    if regular and not prev:
+                        try:self._apply_open_gap(a)
+                        except Exception:pass
+                        a.reset_day();opened=True
+                    self._pct_open_state[a.symbol]=regular
+                us_open=market_status('US',self.clock.current)
+                if self._v20_us_open and not us_open:
+                    day=self.clock.current.date()
+                    if self._v20_last_autosave_day!=day and callable(getattr(self,'autosave_callback',None)):
+                        self._v20_last_autosave_day=day
+                        try:self.autosave_callback('end of trading day')
+                        except Exception as e:self.errors.append(f'autosave: {type(e).__name__}: {e}')
+                self._v20_us_open=us_open
+                try:self._corporate_action_cycle();self._process_earnings_v16()
+                except Exception as e:self.errors.append(f'daily systems: {type(e).__name__}: {e}')
+                if opened:self.visual_version+=1
+                if hasattr(self,'portfolio') and now-getattr(self,'_last_networth_calc',0)>3.0:
+                    self._last_networth_calc=now;self.portfolio.best_net_worth=max(self.portfolio.best_net_worth,self.portfolio.mark_value(self.all_assets()))
+        self.visual_version+=1;self.data_status=f'SIMULATION RUNNING • {self.time_warp:.2f}x • CPI {self.macro["inflation"]:.2f}% • FED {self.macro["policy_rate"]:.2f}%'
+    except Exception as e:
+        self.errors.append(f'tick v2.0: {type(e).__name__}: {e}')
+        if len(self.errors)>100:self.errors=self.errors[-100:]
+    await asyncio.sleep(max(.005,float(self.speed)))
+Market.tick=_sgp_tick_v20
+
+# A +24H manual jump is also a save boundary.
+_advance_day_v20_base=Market.advance_one_day
+def _sgp_advance_day_v20(self):
+    out=_advance_day_v20_base(self)
+    if callable(getattr(self,'autosave_callback',None)):
+        try:self.autosave_callback('manual next day')
+        except Exception as e:self.errors.append(f'autosave next day: {e}')
+    return out
+Market.advance_one_day=_sgp_advance_day_v20
+
+# ===== Stock Game Pro 2.1 liquidity / market-impact engine =====
+# Market orders now consume displayed liquidity and create persistent price impact.
+# Distressed equities also have a fundamental-value anchor so the simulator does not
+# create an artificial absorbing state near zero.
+_Market_init_v21_base=Market.__init__
+def _sgp_market_init_v21(self):
+    _Market_init_v21_base(self)
+    self._liquidity_health={}
+    self._impact_state={}
+    self._impact_last=time.monotonic()
+    for a in self.all_assets():
+        ref=max(.0001,float(getattr(a,'last_real_close',0) or 0),float(getattr(a,'inception_price',0) or 0),float(a.price))
+        a.fundamental_value=ref
+        a.liquidity_health=1.0
+        a.last_market_impact=0.0
+        a.last_execution_vwap=float(a.price)
+Market.__init__=_sgp_market_init_v21
+
+def _sgp_adv_shares(self,a):
+    """Estimate normal daily share capacity from real/simulated daily bars when available."""
+    try:
+        bars=list(a.chart_candles('1d'))[-30:]
+        vols=sorted(float(c.volume) for c in bars if getattr(c,'volume',0)>0)
+        if vols:
+            med=vols[len(vols)//2]
+            if med>0:return max(500.0,med)
+    except Exception:pass
+    shares=max(1.0,float(getattr(a,'shares_outstanding',1_000_000)))
+    # Fallback turnover is deliberately conservative for names without history.
+    return max(2_000.0,min(5_000_000.0,shares*.0035))
+Market.adv_shares=_sgp_adv_shares
+
+def _sgp_execution_quote(self,side,a,qty):
+    q=max(1,int(qty));side=str(side).upper();buy=side in ('BUY','COVER')
+    book=self.get_book(a)
+    levels=list(book.asks if buy else book.bids)
+    remain=q;notional=0.0;shown=0
+    for lvl in levels:
+        take=min(remain,max(0,int(lvl.size)))
+        if take:
+            notional+=take*float(lvl.price);shown+=take;remain-=take
+        if remain<=0:break
+    adv=max(1.0,self.adv_shares(a));participation=q/adv
+    sigma=max(.004,min(.35,float(getattr(a,'volatility',.002))*math.sqrt(390.0)))
+    health=max(.05,min(1.0,float(self._liquidity_health.get(a.symbol,1.0))))
+    penny_mult=1.0 if a.price>=5 else min(7.0,max(1.0,(5.0/max(.01,a.price))**.22))
+    liq_mult=(1.0/max(.10,health))**.45
+    # Square-root market-impact law with a modest linear tail for truly huge orders.
+    impact=sigma*(.42*math.sqrt(max(0.0,participation))+.055*participation)*penny_mult*liq_mult
+    impact=max(0.0,min(.85,impact))
+    spread=max(.000001,float(a.ask)-float(a.bid))
+    base=float(a.ask if buy else a.bid)
+    if remain>0:
+        # Undisplayed/deeper liquidity fills progressively farther from the touch.
+        deep_px=max(.000001,base*(1+(impact*.62 if buy else -impact*.62)))
+        notional+=remain*deep_px
+    vwap=notional/q if q else base
+    # Ensure impact is reflected even if the generated visible book happens to be deep.
+    impact_vwap=max(vwap,base*(1+impact*.32)) if buy else min(vwap,base*(1-impact*.32))
+    permanent=min(.70,impact*.38)
+    return {'qty':q,'vwap':max(.000001,impact_vwap),'impact':impact,'permanent':permanent,'shown':shown,
+            'adv':adv,'participation':participation,'health':health,'spread':spread}
+Market.preview_execution=_sgp_execution_quote
+
+def _sgp_execute_liquidity_order(self,side,a,qty):
+    side=str(side).upper();q=max(1,int(qty));quote=self.preview_execution(side,a,q);buy=side in ('BUY','COVER')
+    book=self.get_book(a);remaining=q
+    levels=book.asks if buy else book.bids
+    # Consume displayed shares instead of regenerating them immediately.
+    for lvl in levels:
+        take=min(remaining,max(0,int(lvl.size)))
+        lvl.size=max(0,int(lvl.size)-take);remaining-=take
+        if remaining<=0:break
+    adv=max(1.0,quote['adv']);depletion=min(.90,.55*math.sqrt(max(0.0,q/adv)))
+    old_health=float(self._liquidity_health.get(a.symbol,1.0));health=max(.05,old_health*(1-depletion))
+    self._liquidity_health[a.symbol]=health;a.liquidity_health=health
+    signed=1.0 if buy else -1.0
+    old=float(a.price)
+    # The final print follows the post-trade mid, while VWAP remains the actual accounting price.
+    new=max(.000001,old*(1+signed*quote['permanent']))
+    # A large sweep can never be visually invisible. Respect at least a fraction of VWAP displacement.
+    if buy:new=max(new,old+(quote['vwap']-old)*.45)
+    else:new=min(new,old+(quote['vwap']-old)*.45)
+    new=max(.000001,new)
+    a.update_price(new,q,self.clock.current)
+    a.last_market_impact=signed*quote['impact'];a.last_execution_vwap=quote['vwap']
+    st=self._impact_state.setdefault(a.symbol,{'pressure':0.0,'last':time.monotonic()})
+    st['pressure']=max(-1.5,min(1.5,float(st.get('pressure',0))+signed*quote['impact']));st['last']=time.monotonic()
+    self._book_cache_time[a.symbol]=0;self.visual_version+=1
+    return quote
+Market.execute_liquidity_order=_sgp_execute_liquidity_order
+
+_get_book_v21_base=Market.get_book
+def _sgp_get_book_v21(self,a):
+    book=_get_book_v21_base(self,a)
+    health=max(.05,min(1.0,float(self._liquidity_health.get(a.symbol,1.0))))
+    stamp=(getattr(self,'_book_cache_time',{}).get(a.symbol,0),round(health,3))
+    if getattr(book,'_v21_health_stamp',None)!=stamp:
+        # Existing scenario-liquidity scaling remains intact; this is additional depletion.
+        for lvl in list(getattr(book,'bids',[]))+list(getattr(book,'asks',[])):
+            lvl.size=max(1,int(lvl.size*health));lvl.hidden=max(0,int(lvl.hidden*health))
+        book._v21_health_stamp=stamp
+    return book
+Market.get_book=_sgp_get_book_v21
+
+_asset_return_v21_base=Market._asset_return
+def _sgp_asset_return_v21(self,a,game_minutes,market_z,sector_z):
+    r=float(_asset_return_v21_base(self,a,game_minutes,market_z,sector_z))
+    # Slowly replenish liquidity and decay order-flow pressure in simulated time.
+    h=float(self._liquidity_health.get(a.symbol,1.0));recovery=1-math.exp(-max(.0,float(game_minutes))/75.0)
+    self._liquidity_health[a.symbol]=min(1.0,h+(1-h)*recovery)
+    # Distressed securities are not mathematically trapped at the minimum price. Their
+    # fundamental anchor can pull them back up, while still allowing bankrupt-like collapse.
+    ref=max(.0001,float(getattr(a,'fundamental_value',0) or getattr(a,'last_real_close',0) or a.price))
+    ratio=max(1e-9,float(a.price)/ref)
+    if ratio<.20:
+        distress=math.log(.20/max(1e-9,ratio))
+        r+=min(.035,.0012*distress*max(.05,float(game_minutes)))
+        if a.price<=.00012:
+            r=max(r,random.uniform(.015,.09))
+    # Persistent impact fades rather than vanishing on the very next random tick.
+    st=self._impact_state.get(a.symbol)
+    if st:
+        pressure=float(st.get('pressure',0.0));r+=pressure*.0015*min(1.0,max(.01,float(game_minutes)))
+        st['pressure']=pressure*math.exp(-max(.0,float(game_minutes))/35.0)
+    return max(-.70,min(.70,r))
+Market._asset_return=_sgp_asset_return_v21

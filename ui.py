@@ -194,7 +194,7 @@ class Chart(tk.Canvas):
         name=a.name if w>430 else (a.name[:18]+'…' if len(a.name)>19 else a.name)
         self.create_text(8,7,anchor='nw',text=f'{a.symbol} • {name}',fill=TEXT,font=('Arial',9,'bold'))
         self.create_text(right,7,anchor='ne',text=f'{self.timeframe} • {self.kind} • ${a.price:,.2f} • {a.change_percent():+.2f}%',fill=MUTED,font=('Arial',8))
-        lo,hi=min(x.low for x in d),max(x.high for x in d);span=max(.00001,hi-lo);n=len(d);step=(right-left)/max(1,n)
+        lo,hi=self.price_bounds();span=max(.00001,hi-lo);n=len(d);step=(right-left)/max(1,n)
         def py(p):return bottom-(p-lo)/span*(bottom-top)
         for j in range(6):
             y=top+j*(bottom-top)/5;v=hi-j*span/5;self.create_line(left,y,right,y,fill=GRID);self.create_text(left-5,y,text=f'{v:,.2f}',anchor='e',fill=MUTED,font=('Arial',8))
@@ -4690,3 +4690,205 @@ def _sgp_chart_refresh_pulse_v19(self):
         else:self._chart_rr=(start+1)%len(allcharts)
     self._chart_refresh_job=self.root.after(10,self._chart_refresh_pulse)
 App._chart_refresh_pulse=_sgp_chart_refresh_pulse_v19
+
+
+# ===== Stock Game Pro 1.9.1 live-chart focus hotfix =====
+# The renderer previously calculated its own min/max from candle history, bypassing
+# Chart.price_bounds().  That let the quote/watchlist price escape the visible y-axis.
+# The base renderer above now uses price_bounds(); this final pass makes live following
+# explicit and draws an authoritative last-price guide on every live chart.
+def _sgp_price_bounds_v191(self):
+    d=list(self.data())
+    if not d:return (0.0,1.0)
+    live=(self.asset is not None and int(getattr(self,'view_offset',0))==0 and getattr(self,'follow_latest',True))
+    lows=[float(x.low) for x in d];highs=[float(x.high) for x in d]
+    lo=min(lows);hi=max(highs)
+    if not live:
+        raw=max(1e-8,hi-lo);scale=max(.25,min(8.0,float(getattr(self,'vertical_scale',1.0))))
+        mid=(hi+lo)/2.0;half=max(raw/(2.0*scale),max(abs(mid)*.00005,1e-6));return mid-half,mid+half
+    p=float(self.asset.price)
+    # Use recent bars to determine useful visual scale.  Old spikes in a long viewport
+    # should not make today's price look like a flat line, but the current quote is always
+    # centered and therefore cannot fall off screen.
+    recent=d[-min(len(d),120):]
+    rlo=min([float(x.low) for x in recent]+[p]);rhi=max([float(x.high) for x in recent]+[p])
+    typical=max(1e-8,rhi-rlo)
+    # Give the live quote breathing room even in an unusually flat market.
+    floor=max(abs(p)*0.0025,0.01 if abs(p)>=1 else abs(p)*0.01,1e-6)
+    scale=max(.25,min(8.0,float(getattr(self,'vertical_scale',1.0))))
+    half=max(typical*0.62/scale,floor/scale)
+    # If the whole visible candle set is reasonably close, include it.  Extreme stale
+    # history is intentionally ignored while following live so focus stays on the quote.
+    whole=max(abs(p-lo),abs(hi-p))
+    if whole <= half*3.5:half=max(half,whole*1.08)
+    return p-half,p+half
+Chart.price_bounds=_sgp_price_bounds_v191
+
+_Chart_draw_v191_base=Chart.draw
+def _sgp_chart_draw_v191(self):
+    _Chart_draw_v191_base(self)
+    if self.asset is None:return
+    if int(getattr(self,'view_offset',0))!=0 or not getattr(self,'follow_latest',True):return
+    try:
+        self.delete('livefocus')
+        w=max(280,self.winfo_width());h=max(170,self.winfo_height());left,right=62,w-12
+        p=float(self.asset.price);y=self.price_to_y(p)
+        # Keep the marker away from the footer/header even during a transient resize.
+        y=max(35,min(h-48,y))
+        self.create_line(left,y,right,y,fill=CYAN,dash=(3,3),width=1,tags='livefocus')
+        self.create_rectangle(right-76,y-9,right,y+9,fill='#0b2532',outline=CYAN,tags='livefocus')
+        self.create_text(right-4,y,text=f'LIVE {p:,.2f}',fill='#d8f6ff',font=('Consolas',8,'bold'),anchor='e',tags='livefocus')
+    except Exception:pass
+Chart.draw=_sgp_chart_draw_v191
+
+# Any ordinary main/advanced chart starts in live-follow mode. Historical panning still
+# opts out by setting view_offset/follow_latest through the existing controls.
+_Chart_set_asset_v191_base=Chart.set_asset
+def _sgp_set_asset_v191(self,a):
+    self.view_offset=0;self.follow_latest=True
+    return _Chart_set_asset_v191_base(self,a)
+Chart.set_asset=_sgp_set_asset_v191
+
+
+# ===== Stock Game Pro 2.0 chart-follow + long-session UI overhaul =====
+# A single final renderer replaces the layered legacy draw wrappers. It uses one snapshot,
+# only chart-local portfolio/order state in its cache key, and always centers a LIVE chart
+# on the authoritative asset.price. This removes the remaining ticker/chart divergence.
+def _sgp_chart_bounds_v20(self,d,live):
+    if not d:return (0.0,1.0)
+    scale=max(.25,min(8.0,float(getattr(self,'vertical_scale',1.0))))
+    if live and self.asset is not None:
+        p=float(self.asset.price);recent=d[-min(90,len(d)):];rlo=min([float(c.low) for c in recent]+[p]);rhi=max([float(c.high) for c in recent]+[p]);rng=max(rhi-rlo,abs(p)*.003,0.02 if abs(p)>=1 else abs(p)*.02,1e-6);half=max(rng*.62,abs(p)*.0015,1e-6)/scale;return p-half,p+half
+    lo=min(float(c.low) for c in d);hi=max(float(c.high) for c in d);mid=(hi+lo)/2;rng=max(hi-lo,abs(mid)*.0002,1e-6);return mid-rng/(2*scale),mid+rng/(2*scale)
+
+def _sgp_chart_draw_v20(self):
+    a=self.asset;w=max(280,self.winfo_width());h=max(170,self.winfo_height());d=list(self.data()) if a else []
+    live=bool(a is not None and int(getattr(self,'view_offset',0))==0 and getattr(self,'follow_latest',True) and not (getattr(self,'pan_mode',False) and not getattr(self,'follow_latest',True)))
+    if a is not None and d and live:
+        # Always force the rightmost candle to the same authoritative quote shown in watchlist.
+        p=float(a.price);last=d[-1];d[-1]=Candle(last.timestamp,float(last.open),max(float(last.high),p),min(float(last.low),p),p,int(last.volume))
+    q=int(self.app.portfolio.positions.get(a.symbol,0)) if a else 0;basis=float(self.app.portfolio.cost_basis.get(a.symbol,0)) if a else 0.0
+    rel_orders=tuple((o.get('id'),o.get('side'),o.get('type'),round(float(o.get('price') or 0),5)) for o in self.app.market.pending_orders if a is not None and o.get('asset') is a)
+    rel_opts=tuple((getattr(st,'strategy_id',None),l.action,l.quantity,round(float(l.contract.strike),5)) for st,l in (self.app.portfolio.option_legs_for(a.symbol) if a else []))
+    key=(a.symbol if a else None,self.timeframe,getattr(self,'candle_period','Auto'),self.kind,round(self.zoom,3),int(getattr(self,'view_offset',0)),bool(getattr(self,'follow_latest',True)),round(float(a.price),5) if a else 0,getattr(a,'last_update',None),w,h,q,round(basis,3),rel_orders,rel_opts,self.app.ind_vars_version,round(float(getattr(self,'vertical_scale',1.0)),3),len(d))
+    if key==getattr(self,'_key',None):
+        self._draw_crosshair();return
+    self._key=key;self.delete('all')
+    if not a:self.create_text(w/2,h/2,text=f'CHART {self.index+1}\nClick a market ticker',fill=MUTED,font=('Arial',12,'bold'));return
+    if len(d)<2:self.create_text(10,8,anchor='nw',text=f'{a.symbol} • loading {self.timeframe}',fill=MUTED,font=('Arial',9));return
+    left,right,top,bottom=62,w-14,34,h-48;lo,hi=_sgp_chart_bounds_v20(self,d,live);self._last_bounds_v20=(lo,hi);span=max(1e-9,hi-lo);step=(right-left)/max(1,len(d))
+    def py(v):return bottom-(float(v)-lo)/span*(bottom-top)
+    name=a.name if w>470 else (a.name[:16]+'…' if len(a.name)>17 else a.name)
+    self.create_text(8,7,anchor='nw',text=f'{a.symbol} • {name}',fill=TEXT,font=('Arial',9,'bold'))
+    mode='LIVE FOLLOW' if live else f'HISTORY • {int(getattr(self,"view_offset",0))} bars back'
+    self.create_text(right,7,anchor='ne',text=f'{self.timeframe} • {getattr(self,"candle_period","Auto")} • {mode} • ${a.price:,.2f}',fill=CYAN if live else MUTED,font=('Arial',7 if w<500 else 8,'bold'))
+    for j in range(6):
+        y=top+j*(bottom-top)/5;v=hi-j*span/5;self.create_line(left,y,right,y,fill=GRID);self.create_text(left-5,y,text=f'{v:,.2f}',anchor='e',fill=MUTED,font=('Arial',7))
+    if self.kind=='Candles':
+        bw=max(1,step*.34)
+        for i,c in enumerate(d):
+            x=left+(i+.5)*step;col=GREEN if c.close>=c.open else RED;self.create_line(x,py(c.high),x,py(c.low),fill=col)
+            y1,y2=py(c.open),py(c.close);self.create_rectangle(x-bw,min(y1,y2),x+bw,max(y1,y2)+1,fill=col,outline=col)
+    else:
+        pts=[]
+        for i,c in enumerate(d):pts.extend((left+(i+.5)*step,py(c.close)))
+        if self.kind=='Area':self.create_polygon(*(pts+[right,bottom,left,bottom]),fill='#12314a',outline='')
+        if len(pts)>=4:self.create_line(*pts,fill=BLUE,width=2)
+    close=[float(x.close) for x in d]
+    if self.app.ind_vars['SMA'].get():self._line(sma(close,20),left,step,py,YELLOW)
+    if self.app.ind_vars['EMA'].get():self._line(ema(close,20),left,step,py,PURPLE)
+    if self.app.ind_vars['BB'].get():
+        _,u,l=boll(close);self._line(u,left,step,py,CYAN);self._line(l,left,step,py,CYAN)
+    if self.app.ind_vars['VWAP'].get():self._line(vwap(d),left,step,py,ORANGE)
+    if self.app.ind_vars['Volume'].get():
+        vmax=max((x.volume for x in d),default=1) or 1;vh=(bottom-top)*.12
+        for i,c in enumerate(d):
+            x=left+(i+.5)*step;y=bottom-c.volume/vmax*vh;self.create_rectangle(x-step*.28,bottom,x+step*.28,y,fill='#33485b',outline='')
+    # Chart-local positions/orders only.
+    for o in self.app.market.pending_orders:
+        if o.get('asset') is a and o.get('price') is not None:
+            y=py(o['price']);col=GREEN if o.get('side') in ('BUY','COVER') else RED;self.create_line(left,y,right,y,fill=col,dash=(7,4) if o.get('type')=='LIMIT' else (2,3),width=2);self.create_text(right-4,y-7,anchor='e',text=f"#{o.get('id')} {o.get('type')} {o.get('side')} ${float(o.get('price')):,.2f}",fill=col,font=('Arial',7,'bold'))
+    if q:
+        entry=basis/max(1,abs(q));y=py(entry);col=GREEN if q>0 else RED;self.create_line(left,y,right,y,fill=col,dash=(10,4));self.create_text(left+4,y-7,anchor='w',text=f'{"LONG" if q>0 else "SHORT"} {abs(q):,} @ ${entry:,.2f}',fill=col,font=('Arial',7,'bold'))
+    for st,leg in self.app.portfolio.option_legs_for(a.symbol):
+        y=py(leg.contract.strike);col=GREEN if leg.action=='BUY' else RED;self.create_line(left,y,right,y,fill=col,dash=(2,5));self.create_text(right-4,y+7,anchor='e',text=f'OPT {leg.action} {leg.quantity} {leg.contract.option_type[0].upper()}{leg.contract.strike:g}',fill=col,font=('Arial',6,'bold'))
+    for dr in getattr(self,'anchored_drawings',[]):
+        if dr[0]=='aline':
+            _,t1,p1,t2,p2=dr;x1=self.time_to_x(t1);x2=self.time_to_x(t2)
+            if x1 is not None and x2 is not None:self.create_line(x1,py(p1),x2,py(p2),fill=YELLOW,width=2)
+        elif dr[0]=='ah':self.create_line(left,py(dr[1]),right,py(dr[1]),fill=YELLOW,dash=(5,3))
+    # Dedicated x-axis row; timestamps and footer can no longer overlap.
+    ticks=3 if w<440 else 5
+    for j in range(ticks):
+        i=round((len(d)-1)*j/max(1,ticks-1));ts=d[i].timestamp;x=left+(i+.5)*step;fmt='%a %H:%M:%S' if self.timeframe=='1D' else '%a %m-%d %H:%M' if self.timeframe in ('1W','1M') else '%Y-%m-%d';self.create_text(x,h-28,text=ts.strftime(fmt),fill='#70869a',font=('Arial',6 if w<440 else 7),anchor='s')
+    footer=f'O {d[-1].open:.2f}  H {d[-1].high:.2f}  L {d[-1].low:.2f}  C {d[-1].close:.2f}';self.create_text(8,h-6,anchor='sw',text=footer,fill=MUTED,font=('Arial',7))
+    if live:
+        y=py(a.price);y=max(top,min(bottom,y));self.create_line(left,y,right,y,fill=CYAN,dash=(3,3));self.create_rectangle(right-78,y-9,right,y+9,fill='#0b2532',outline=CYAN);self.create_text(right-4,y,text=f'LIVE {a.price:,.2f}',fill='#d8f6ff',font=('Consolas',8,'bold'),anchor='e')
+    try:
+        status,remain=_sgp_session_countdown(a,self.app.market.clock.current);self.create_text(left+3,22,text=f'{_sgp_asset_session_code(a)} {status} • {remain}',fill=GREEN if status=='OPEN' else MUTED,font=('Arial',7,'bold'),anchor='nw')
+    except Exception:pass
+    self._draw_crosshair(top=top,bottom=bottom,left=left,right=right)
+Chart.draw=_sgp_chart_draw_v20
+
+def _sgp_price_to_y_v20(self,p):
+    h=max(170,self.winfo_height());top,bottom=34,h-48;lo,hi=getattr(self,'_last_bounds_v20',self.price_bounds());return bottom-(float(p)-lo)/max(1e-9,hi-lo)*(bottom-top)
+def _sgp_y_to_price_v20(self,y):
+    h=max(170,self.winfo_height());top,bottom=34,h-48;lo,hi=getattr(self,'_last_bounds_v20',self.price_bounds());return hi-(float(y)-top)/max(1,bottom-top)*(hi-lo)
+Chart.price_to_y=_sgp_price_to_y_v20;Chart.y_to_price=_sgp_y_to_price_v20
+
+# Main scheduler runs at a display-friendly 60Hz and gives each due chart a strict budget.
+def _sgp_chart_refresh_pulse_v20(self):
+    if not getattr(self,'_chart_refresh_running',True):return
+    try:
+        if not self.root.winfo_exists():return
+    except tk.TclError:return
+    now_ms=time.monotonic()*1000.0;extras=[]
+    for c in tuple(getattr(self,'extra_charts',())):
+        try:
+            if c.winfo_exists():extras.append(c)
+        except tk.TclError:pass
+    self.extra_charts=extras;charts=list(getattr(self,'charts',()))+extras
+    if charts:
+        start=int(getattr(self,'_chart_rr',0))%len(charts);deadline=time.perf_counter()+.007;done=0
+        for off in range(len(charts)):
+            c=charts[(start+off)%len(charts)]
+            try:
+                if c.winfo_exists() and c.due_for_refresh(now_ms):
+                    c.request_draw(False);c.mark_refreshed(now_ms);done+=1;self._chart_rr=(start+off+1)%len(charts)
+                    if done>=2 or time.perf_counter()>=deadline:break
+            except Exception:pass
+    self._chart_refresh_job=self.root.after(16,self._chart_refresh_pulse)
+App._chart_refresh_pulse=_sgp_chart_refresh_pulse_v20
+
+# Slow non-chart panels slightly. They do not need sub-100ms rebuilds to feel live.
+_App_fast_watch_v20_base=getattr(App,'_fast_watch_stream',None)
+def _sgp_fast_watch_stream_v20(self):
+    try:
+        if hasattr(self,'watch'):
+            for iid in self.watch.get_children():
+                try:
+                    vals=list(self.watch.item(iid,'values'));a=self.market.get_asset(vals[0]) if vals else None
+                    if a and len(vals)>=4:vals[2]=f'${a.price:,.2f}';vals[3]=f'{a.change_percent():+.2f}%';self.watch.item(iid,values=vals)
+                except Exception:pass
+    finally:self._watch_stream_job=self.root.after(300,self._fast_watch_stream)
+App._fast_watch_stream=_sgp_fast_watch_stream_v20
+
+
+# 2.0.1 bootstrap: a new/live chart should follow immediately even before two full
+# aggregation buckets exist. Prefer finer live data as a fallback, then synthesize a
+# two-print seed around the authoritative quote.
+_Chart_data_v201_base=Chart.data
+def _sgp_chart_data_v201(self):
+    d=list(_Chart_data_v201_base(self))
+    if self.asset is None or len(d)>=2:return d
+    # Try finer streams before displaying an empty/loading chart.
+    fallback_intervals=('1m','30s','tick') if self.timeframe=='1D' else ('1m','30s','tick','1d')
+    for interval in fallback_intervals:
+        alt=list(self.asset.chart_candles(interval))
+        if len(alt)>=2:
+            maxbars={'1D':180,'1W':220,'1M':280,'3M':340,'6M':300,'1Y':380,'5Y':360,'MAX':520}.get(self.timeframe,180)
+            return alt[-maxbars:]
+    now=getattr(getattr(self.app,'market',None),'clock',None);now=getattr(now,'current',None) or __import__('datetime').datetime.now()
+    p=float(self.asset.price);prev=float(getattr(self.asset,'previous_price',p));from datetime import timedelta as _sgp_td_ui_v201
+    return [Candle(now-_sgp_td_ui_v201(seconds=1),prev,max(prev,p),min(prev,p),prev,0),Candle(now,p,max(prev,p),min(prev,p),p,int(getattr(self.asset,'volume',0)))]
+Chart.data=_sgp_chart_data_v201

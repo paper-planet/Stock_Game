@@ -1,2 +1,2 @@
-# Stock Game Pro 1.9 currently uses only the Python standard library.
+# Stock Game Pro 2.0 currently uses only the Python standard library.
 # Keep this file so future third-party dependencies can be installed automatically.

@@ -121,12 +121,26 @@ def main_menu(root,accounts):
 def main():
     root=tk.Tk();root.withdraw();accounts=AccountManager();choice={'action':'start','username':None,'mode':'MEDIUM','cash':250000} if '--guest' in sys.argv else main_menu(root,accounts)
     if choice['action']!='start':root.destroy();return
-    root.deiconify();market=Market();market.difficulty=choice['mode'];market.speed=.025;market.time_warp=10.0;portfolio=Portfolio(choice['cash']);profile=choice.get('profile') or {};portfolio.xp=int(profile.get('xp',0));portfolio.credit_score=int(profile.get('credit_score',700));portfolio.loan_balance=float(profile.get('loan_balance',0.0));portfolio.loan_apr=float(profile.get('loan_apr',0.0));portfolio.loan_origin=profile.get('loan_origin');portfolio.last_loan_payment=profile.get('last_loan_payment');portfolio.tutorials=dict(profile.get('tutorials',{}));portfolio.career=dict(profile.get('career',portfolio.career));portfolio.market=market;market.portfolio=portfolio;app=App(root,market,portfolio);app.account_username=choice.get('username');app.account_manager=accounts
+    root.deiconify();market=Market();market.difficulty=choice['mode'];market.speed=.025;market.time_warp=10.0;portfolio=Portfolio(choice['cash']);profile=choice.get('profile') or {};portfolio.xp=int(profile.get('xp',0));portfolio.credit_score=int(profile.get('credit_score',700));portfolio.loan_balance=float(profile.get('loan_balance',0.0));portfolio.loan_apr=float(profile.get('loan_apr',0.0));portfolio.loan_origin=profile.get('loan_origin');portfolio.last_loan_payment=profile.get('last_loan_payment');portfolio.tutorials=dict(profile.get('tutorials',{}));portfolio.career=dict(profile.get('career',portfolio.career));portfolio.market=market;market.portfolio=portfolio;
+    if choice.get('username'):
+        try:accounts.restore_game_state(choice.get('username'),portfolio,market)
+        except Exception as e:print(f'Unable to restore saved trading state: {e}')
+    app=App(root,market,portfolio);app.account_username=choice.get('username');app.account_manager=accounts
+    def autosave(reason='autosave'):
+        if not app.account_username:return
+        try:
+            accounts.save_session(app.account_username,portfolio.cash,market.difficulty,{'trades':portfolio.trade_count,'realized':portfolio.realized,'best_net_worth':portfolio.best_net_worth});accounts.save_profile_state(app.account_username,portfolio);accounts.save_game_state(app.account_username,portfolio,market,reason)
+            try:app.status_flash(f'Saved progress • {reason}')
+            except Exception:pass
+        except Exception as e:
+            try:market.errors.append(f'autosave: {e}')
+            except Exception:pass
+    market.autosave_callback=autosave
     sim=threading.Thread(target=simulation,args=(market,),daemon=True,name='MarketSimulation');sim.start();root.after(800,market.start_background_loaders)
     def stop():
         market.running=False
         if app.account_username:
-            accounts.save_session(app.account_username,portfolio.cash,market.difficulty,{'trades':portfolio.trade_count,'realized':portfolio.realized,'best_net_worth':portfolio.best_net_worth});accounts.save_profile_state(app.account_username,portfolio)
+            autosave('exit')
         root.destroy()
     root.protocol('WM_DELETE_WINDOW',stop);root.mainloop();market.running=False
 

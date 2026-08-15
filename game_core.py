@@ -740,3 +740,208 @@ def _sgp_option_spread_v19(self):
     liq=max(.10,min(5.0,float(getattr(self.underlying,'scenario_liquidity',1.0))))
     return max(.005,self.premium*(.004+.020*(1-self.liquidity))/math.sqrt(liq))
 OptionContract.spread=property(_sgp_option_spread_v19)
+
+
+# ===== Stock Game Pro 2.0 performance + persistent-session overhaul =====
+# High-frequency price storage is bounded aggressively so long play sessions do not
+# accumulate millions of Candle objects. The live chart still receives every useful
+# market print, while long-range bars are updated in place.
+from collections import deque as _sgp_deque_v20
+import threading as _sgp_threading_v20
+
+_SGP_BAR_LIMITS_V20={'tick':2500,'30s':3000,'1m':5000,'5m':5000,'15m':5000,'1h':7000,'1d':30000}
+
+def _sgp_trim_bar_list_v20(asset,interval):
+    bars=asset.live_bars.get(interval)
+    if bars is None:return
+    lim=_SGP_BAR_LIMITS_V20.get(interval,5000)
+    if len(bars)>lim:
+        del bars[:-lim]
+
+def _sgp_update_bar_v20(self,interval,minutes,ts,price,volume):
+    ts=ts.replace(tzinfo=None) if getattr(ts,'tzinfo',None) else ts
+    bucket=self._bucket(ts,minutes)
+    bars=self.live_bars.setdefault(interval,[])
+    if not bars or bars[-1].timestamp!=bucket:
+        bars.append(Candle(bucket,float(self.previous_price),float(price),float(price),float(price),int(max(0,volume))))
+    else:
+        c=bars[-1];c.high=max(float(c.high),float(price));c.low=min(float(c.low),float(price));c.close=float(price);c.volume+=int(max(0,volume))
+    _sgp_trim_bar_list_v20(self,interval)
+Asset._update_bar=_sgp_update_bar_v20
+
+def _sgp_update_price_v20(self,new_price,volume=0,timestamp=None,record=True):
+    with self.data_lock:
+        self.previous_price=float(self.price);self.price=max(.0001,float(new_price));self.high=max(float(self.high),self.price);self.low=min(float(self.low),self.price)
+        self.volume+=int(max(0,volume));self.trade_count+=1;self.dollar_volume+=self.price*max(0,int(volume))
+        spread=max(self.price*.00008,self.price*self.volatility*.025);self.bid=max(.0001,self.price-spread);self.ask=self.price+spread
+        ts=timestamp or datetime.now();ts=ts.replace(tzinfo=None) if getattr(ts,'tzinfo',None) else ts;self.last_update=ts
+        # Momentum history does not need one sample for every 25ms engine pass.
+        self._history_sample_counter=getattr(self,'_history_sample_counter',0)+1
+        if self._history_sample_counter>=4 or not self.history:
+            self._history_sample_counter=0;self.history.append(self.price)
+        if not record:return
+        # One tick Candle per actual asset update, but keep only a bounded recent window.
+        ticks=self.live_bars.setdefault('tick',[])
+        ticks.append(Candle(ts,self.previous_price,max(self.previous_price,self.price),min(self.previous_price,self.price),self.price,int(max(0,volume))))
+        _sgp_trim_bar_list_v20(self,'tick')
+        b30=self._bucket_seconds(ts,30);bars30=self.live_bars.setdefault('30s',[])
+        if not bars30 or bars30[-1].timestamp!=b30:
+            bars30.append(Candle(b30,self.previous_price,max(self.previous_price,self.price),min(self.previous_price,self.price),self.price,int(max(0,volume))))
+        else:
+            c30=bars30[-1];c30.high=max(c30.high,self.price);c30.low=min(c30.low,self.price);c30.close=self.price;c30.volume+=int(max(0,volume))
+        _sgp_trim_bar_list_v20(self,'30s')
+        for interval,mins in [('1m',1),('5m',5),('15m',15),('1h',60),('1d',1440)]:self._update_bar(interval,mins,ts,self.price,volume)
+        self.candles=deque(self.live_bars.get('1d',[])[-30000:],maxlen=30000)
+Asset.update_price=_sgp_update_price_v20
+
+# Full account-state persistence. This supplements the existing lightweight career
+# profile save and preserves positions, option strategies and working orders.
+def _sgp_dt_iso_v20(v):
+    try:return v.isoformat() if v is not None else None
+    except Exception:return None
+
+def _sgp_dt_parse_v20(v):
+    if not v:return None
+    try:return datetime.fromisoformat(v)
+    except Exception:return None
+
+def _sgp_strategy_to_state_v20(st):
+    return {
+        'name':str(getattr(st,'name','Custom')),'strategy_id':getattr(st,'strategy_id',None),
+        'open_cost':float(getattr(st,'open_cost',0.0)),'opened':bool(getattr(st,'opened',True)),
+        'opened_at':_sgp_dt_iso_v20(getattr(st,'opened_at',None)),'expiry_at':_sgp_dt_iso_v20(getattr(st,'expiry_at',None)),
+        'legs':[{'underlying':l.contract.underlying.symbol,'strike':float(l.contract.strike),'days':float(l.contract.days),
+                 'option_type':str(l.contract.option_type),'quantity':int(l.quantity),'action':str(l.action),
+                 'liquidity':float(getattr(l.contract,'liquidity',1.0)),'open_interest':int(getattr(l.contract,'open_interest',0)),
+                 'volume':int(getattr(l.contract,'volume',0)),'expiry_at':_sgp_dt_iso_v20(getattr(l.contract,'expiry_at',None))}
+                for l in getattr(st,'legs',[])]}
+
+def _sgp_strategy_from_state_v20(state,market):
+    st=OptionStrategy(state.get('name','Custom'));st.strategy_id=state.get('strategy_id');st.open_cost=float(state.get('open_cost',0.0));st.opened=bool(state.get('opened',True));st.opened_at=_sgp_dt_parse_v20(state.get('opened_at'));st.expiry_at=_sgp_dt_parse_v20(state.get('expiry_at'))
+    for x in state.get('legs',[]):
+        a=market.get_asset(x.get('underlying'))
+        if a is None:continue
+        c=OptionContract(a,float(x.get('strike',a.price)),int(max(0,float(x.get('days',0)))),str(x.get('option_type','call')),float(x.get('liquidity',1.0)),int(x.get('open_interest',0)),int(x.get('volume',0)),_sgp_dt_parse_v20(x.get('expiry_at')))
+        st.add_leg(c,int(x.get('quantity',1)),str(x.get('action','BUY')))
+    return st if st.legs else None
+
+def _sgp_account_save_game_state_v20(self,username,portfolio,market,reason='autosave'):
+    if not username or username not in self.accounts:return False
+    lock=getattr(self,'_sgp_io_lock_v20',None)
+    if lock is None:self._sgp_io_lock_v20=_sgp_threading_v20.RLock();lock=self._sgp_io_lock_v20
+    with lock:
+        rec=_sgp_account_defaults_v15(self.accounts[username]) if '_sgp_account_defaults_v15' in globals() else self.accounts[username]
+        state={
+            'saved_at':time.time(),'reason':reason,'clock':_sgp_dt_iso_v20(getattr(getattr(market,'clock',None),'current',None)),
+            'cash':float(portfolio.cash),'positions':{str(k):int(v) for k,v in portfolio.positions.items()},'cost_basis':{str(k):float(v) for k,v in portfolio.cost_basis.items()},
+            'realized':float(portfolio.realized),'reserved_margin':float(portfolio.reserved_margin),'trade_count':int(portfolio.trade_count),'best_net_worth':float(portfolio.best_net_worth),
+            'options':[_sgp_strategy_to_state_v20(st) for st in portfolio.options],
+            'pending_orders':[{'id':o.get('id'),'side':o.get('side'),'asset':getattr(o.get('asset'),'symbol',None),'qty':int(o.get('qty',0)),'type':o.get('type'),'price':o.get('price'),'position_exit':bool(o.get('position_exit',False))} for o in getattr(market,'pending_orders',[])],
+            'pending_option_orders':[{'id':o.get('id'),'side':o.get('side'),'qty':int(o.get('qty',1)),'type':o.get('type'),'price':o.get('price'),'contract':_sgp_strategy_to_state_v20(OptionStrategy('tmp')) if False else {
+                'underlying':getattr(getattr(o.get('contract'), 'underlying', None),'symbol',None),'strike':float(getattr(o.get('contract'),'strike',0)),'days':float(getattr(o.get('contract'),'days',0)),'option_type':getattr(o.get('contract'),'option_type','call')
+            }} for o in getattr(market,'pending_option_orders',[]) if o.get('contract') is not None],
+            'pending_spread_orders':[{'id':o.get('id'),'side':o.get('side'),'type':o.get('type'),'price':o.get('price'),'strategy':_sgp_strategy_to_state_v20(o.get('strategy'))} for o in getattr(market,'pending_spread_orders',[]) if o.get('strategy') is not None],
+            'macro':dict(getattr(market,'macro',{}))
+        }
+        rec['game_state']=state;rec['cash']=float(portfolio.cash);self._save();return True
+AccountManager.save_game_state=_sgp_account_save_game_state_v20
+
+def _sgp_account_restore_game_state_v20(self,username,portfolio,market):
+    if not username:return False
+    rec=self.accounts.get(str(username).lower()) or self.accounts.get(username)
+    state=(rec or {}).get('game_state') or {}
+    if not state:return False
+    portfolio.cash=float(state.get('cash',portfolio.cash));portfolio.positions={str(k):int(v) for k,v in state.get('positions',{}).items()};portfolio.cost_basis={str(k):float(v) for k,v in state.get('cost_basis',{}).items()};portfolio.realized=float(state.get('realized',0.0));portfolio.reserved_margin=float(state.get('reserved_margin',0.0));portfolio.trade_count=int(state.get('trade_count',0));portfolio.best_net_worth=float(state.get('best_net_worth',portfolio.cash))
+    portfolio.options=[]
+    max_sid=0
+    for x in state.get('options',[]):
+        st=_sgp_strategy_from_state_v20(x,market)
+        if st is not None:portfolio.options.append(st);max_sid=max(max_sid,int(getattr(st,'strategy_id',0) or 0))
+    OptionStrategy._next_id=max(OptionStrategy._next_id,max_sid+1);portfolio.invalidate_option_cache()
+    market.pending_orders=[];market.pending_option_orders=[];market.pending_spread_orders=[];max_oid=0
+    for o in state.get('pending_orders',[]):
+        a=market.get_asset(o.get('asset'))
+        if a is None:continue
+        oid=int(o.get('id') or 0);max_oid=max(max_oid,oid);market.pending_orders.append({'id':oid,'side':o.get('side','BUY'),'asset':a,'qty':int(o.get('qty',0)),'type':o.get('type','LIMIT'),'price':o.get('price'),'position_exit':bool(o.get('position_exit',False))})
+    for o in state.get('pending_option_orders',[]):
+        cst=o.get('contract',{});a=market.get_asset(cst.get('underlying'))
+        if a is None:continue
+        c=OptionContract(a,float(cst.get('strike',a.price)),int(max(0,float(cst.get('days',0)))),str(cst.get('option_type','call')));oid=int(o.get('id') or 0);max_oid=max(max_oid,oid);market.pending_option_orders.append({'id':oid,'side':o.get('side','BUY'),'contract':c,'qty':int(o.get('qty',1)),'type':o.get('type','LIMIT'),'price':o.get('price')})
+    for o in state.get('pending_spread_orders',[]):
+        st=_sgp_strategy_from_state_v20(o.get('strategy',{}),market)
+        if st is None:continue
+        oid=int(o.get('id') or 0);max_oid=max(max_oid,oid);market.pending_spread_orders.append({'id':oid,'side':o.get('side','BUY'),'strategy':st,'type':o.get('type','LIMIT'),'price':o.get('price')})
+    market.order_id=max(int(getattr(market,'order_id',1)),max_oid+1)
+    dt=_sgp_dt_parse_v20(state.get('clock'))
+    if dt is not None:market.clock.current=dt
+    if isinstance(state.get('macro'),dict):market.macro.update(state['macro'])
+    return True
+AccountManager.restore_game_state=_sgp_account_restore_game_state_v20
+
+# ===== Stock Game Pro 2.1 execution accounting =====
+# Portfolio market orders route through Market.execute_liquidity_order so player flow
+# consumes depth and changes the simulated quote instead of transacting at a static bid/ask.
+def _sgp_market_fill_v21(self,a,side,qty):
+    m=getattr(self,'market',None)
+    if m is not None and hasattr(m,'execute_liquidity_order'):
+        q=m.execute_liquidity_order(side,a,qty);return float(q['vwap']),q
+    px=float(a.ask if side in ('BUY','COVER') else a.bid);return px,{'vwap':px,'impact':0.0,'participation':0.0,'shown':qty,'adv':qty}
+Portfolio._market_fill_v21=_sgp_market_fill_v21
+
+def _sgp_buy_asset_v21(self,a,qty):
+    try:q=int(qty)
+    except:return False,'Invalid quantity.'
+    if q<=0:return False,'Quantity must be positive.'
+    m=getattr(self,'market',None);preview=m.preview_execution('BUY',a,q) if m is not None and hasattr(m,'preview_execution') else {'vwap':a.ask,'impact':0,'participation':0}
+    est=float(preview['vwap'])*q
+    if est>self.cash:return False,f'Insufficient cash. Estimated sweep cost ${est:,.2f}.'
+    px,fill=self._market_fill_v21(a,'BUY',q);cost=px*q;old=self._qty(a.symbol);self.cash-=cost;self.positions[a.symbol]=old+q;self.cost_basis[a.symbol]=self.cost_basis.get(a.symbol,0)+cost;self.trade_count+=1
+    return True,f'Bought {q:,} {a.symbol} • VWAP ${px:,.4f} • impact {fill.get("impact",0)*100:.2f}% • {fill.get("participation",0)*100:.2f}% ADV'
+Portfolio.buy_asset=_sgp_buy_asset_v21
+
+def _sgp_sell_asset_v21(self,a,qty):
+    try:q=int(qty)
+    except:return False,'Invalid quantity.'
+    owned=self._qty(a.symbol)
+    if q<=0:return False,'Quantity must be positive.'
+    if owned<=0:return False,f'No long {a.symbol} position.'
+    if q>owned:return False,f'Only {owned:,} shares are held.'
+    px,fill=self._market_fill_v21(a,'SELL',q);proceeds=px*q;basis=self.cost_basis.get(a.symbol,0)*(q/owned);self.cash+=proceeds;self.realized+=proceeds-basis;remain=owned-q
+    if remain:self.positions[a.symbol]=remain;self.cost_basis[a.symbol]=max(0,self.cost_basis.get(a.symbol,0)-basis)
+    else:self.positions.pop(a.symbol,None);self.cost_basis.pop(a.symbol,None)
+    self.trade_count+=1;return True,f'Sold {q:,} {a.symbol} • VWAP ${px:,.4f} • impact {fill.get("impact",0)*100:.2f}% • {fill.get("participation",0)*100:.2f}% ADV'
+Portfolio.sell_asset=_sgp_sell_asset_v21
+
+def _sgp_short_asset_v21(self,a,qty,margin_rate=.5):
+    try:q=int(qty)
+    except:return False,'Invalid quantity.'
+    if q<=0:return False,'Quantity must be positive.'
+    m=getattr(self,'market',None);preview=m.preview_execution('SHORT',a,q) if m is not None and hasattr(m,'preview_execution') else {'vwap':a.bid,'impact':0,'participation':0}
+    req=float(preview['vwap'])*q*margin_rate
+    if self.cash<req:return False,f'Margin required about ${req:,.2f}; available ${self.cash:,.2f}.'
+    px,fill=self._market_fill_v21(a,'SHORT',q);old=self._qty(a.symbol);self.positions[a.symbol]=old-q;self.cost_basis[a.symbol]=self.cost_basis.get(a.symbol,0)+px*q;self.cash+=px*q;self.reserved_margin+=req;self.trade_count+=1
+    return True,f'Shorted {q:,} {a.symbol} • VWAP ${px:,.4f} • impact {fill.get("impact",0)*100:.2f}% • margin ${req:,.2f}'
+Portfolio.short_asset=_sgp_short_asset_v21
+
+def _sgp_cover_short_v21(self,a,qty):
+    try:q=int(qty)
+    except:return False,'Invalid quantity.'
+    short=-self._qty(a.symbol)
+    if short<=0:return False,'No short position.'
+    if q<=0 or q>short:return False,f'Short position is {short:,} shares.'
+    m=getattr(self,'market',None);preview=m.preview_execution('COVER',a,q) if m is not None and hasattr(m,'preview_execution') else {'vwap':a.ask}
+    if float(preview['vwap'])*q>self.cash:return False,'Insufficient cash to cover at estimated market-impact price.'
+    px,fill=self._market_fill_v21(a,'COVER',q);cost=px*q;self.cash-=cost;entry=self.cost_basis.get(a.symbol,0)*(q/short);self.realized+=entry-cost;remain=short-q;self.reserved_margin=max(0,self.reserved_margin-px*q*.5)
+    if remain:self.positions[a.symbol]=-remain;self.cost_basis[a.symbol]=max(0,self.cost_basis.get(a.symbol,0)-entry)
+    else:self.positions.pop(a.symbol,None);self.cost_basis.pop(a.symbol,None)
+    self.trade_count+=1;return True,f'Covered {q:,} {a.symbol} • VWAP ${px:,.4f} • impact {fill.get("impact",0)*100:.2f}%'
+Portfolio.cover_short=_sgp_cover_short_v21
+
+_set_dataset_v21_base=Asset.set_dataset
+def _sgp_set_dataset_v21(self,interval,candles):
+    before=float(getattr(self,'price',0.0))
+    _set_dataset_v21_base(self,interval,candles)
+    if interval=='1d' and candles:
+        try:self.fundamental_value=max(.0001,float(candles[-1].close))
+        except Exception:pass
+Asset.set_dataset=_sgp_set_dataset_v21
