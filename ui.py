@@ -1046,7 +1046,7 @@ class AdvancedChartWindow(ToolWindow):
 
 class App:
     def __init__(self,root,market,portfolio):
-        self.root=root;self.market=market;self.portfolio=portfolio;self.market.ui_app=self;self.active_chart=0;self.selected_chart=None;self.ind_vars={k:tk.BooleanVar(value=k in ('Volume',)) for k in ('SMA','EMA','BB','VWAP','RSI','Volume')};self.ind_vars_version=0;self.sort_key='Symbol';self.sort_reverse=False;self.build_style();self.make_menu();self.build();self.set_chart_count(initial=8);self.start_chart_refresh();self.start_fast_watch_stream();self.refresh()
+        self.root=root;self.market=market;self.portfolio=portfolio;self.market.ui_app=self;self.active_chart=0;self.selected_chart=None;self.ind_vars={k:tk.BooleanVar(value=k in ('Volume',)) for k in ('SMA','EMA','BB','VWAP','RSI','Volume')};self.ind_vars_version=0;self.sort_key='Symbol';self.sort_reverse=False;self.build_style();self.make_menu();self.build();self.set_chart_count(initial=1);self.start_chart_refresh();self.start_fast_watch_stream();self.refresh()
     def build_style(self):
         s=ttk.Style();s.theme_use('clam');s.configure('.',background=PANEL,foreground=TEXT);s.configure('TFrame',background=PANEL);s.configure('TLabel',background=PANEL,foreground=TEXT);s.configure('TButton',background=PANEL2,foreground=TEXT,padding=6);s.map('TButton',background=[('active',BLUE)],foreground=[('active','white')]);s.configure('TEntry',fieldbackground='#f4f7fb',foreground='#111827',insertcolor='#111827');s.configure('TCombobox',fieldbackground='#f4f7fb',foreground='#111827',background='#f4f7fb',arrowcolor='#111827');s.map('TCombobox',fieldbackground=[('readonly','#f4f7fb')],foreground=[('readonly','#111827')]);s.configure('Treeview',background='#0c151f',fieldbackground='#0c151f',foreground=TEXT,rowheight=24);s.configure('Treeview.Heading',background='#1e3041',foreground=TEXT);s.map('Treeview',background=[('selected','#1c5f8f')],foreground=[('selected','#ffffff')])
     def make_menu(self):
@@ -4892,3 +4892,576 @@ def _sgp_chart_data_v201(self):
     p=float(self.asset.price);prev=float(getattr(self.asset,'previous_price',p));from datetime import timedelta as _sgp_td_ui_v201
     return [Candle(now-_sgp_td_ui_v201(seconds=1),prev,max(prev,p),min(prev,p),prev,0),Candle(now,p,max(prev,p),min(prev,p),p,int(getattr(self.asset,'volume',0)))]
 Chart.data=_sgp_chart_data_v201
+
+# ===== Stock Game Pro 2.2 workstation / chart / world-map overhaul =====
+from datetime import datetime as _sgp22_dt
+from zoneinfo import ZoneInfo as _sgp22_ZoneInfo
+
+# ---------- chart math ----------
+def _sgp22_macd(vals,fast=12,slow=26,signal=9):
+    if not vals:return [],[],[]
+    f=ema(vals,fast);s=ema(vals,slow);m=[a-b for a,b in zip(f,s)];sig=ema(m,signal);hist=[a-b for a,b in zip(m,sig)];return m,sig,hist
+
+def _sgp22_regular_at(chart,ts):
+    try:return bool(chart.app.market.asset_regular_open_at(chart.asset,ts))
+    except Exception:
+        try:return bool(market_status(_sgp_asset_session_code(chart.asset),ts))
+        except Exception:return True
+
+# Default chart state: one stable, readable SPY chart rather than a hyper-zoomed 1-tick view.
+_Chart_init_v22_base=Chart.__init__
+def _sgp22_chart_init(self,parent,app,index):
+    _Chart_init_v22_base(self,parent,app,index)
+    self.timeframe='1M';self.candle_period='5 Min';self.refresh_ms=100
+    self.show_overnight=True;self.follow_latest=True;self.fit_inception=False
+    self._follow_center=None;self._follow_half=None;self._manual_y_shift=0.0;self._pan_anchor22=None
+Chart.__init__=_sgp22_chart_init
+
+_Chart_set_tf_v22_base=Chart.set_tf
+def _sgp22_set_tf(self,tf):
+    self.fit_inception=False;self._follow_center=None;self._follow_half=None;self._manual_y_shift=0.0
+    return _Chart_set_tf_v22_base(self,tf)
+Chart.set_tf=_sgp22_set_tf
+
+_Chart_set_candle_v22_base=getattr(Chart,'set_candle_period',lambda self,v:None)
+def _sgp22_set_candle(self,value):
+    self.fit_inception=False;self._follow_center=None;self._follow_half=None;self._manual_y_shift=0.0
+    return _Chart_set_candle_v22_base(self,value)
+Chart.set_candle_period=_sgp22_set_candle
+
+_Chart_data_v22_base=Chart.data
+def _sgp22_chart_data(self):
+    if self.asset is None:return []
+    if getattr(self,'fit_inception',False):
+        raw=list(self.asset.chart_candles('1d'))
+        if not raw:
+            try:self.app.market.load_ipo_history(self.asset)
+            except Exception:pass
+            return list(_Chart_data_v22_base(self))
+        target=max(320,min(1600,int(max(500,self.winfo_width())*1.25)))
+        if len(raw)>target:
+            step=(len(raw)-1)/(target-1);raw=[raw[round(i*step)] for i in range(target)]
+        return raw
+    return list(_Chart_data_v22_base(self))
+Chart.data=_sgp22_chart_data
+
+# Hysteretic price following: center once, then move only when price approaches/leaves the viewport.
+def _sgp22_bounds(self,d,live,plot_height=300):
+    scale=max(.25,min(8.0,float(getattr(self,'vertical_scale',1.0))))
+    if not d:return 0.0,1.0
+    if getattr(self,'fit_inception',False) and self.asset is not None:
+        p=float(self.asset.price);lo=min(float(c.low) for c in d);hi=max(float(c.high) for c in d)
+        half=max(p-lo,hi-p,abs(p)*.01,1e-6)/scale
+        return p-half,p+half
+    if not live:
+        lo=min(float(c.low) for c in d);hi=max(float(c.high) for c in d);mid=(lo+hi)/2+float(getattr(self,'_manual_y_shift',0.0));rng=max(hi-lo,abs(mid)*.002,1e-6)/scale
+        return mid-rng*.55,mid+rng*.55
+    p=float(self.asset.price);recent=d[-min(120,len(d)):]
+    rlo=min([float(c.low) for c in recent]+[p]);rhi=max([float(c.high) for c in recent]+[p])
+    desired_half=max((rhi-rlo)*.60,abs(p)*.0035,0.015 if abs(p)>=1 else abs(p)*.02,1e-6)/scale
+    center=getattr(self,'_follow_center',None);half=getattr(self,'_follow_half',None)
+    if center is None or half is None or not math.isfinite(center) or not math.isfinite(half):center=p;half=desired_half
+    # Expand quickly, contract slowly. This prevents shimmering when a single wick changes the range.
+    if desired_half>half:half=half*.72+desired_half*.28
+    else:half=half*.985+desired_half*.015
+    half=max(desired_half*.85,half)
+    upper=center+half;lower=center-half;margin=.18*2*half
+    if p>upper-margin:center += (p-(upper-margin))*.72
+    elif p<lower+margin:center += (p-(lower+margin))*.72
+    self._follow_center=center;self._follow_half=half
+    return center-half,center+half
+
+# Full free-screen pan in advanced mode: horizontal history + vertical price translation.
+_Chart_click_v22_base=Chart.click
+def _sgp22_chart_click(self,e):
+    if getattr(self,'pan_mode',False):
+        lo,hi=getattr(self,'_last_bounds_v22',getattr(self,'_last_bounds_v20',(0,1)))
+        self._pan_anchor22=(e.x,e.y,int(getattr(self,'view_offset',0)),float(getattr(self,'_manual_y_shift',0.0)),hi-lo)
+        self.follow_latest=False;self.cross=(e.x,e.y);return
+    return _Chart_click_v22_base(self,e)
+Chart.click=_sgp22_chart_click
+
+_Chart_drag_v22_base=Chart.drag
+def _sgp22_chart_drag(self,e):
+    if getattr(self,'pan_mode',False) and getattr(self,'_pan_anchor22',None):
+        ax,ay,off,shift,span=self._pan_anchor22;d=self.data();w=max(280,self.winfo_width());step=max(1,(w-80)/max(1,len(d)))
+        self.view_offset=max(0,off+int((e.x-ax)/step));plot_h=max(80,self.winfo_height()-115)
+        self._manual_y_shift=shift+(e.y-ay)/plot_h*span;self.cross=(e.x,e.y);self._key=None;self.request_draw(force=True);return
+    return _Chart_drag_v22_base(self,e)
+Chart.drag=_sgp22_chart_drag
+
+_Chart_release_v22_base=Chart.release
+def _sgp22_chart_release(self,e):
+    if getattr(self,'pan_mode',False):self._pan_anchor22=None;self.request_draw(force=True);return
+    return _Chart_release_v22_base(self,e)
+Chart.release=_sgp22_chart_release
+
+# Final chart renderer: stable axis, overnight shading, RSI/MACD subpanels, compact x-axis.
+def _sgp22_chart_draw(self):
+    a=self.asset;w=max(300,self.winfo_width());h=max(190,self.winfo_height());d=list(self.data()) if a else []
+    live=bool(a is not None and int(getattr(self,'view_offset',0))==0 and getattr(self,'follow_latest',True) and not getattr(self,'fit_inception',False))
+    if a is not None and d and live:
+        p=float(a.price);last=d[-1];d[-1]=Candle(last.timestamp,float(last.open),max(float(last.high),p),min(float(last.low),p),p,int(last.volume))
+    show_rsi=bool(getattr(self.app,'ind_vars',{}).get('RSI') and self.app.ind_vars['RSI'].get())
+    show_macd=bool(getattr(self.app,'ind_vars',{}).get('MACD') and self.app.ind_vars['MACD'].get())
+    subcount=int(show_rsi)+int(show_macd);sub_h=68 if h>360 else 52
+    left,right,top=64,w-14,36;axis_y=h-25;price_bottom=axis_y-8-subcount*sub_h
+    if price_bottom<top+70:price_bottom=top+70;sub_h=max(35,(axis_y-price_bottom-8)//max(1,subcount))
+    q=int(self.app.portfolio.positions.get(a.symbol,0)) if a else 0;basis=float(self.app.portfolio.cost_basis.get(a.symbol,0)) if a else 0.0
+    rel_orders=tuple((o.get('id'),o.get('side'),o.get('type'),round(float(o.get('price') or 0),5)) for o in self.app.market.pending_orders if a is not None and o.get('asset') is a)
+    key=(a.symbol if a else None,self.timeframe,getattr(self,'candle_period','Auto'),self.kind,round(self.zoom,3),int(getattr(self,'view_offset',0)),live,getattr(self,'fit_inception',False),round(float(a.price),6) if a else 0,getattr(a,'last_update',None),w,h,q,round(basis,3),rel_orders,self.app.ind_vars_version,round(float(getattr(self,'vertical_scale',1.0)),3),round(float(getattr(self,'_manual_y_shift',0.0)),5),len(d),getattr(self,'show_overnight',True))
+    if key==getattr(self,'_key',None):self._draw_crosshair(top=top,bottom=price_bottom,left=left,right=right);return
+    self._key=key;self.delete('all')
+    if not a:self.create_text(w/2,h/2,text='Select a market symbol',fill=MUTED,font=('Segoe UI',11));return
+    if len(d)<2:self.create_text(12,10,anchor='nw',text=f'{a.symbol} • loading history…',fill=MUTED);return
+    lo,hi=_sgp22_bounds(self,d,live,price_bottom-top);self._last_bounds_v22=(lo,hi);span=max(1e-9,hi-lo);step=(right-left)/max(1,len(d))
+    def py(v):return price_bottom-(float(v)-lo)/span*(price_bottom-top)
+    # Header — intentionally short to avoid collisions.
+    mode='LIVE' if live else 'MAX FIT' if getattr(self,'fit_inception',False) else f'HISTORY {int(getattr(self,"view_offset",0))}b'
+    self.create_text(8,7,anchor='nw',text=f'{a.symbol}  ${a.price:,.2f}',fill=TEXT,font=('Segoe UI',9,'bold'))
+    self.create_text(right,7,anchor='ne',text=f'{self.timeframe} • {getattr(self,"candle_period","Auto")} • {mode}',fill=CYAN if live else MUTED,font=('Segoe UI',7,'bold'))
+    # Grid / y labels.
+    for j in range(6):
+        y=top+j*(price_bottom-top)/5;v=hi-j*span/5;self.create_line(left,y,right,y,fill=GRID);self.create_text(left-5,y,text=f'{v:,.2f}',anchor='e',fill=MUTED,font=('Segoe UI',7))
+    # Overnight shading behind candles, enabled by default.
+    if getattr(self,'show_overnight',True) and self.timeframe in ('1D','1W','1M'):
+        for i,c in enumerate(d):
+            if not _sgp22_regular_at(self,c.timestamp):
+                x1=left+i*step;x2=x1+step;self.create_rectangle(x1,top,x2,price_bottom,fill='#0b1724',outline='')
+    if self.kind=='Candles':
+        bw=max(1,min(6,step*.34))
+        for i,c in enumerate(d):
+            x=left+(i+.5)*step;col=GREEN if c.close>=c.open else RED;self.create_line(x,py(c.high),x,py(c.low),fill=col)
+            y1,y2=py(c.open),py(c.close);self.create_rectangle(x-bw,min(y1,y2),x+bw,max(y1,y2)+1,fill=col,outline=col)
+    else:
+        pts=[]
+        for i,c in enumerate(d):pts.extend((left+(i+.5)*step,py(c.close)))
+        if self.kind=='Area':self.create_polygon(*(pts+[right,price_bottom,left,price_bottom]),fill='#12314a',outline='')
+        if len(pts)>=4:self.create_line(*pts,fill=BLUE,width=2)
+    close=[float(x.close) for x in d]
+    if self.app.ind_vars['SMA'].get():self._line(sma(close,20),left,step,py,YELLOW)
+    if self.app.ind_vars['EMA'].get():self._line(ema(close,20),left,step,py,PURPLE)
+    if self.app.ind_vars['BB'].get():_,u,l=boll(close);self._line(u,left,step,py,CYAN);self._line(l,left,step,py,CYAN)
+    if self.app.ind_vars['VWAP'].get():self._line(vwap(d),left,step,py,ORANGE)
+    if self.app.ind_vars['Volume'].get():
+        vmax=max((x.volume for x in d),default=1) or 1;vh=(price_bottom-top)*.11
+        for i,c in enumerate(d):
+            x=left+(i+.5)*step;y=price_bottom-c.volume/vmax*vh;self.create_rectangle(x-step*.26,price_bottom,x+step*.26,y,fill='#34485a',outline='')
+    # Positions and working orders.
+    for o in self.app.market.pending_orders:
+        if o.get('asset') is a and o.get('price') is not None:
+            y=py(o['price']);col=GREEN if o.get('side') in ('BUY','COVER') else RED;self.create_line(left,y,right,y,fill=col,dash=(7,4),width=1);self.create_text(right-4,y-6,anchor='e',text=f"#{o.get('id')} {o.get('type')} {o.get('side')} {float(o.get('price')):,.2f}",fill=col,font=('Segoe UI',6,'bold'))
+    if q:
+        entry=basis/max(1,abs(q));y=py(entry);col=GREEN if q>0 else RED;self.create_line(left,y,right,y,fill=col,dash=(10,4));self.create_text(left+4,y-6,anchor='w',text=f'{"LONG" if q>0 else "SHORT"} {abs(q):,} @ {entry:,.2f}',fill=col,font=('Segoe UI',6,'bold'))
+    for dr in getattr(self,'anchored_drawings',[]):
+        if dr[0]=='aline':
+            _,t1,p1,t2,p2=dr;x1=self.time_to_x(t1);x2=self.time_to_x(t2)
+            if x1 is not None and x2 is not None:self.create_line(x1,py(p1),x2,py(p2),fill=YELLOW,width=2)
+        elif dr[0]=='ah':self.create_line(left,py(dr[1]),right,py(dr[1]),fill=YELLOW,dash=(5,3))
+    # RSI and MACD get true subcharts instead of overlapping price candles.
+    panel_top=price_bottom+6
+    if show_rsi:
+        rvals=rsi(close);pt,pb=panel_top,panel_top+sub_h-5;self.create_rectangle(left,pt,right,pb,fill='#08131d',outline=GRID)
+        for level in (30,50,70):
+            yy=pb-(level/100)*(pb-pt);self.create_line(left,yy,right,yy,fill=GRID,dash=(2,3));self.create_text(left-4,yy,text=str(level),anchor='e',fill=MUTED,font=('Segoe UI',6))
+        pts=[]
+        for i,v in enumerate(rvals):pts.extend((left+(i+.5)*step,pb-(max(0,min(100,v))/100)*(pb-pt)))
+        if len(pts)>=4:self.create_line(*pts,fill=PURPLE,width=1.5)
+        self.create_text(left+4,pt+3,text=f'RSI(14) {rvals[-1]:.1f}',anchor='nw',fill=PURPLE,font=('Segoe UI',7,'bold'));panel_top+=sub_h
+    if show_macd:
+        m,sig,hist=_sgp22_macd(close);pt,pb=panel_top,panel_top+sub_h-5;self.create_rectangle(left,pt,right,pb,fill='#08131d',outline=GRID);mx=max([abs(x) for x in m+sig+hist] or [1]);mid=(pt+pb)/2;self.create_line(left,mid,right,mid,fill=GRID)
+        def mpy(v):return mid-v/max(1e-9,mx)*(pb-pt)*.42
+        for i,v in enumerate(hist):
+            x=left+(i+.5)*step;self.create_rectangle(x-step*.25,mid,x+step*.25,mpy(v),fill=GREEN if v>=0 else RED,outline='')
+        self._line(m,left,step,mpy,BLUE);self._line(sig,left,step,mpy,ORANGE);self.create_text(left+4,pt+3,text='MACD 12/26/9',anchor='nw',fill=BLUE,font=('Segoe UI',7,'bold'))
+    # X axis: one dedicated row, never shared with footer labels.
+    ticks=4 if w<700 else 6
+    for j in range(ticks):
+        i=round((len(d)-1)*j/max(1,ticks-1));ts=d[i].timestamp;x=left+(i+.5)*step;fmt='%a %H:%M' if self.timeframe=='1D' else '%m-%d %H:%M' if self.timeframe in ('1W','1M') else '%Y-%m-%d';self.create_text(x,axis_y,text=ts.strftime(fmt),fill='#71879a',font=('Segoe UI',6 if w<500 else 7),anchor='s')
+    if live:
+        y=max(top,min(price_bottom,py(a.price)));self.create_line(left,y,right,y,fill=CYAN,dash=(3,3));self.create_rectangle(right-82,y-9,right,y+9,fill='#0b2532',outline=CYAN);self.create_text(right-4,y,text=f'{a.price:,.2f}',fill='#d8f6ff',font=('Consolas',8,'bold'),anchor='e')
+    try:
+        status,remain=_sgp_session_countdown(a,self.app.market.clock.current);self.create_text(left+3,22,text=f'{_sgp_asset_session_code(a)} {status} • {remain}',fill=GREEN if status=='OPEN' else MUTED,font=('Segoe UI',7,'bold'),anchor='nw')
+    except Exception:pass
+    self._draw_crosshair(top=top,bottom=price_bottom,left=left,right=right)
+Chart.draw=_sgp22_chart_draw
+
+def _sgp22_price_to_y(self,p):
+    h=max(190,self.winfo_height());show_rsi=bool(self.app.ind_vars.get('RSI') and self.app.ind_vars['RSI'].get());show_macd=bool(self.app.ind_vars.get('MACD') and self.app.ind_vars['MACD'].get());subcount=int(show_rsi)+int(show_macd);sub_h=68 if h>360 else 52;top=36;bottom=h-33-subcount*sub_h;lo,hi=getattr(self,'_last_bounds_v22',(0,1));return bottom-(float(p)-lo)/max(1e-9,hi-lo)*(bottom-top)
+def _sgp22_y_to_price(self,y):
+    h=max(190,self.winfo_height());show_rsi=bool(self.app.ind_vars.get('RSI') and self.app.ind_vars['RSI'].get());show_macd=bool(self.app.ind_vars.get('MACD') and self.app.ind_vars['MACD'].get());subcount=int(show_rsi)+int(show_macd);sub_h=68 if h>360 else 52;top=36;bottom=h-33-subcount*sub_h;lo,hi=getattr(self,'_last_bounds_v22',(0,1));return hi-(float(y)-top)/max(1,bottom-top)*(hi-lo)
+Chart.price_to_y=_sgp22_price_to_y;Chart.y_to_price=_sgp22_y_to_price
+
+# ---------- main workstation ----------
+def _sgp22_set_time_warp(self,value=None):
+    # UI 1x..10x maps to engine 0.25x..2.50x. 1x is the new minimum and startup speed.
+    try:display=max(1.0,min(10.0,float(self.time_warp.get() if value is None else value)))
+    except Exception:display=1.0
+    internal=display*.25;self.market.time_warp=internal
+    try:self.time_warp.set(display);self.time_warp_label.config(text=f'{display:.1f}x')
+    except Exception:pass
+App.set_time_warp=_sgp22_set_time_warp
+
+def _sgp22_clock_stream(self):
+    try:
+        if not self.root.winfo_exists():return
+        a=self.charts[self.active_chart].asset if getattr(self,'charts',None) else self.market.get_asset('SPY')
+        status,remain=_sgp_session_countdown(a,self.market.clock.current) if a else ('','')
+        txt=f'{self.market.clock.current:%a %m-%d %H:%M:%S}  •  {getattr(a,"symbol","SPY")} {status}  {remain}'
+        if txt!=getattr(self,'_last_clock_text22',None):self.clock_label.config(text=txt);self._last_clock_text22=txt
+    except Exception:pass
+    self._clock_stream_job=self.root.after(250,self._smooth_clock_stream)
+App._smooth_clock_stream=_sgp22_clock_stream
+
+def _sgp22_skip_next_open(self):
+    a=self.charts[self.active_chart].asset if getattr(self,'charts',None) else self.market.get_asset('SPY')
+    if a is not None:
+        try:
+            if self.market.asset_regular_open(a):return self.status_flash(f'{a.symbol} is already in its regular session. NEXT OPEN is only available while closed.')
+        except Exception:pass
+    mins=self.market.skip_to_next_open(a);self.refresh_watch();self.refresh_positions();self.refresh_orders()
+    for c in list(getattr(self,'charts',()))+list(getattr(self,'extra_charts',())):
+        try:c.request_draw(force=True)
+        except Exception:pass
+    self.status_flash(f'Skipped {mins/60:.1f}h to {getattr(a,"symbol","market")} regular open')
+App.skip_to_next_open=_sgp22_skip_next_open
+
+def _sgp22_fit_inception(self,chart=None):
+    c=chart or self.charts[self.active_chart];c.fit_inception=True;c.timeframe='MAX';c.candle_period='1 Day';c.view_offset=0;c.follow_latest=False;c.pan_mode=False;c._manual_y_shift=0.0;c._key=None
+    try:self.tf.set('MAX');self.candle_period_var.set('1 Day')
+    except Exception:pass
+    try:self.market.load_ipo_history(c.asset)
+    except Exception:pass
+    c.request_draw(force=True);self.status_flash(f'{c.asset.symbol} • full inception view')
+App.fit_inception=_sgp22_fit_inception
+
+_App_init_v22_base=App.__init__
+def _sgp22_app_init(self,root,market,portfolio):
+    # MACD exists beside the legacy indicators and is rendered as a true subpanel.
+    _App_init_v22_base(self,root,market,portfolio)
+    if 'MACD' not in self.ind_vars:self.ind_vars['MACD']=tk.BooleanVar(value=False)
+    self.market.time_warp=.25
+    # One SPY chart by default.
+    if len(self.charts)!=1:self.set_chart_count(initial=1)
+    c=self.charts[0];c.set_asset(self.market.get_asset('SPY'));c.timeframe='1M';c.candle_period='5 Min';c.zoom=.70;c.refresh_ms=100;c.show_overnight=True;c._follow_center=None;c._follow_half=None;c.request_draw(force=True)
+    self.active_chart=0
+    # Remove legacy global chart-rate and +24h controls.
+    for attr in ('chart_rate','next_day_button'):
+        obj=getattr(self,attr,None)
+        try:obj.destroy()
+        except Exception:pass
+        try:delattr(self,attr)
+        except Exception:pass
+    # Time warp becomes 1x..10x display with 1x mapped to old 0.25x.
+    try:
+        self.time_warp_scale.config(from_=1,to=10,resolution=.25,length=118);self.time_warp.set(1.0);self.time_warp_label.config(width=5,font=('Segoe UI',8));self.set_time_warp(1.0)
+    except Exception:pass
+    try:self.clock_label.config(font=('Segoe UI',8),width=38,anchor='e')
+    except Exception:pass
+    # Per-active-chart tickrate dropdown lives immediately left of timeframe.
+    try:
+        top=self.tf.master;self.tick22_var=tk.StringVar(value='100ms');self.tick22=ttk.Combobox(top,textvariable=self.tick22_var,values=['50ms','75ms','100ms','150ms','250ms','500ms','1000ms'],state='readonly',width=8)
+        self.tick22.pack(side='left',padx=(3,2),before=self.tf);self.tick22.bind('<<ComboboxSelected>>',lambda e:self.charts[self.active_chart].set_refresh_rate(int(self.tick22_var.get().replace('ms',''))))
+        ttk.Button(top,text='FIT MAX',width=7,command=lambda:self.fit_inception()).pack(side='left',padx=(2,4),after=self.tf)
+    except Exception:pass
+    # Indicator menu gets MACD and overnight toggle.
+    try:
+        mb=self.root.nametowidget(self.root.cget('menu'));ind=None
+        for i in range(mb.index('end')+1):
+            try:
+                if mb.entrycget(i,'label')=='Indicators':ind=mb.nametowidget(mb.entrycget(i,'menu'));break
+            except Exception:pass
+        if ind is not None:
+            ind.add_checkbutton(label='MACD',variable=self.ind_vars['MACD'],command=self.redraw)
+            self.overnight_var=tk.BooleanVar(value=True);ind.add_checkbutton(label='Highlight Overnight Sessions',variable=self.overnight_var,command=self._toggle_overnight22)
+    except Exception:pass
+    self.sync_chart_controls()
+App.__init__=_sgp22_app_init
+
+def _sgp22_toggle_overnight(self):
+    val=bool(getattr(self,'overnight_var',tk.BooleanVar(value=True)).get())
+    for c in list(getattr(self,'charts',()))+list(getattr(self,'extra_charts',())):c.show_overnight=val;c.request_draw(force=True)
+App._toggle_overnight22=_sgp22_toggle_overnight
+
+_sync_controls_v22_base=App.sync_chart_controls
+def _sgp22_sync_controls(self):
+    _sync_controls_v22_base(self);c=self.charts[self.active_chart]
+    try:self.tick22_var.set(f'{c.refresh_ms}ms')
+    except Exception:pass
+App.sync_chart_controls=_sgp22_sync_controls
+
+# ---------- advanced chart controls ----------
+_Advanced_v22_base=AdvancedChartWindow
+class AdvancedChartWindow(_Advanced_v22_base):
+    def __init__(self,parent,app,asset):
+        super().__init__(parent,app,asset)
+        self.chart.show_overnight=True
+        bar=ttk.Frame(self);bar.pack(fill='x',padx=8,pady=(0,5))
+        ttk.Button(bar,text='FIT INCEPTION',command=lambda:app.fit_inception(self.chart)).pack(side='left')
+        self.ov22=tk.BooleanVar(value=True);ttk.Checkbutton(bar,text='Overnight shading',variable=self.ov22,command=self._overnight).pack(side='left',padx=8)
+        ttk.Label(bar,text='Indicators').pack(side='left',padx=(10,3))
+        for name in ('SMA','EMA','BB','VWAP','Volume','RSI','MACD'):
+            if name not in app.ind_vars:app.ind_vars[name]=tk.BooleanVar(value=False)
+            ttk.Checkbutton(bar,text=name,variable=app.ind_vars[name],command=app.redraw).pack(side='left',padx=2)
+        ttk.Label(bar,text='Free screen: drag left/right for time, up/down for price',foreground=MUTED).pack(side='right')
+    def _overnight(self):self.chart.show_overnight=bool(self.ov22.get());self.chart.request_draw(force=True)
+    def go_live(self):
+        try:super().go_live()
+        except Exception:
+            self.chart.view_offset=0;self.chart.follow_latest=True;self.chart.pan_mode=False
+        self.chart.fit_inception=False;self.chart._manual_y_shift=0.0;self.chart._follow_center=None;self.chart._follow_half=None;self.chart.request_draw(force=True)
+
+def _sgp22_open_adv(self,a):return AdvancedChartWindow(self.root,self,a)
+App.advanced_chart=_sgp22_open_adv
+
+# ---------- richer market-conditions lab ----------
+def _sgp22_market_conditions_lab(self):
+    w=ToolWindow(self.root);w.style_window('MARKET CONDITIONS • RESEARCH LAB','900x820');w.resizable(True,True)
+    ttk.Label(w,text='MARKET CONDITIONS RESEARCH LAB',font=('Segoe UI',16,'bold')).pack(anchor='w',padx=16,pady=(14,3))
+    ttk.Label(w,text='Controls are staged locally and do not alter the market until APPLY is pressed. Close the window to discard changes.',foreground=MUTED,wraplength=850).pack(anchor='w',padx=16,pady=(0,8))
+    body=ttk.Frame(w);body.pack(fill='both',expand=True,padx=14,pady=5);left=ttk.Frame(body);right=ttk.Frame(body);left.pack(side='left',fill='both',expand=True);right.pack(side='left',fill='both',expand=True,padx=(10,0))
+    m=self.market
+    defs=[
+      ('Volatility','scenario_volatility',.10,8.0,.05,float(getattr(m,'scenario_volatility',1.0)),'Broad realized-volatility multiplier.'),
+      ('Liquidity','scenario_liquidity',.05,8.0,.05,float(getattr(m,'scenario_liquidity',1.0)),'Depth and spread resilience. Low values amplify slippage.'),
+      ('Whale flow','scenario_whale_flow',-3.0,3.0,.05,float(getattr(m,'scenario_whale_flow',0.0)),'Persistent directional institutional flow.'),
+      ('Event intensity','scenario_event_intensity',0.0,6.0,.05,float(getattr(m,'scenario_event_intensity',1.0)),'Frequency/severity of news and event shocks.'),
+      ('Correlation','scenario_correlation',0.0,1.25,.05,float(getattr(m,'scenario_correlation',.82)),'Cross-asset market-factor coupling.'),
+      ('Trend persistence','scenario_trend',0.0,4.0,.05,float(getattr(m,'scenario_trend',1.0)),'Strength of momentum continuation.'),
+      ('Mean reversion','scenario_mean_reversion',0.0,4.0,.05,float(getattr(m,'scenario_mean_reversion',1.0)),'Strength of pullback/oversold recovery.'),
+      ('Option IV','scenario_option_iv',.20,5.0,.05,float(getattr(m,'scenario_option_iv',1.0)),'Option-implied-volatility regime multiplier.'),
+      ('Rate shock','scenario_rate_shock',-5.0,5.0,.10,float(getattr(m,'scenario_rate_shock',0.0)),'Extra rate-sensitive equity pressure/boost.'),
+      ('Credit stress','scenario_credit_stress',0.0,5.0,.05,float(getattr(m,'scenario_credit_stress',0.0)),'Funding/credit tightening, strongest in finance/consumer.'),
+      ('Oil shock','scenario_oil_shock',-5.0,5.0,.10,float(getattr(m,'scenario_oil_shock',0.0)),'Energy windfall or cost shock for energy users.'),
+      ('Sentiment','macro.sentiment',-2.0,2.0,.05,float(m.macro.get('sentiment',0.0)),'Risk appetite / risk aversion.'),
+      ('Inflation %','macro.inflation',-5.0,30.0,.10,float(m.macro.get('inflation',2.5)),'Inflation regime influencing Fed and multiples.'),
+      ('Fed rate %','macro.policy_rate',-2.0,25.0,.10,float(m.macro.get('policy_rate',4.0)),'Policy-rate level.'),
+      ('Unemployment %','macro.unemployment',1.0,25.0,.10,float(m.macro.get('unemployment',4.1)),'Labor-market stress.'),
+      ('GDP growth %','macro.gdp_growth',-15.0,15.0,.10,float(m.macro.get('gdp_growth',2.0)),'Growth/recession impulse.'),
+      ('10Y yield %','macro.ten_year',0.0,20.0,.10,float(m.macro.get('ten_year',4.3)),'Long-duration discount rate.'),
+      ('Dollar index','macro.dollar',50.0,160.0,.50,float(m.macro.get('dollar',100.0)),'USD strength, relevant to multinationals/commodities.')]
+    local={};labels={}
+    for idx,(name,key,lo,hi,res,val,desc) in enumerate(defs):
+        parent=left if idx<(len(defs)+1)//2 else right;v=tk.DoubleVar(value=val);local[key]=v;box=ttk.Frame(parent);box.pack(fill='x',pady=4);topr=ttk.Frame(box);topr.pack(fill='x');ttk.Label(topr,text=name,font=('Segoe UI',8,'bold')).pack(side='left');lab=ttk.Label(topr,text=f'{val:.2f}',width=8);lab.pack(side='right');labels[key]=lab
+        sc=tk.Scale(box,from_=lo,to=hi,resolution=res,orient='horizontal',variable=v,showvalue=0,length=300,bg=PANEL,fg=TEXT,highlightthickness=0,command=lambda x,k=key:labels[k].config(text=f'{local[k].get():.2f}'));sc.pack(fill='x');ttk.Label(box,text=desc,foreground=MUTED,wraplength=380,font=('Segoe UI',7)).pack(anchor='w')
+    target=tk.StringVar(value='SPY');foot=ttk.Frame(w);foot.pack(fill='x',padx=16,pady=8);ttk.Label(foot,text='Preview asset').pack(side='left');ttk.Combobox(foot,textvariable=target,values=[a.symbol for a in m.all_assets()],width=12).pack(side='left',padx=5);preview=ttk.Label(foot,text='');preview.pack(side='left',padx=10)
+    def update_preview():
+        a=m.get_asset(target.get().upper()) or m.get_asset('SPY');vol=local['scenario_volatility'].get();liq=local['scenario_liquidity'].get();sent=local['macro.sentiment'].get();credit=local['scenario_credit_stress'].get();preview.config(text=f'{a.symbol}: vol ≈ {a.volatility*vol*100:.2f}%/step • liquidity {liq:.2f}× • sentiment {sent:+.2f} • credit stress {credit:.2f}')
+    for v in local.values():v.trace_add('write',lambda *_:update_preview())
+    update_preview()
+    def apply():
+        for key,v in local.items():
+            if key.startswith('macro.'):m.macro[key.split('.',1)[1]]=float(v.get())
+            else:setattr(m,key,float(v.get()))
+        m.scenario_whale_symbol=target.get().upper().strip();m.visual_version+=1;self.status_flash('Research market conditions applied');w.destroy()
+    buttons=ttk.Frame(w);buttons.pack(fill='x',padx=16,pady=(0,12));ttk.Button(buttons,text='APPLY',command=apply).pack(side='left',fill='x',expand=True);ttk.Button(buttons,text='CANCEL / DISCARD',command=w.destroy).pack(side='left',fill='x',expand=True,padx=(6,0))
+App.market_conditions_lab=_sgp22_market_conditions_lab
+
+# ---------- professional market map ----------
+class MarketMapWindow(ToolWindow):
+    def __init__(self,parent,market):
+        super().__init__(parent);self.market=market;self.style_window('STOCK GAME PRO • MARKET MAP / INDEX IMPACT','1500x860');self.resizable(True,True);self.sector=tk.StringVar(value='ALL');self.index=tk.StringVar(value='SPX')
+        top=ttk.Frame(self);top.pack(fill='x',padx=8,pady=6);ttk.Label(top,text='Sector').pack(side='left');cb=ttk.Combobox(top,textvariable=self.sector,values=['ALL']+market.sectors,state='readonly',width=18);cb.pack(side='left',padx=4);cb.bind('<<ComboboxSelected>>',lambda e:self.refresh())
+        ttk.Label(top,text='Index decomposition').pack(side='left',padx=(14,3));ic=ttk.Combobox(top,textvariable=self.index,values=[i.symbol for i in market.indexes],state='readonly',width=12);ic.pack(side='left');ic.bind('<<ComboboxSelected>>',lambda e:self.refresh());ttk.Label(top,text='Double-click any row/tile for Advanced Chart',foreground=MUTED).pack(side='right')
+        pan=ttk.PanedWindow(self,orient='horizontal');pan.pack(fill='both',expand=True,padx=8,pady=5);l=ttk.Frame(pan);mid=ttk.Frame(pan);r=ttk.Frame(pan);pan.add(l,weight=2);pan.add(mid,weight=5);pan.add(r,weight=3)
+        ttk.Label(l,text='SECTOR BREADTH',font=('Segoe UI',10,'bold')).pack(anchor='w');self.sectors=ttk.Treeview(l,columns=('sector','chg','adv','dec'),show='headings',height=20);[(self.sectors.heading(c,text=t),self.sectors.column(c,width=w,anchor='center')) for c,t,w in [('sector','Sector',100),('chg','Avg %',60),('adv','Adv',45),('dec','Dec',45)]];self.sectors.pack(fill='both',expand=True)
+        self.cv=tk.Canvas(mid,bg='#071019',highlightthickness=0);self.cv.pack(fill='both',expand=True);self.cv.bind('<Double-1>',self.tile_open);self.tiles=[]
+        ttk.Label(r,text='INDEX CONSTITUENT IMPACT',font=('Segoe UI',10,'bold')).pack(anchor='w');self.const=ttk.Treeview(r,columns=('symbol','weight','chg','impact'),show='headings');[(self.const.heading(c,text=t),self.const.column(c,width=w,anchor='center')) for c,t,w in [('symbol','Symbol',70),('weight','Weight',65),('chg','Chg %',65),('impact','Impact',70)]];self.const.pack(fill='both',expand=True);self.const.bind('<Double-1>',self.row_open)
+        self.after(100,self.refresh)
+    def refresh(self):
+        if not self.winfo_exists():return
+        assets=[a for a in self.market.stocks+self.market.international if self.sector.get()=='ALL' or a.category==self.sector.get()]
+        self.sectors.delete(*self.sectors.get_children());groups={}
+        for a in self.market.stocks+self.market.international:groups.setdefault(a.category,[]).append(a)
+        for sec,vals in sorted(groups.items()):
+            ch=[a.change_percent() for a in vals];self.sectors.insert('','end',values=(sec,f'{sum(ch)/max(1,len(ch)):+.2f}',sum(x>0 for x in ch),sum(x<0 for x in ch)))
+        self.cv.delete('all');self.tiles=[];w=max(500,self.cv.winfo_width());h=max(500,self.cv.winfo_height());assets=sorted(assets,key=lambda a:float(getattr(a,'market_cap',1)),reverse=True)[:72];cols=max(4,int(math.sqrt(len(assets)*w/max(1,h))));rows=max(1,math.ceil(len(assets)/cols));cw=w/cols;ch=h/rows
+        for i,a in enumerate(assets):
+            row,col=divmod(i,cols);x1=col*cw;y1=row*ch;x2=x1+cw-2;y2=y1+ch-2;pc=a.change_percent();fill='#123c2c' if pc>1 else '#173126' if pc>0 else '#4a1f2a' if pc<-1 else '#342028';self.cv.create_rectangle(x1,y1,x2,y2,fill=fill,outline='#20394b');self.cv.create_text((x1+x2)/2,(y1+y2)/2-7,text=a.symbol,fill=TEXT,font=('Segoe UI',8,'bold'));self.cv.create_text((x1+x2)/2,(y1+y2)/2+9,text=f'{pc:+.2f}%',fill=GREEN if pc>=0 else RED,font=('Segoe UI',7));self.tiles.append((x1,y1,x2,y2,a))
+        idx=self.market.get_asset(self.index.get());self.const.delete(*self.const.get_children())
+        if idx is not None:
+            comps=[self.market.get_asset(s) for s in getattr(idx,'components',[])];comps=[a for a in comps if a];caps=sum(max(1,float(getattr(a,'market_cap',1))) for a in comps) or 1
+            rows2=[]
+            for a in comps:
+                wt=max(1,float(getattr(a,'market_cap',1)))/caps;rows2.append((abs(wt*a.change_percent()),a,wt))
+            for _,a,wt in sorted(rows2,key=lambda z:z[0],reverse=True)[:60]:self.const.insert('','end',iid=a.symbol,values=(a.symbol,f'{wt*100:.2f}%',f'{a.change_percent():+.2f}%',f'{wt*a.change_percent():+.3f}'))
+        self.after(900,self.refresh)
+    def tile_open(self,e):
+        for x1,y1,x2,y2,a in self.tiles:
+            if x1<=e.x<=x2 and y1<=e.y<=y2:self.market.ui_app.advanced_chart(a);return
+    def row_open(self,e):
+        iid=self.const.identify_row(e.y);a=self.market.get_asset(iid) if iid else None
+        if a:self.market.ui_app.advanced_chart(a)
+
+def _sgp22_market_map(self):MarketMapWindow(self.root,self.market)
+App.market_map=_sgp22_market_map
+
+# ---------- global 2D map replacing the rotating globe ----------
+class GlobalTradeWorkstation(ToolWindow):
+    EXCHANGES=[('NYSE / NASDAQ','US',40.71,-74.01),('CME','CME',41.88,-87.63),('London','LSE',51.51,-0.13),('Frankfurt','XETRA',50.11,8.68),('Tokyo','TSE',35.68,139.77),('Hong Kong','HKEX',22.32,114.17),('Shanghai','SSE',31.23,121.47),('Sydney','ASX',-33.87,151.21)]
+    PORTS=[('Los Angeles',33.74,-118.27,'MATX'),('New York / NJ',40.67,-74.04,'UPS'),('Rotterdam',51.95,4.14,'SHEL'),('Singapore',1.26,103.84,'BHP'),('Shanghai',31.35,121.50,'BABA'),('Tokyo / Yokohama',35.45,139.64,'TM'),('Santos',-23.96,-46.30,'VALE'),('Sydney',-33.96,151.21,'BHP')]
+    LAND=[
+      [(-168,72),(-140,70),(-125,58),(-117,48),(-105,40),(-95,30),(-82,25),(-76,39),(-62,48),(-55,62),(-78,75),(-120,80)],
+      [(-82,12),(-70,5),(-66,-10),(-60,-22),(-52,-35),(-58,-52),(-72,-55),(-78,-30)],
+      [(-10,36),(3,44),(18,58),(38,55),(50,46),(42,34),(30,30),(20,36),(5,37)],
+      [(-18,35),(5,36),(24,31),(39,15),(45,-8),(35,-30),(18,-35),(4,-20),(-5,5)],
+      [(28,42),(52,55),(75,60),(100,70),(130,55),(150,45),(145,30),(125,20),(105,10),(88,20),(70,25),(55,20),(42,28)],
+      [(112,-12),(132,-10),(153,-25),(148,-40),(125,-44),(113,-28)],
+      [(-52,82),(-22,76),(-30,62),(-50,60)],[(44,-13),(50,-18),(49,-26),(43,-25)]]
+    def __init__(self,parent,market):
+        super().__init__(parent);self.market=market;self.style_window('STOCK GAME PRO • GLOBAL MARKET & FREIGHT MAP','1550x900');self.resizable(True,True);self.zoom=1.0;self.panx=0.;self.pany=0.;self.drag0=None;self.hits=[];self.selected=None
+        pan=ttk.PanedWindow(self,orient='horizontal');pan.pack(fill='both',expand=True);left=ttk.Frame(pan);right=ttk.Frame(pan,width=340);pan.add(left,weight=7);pan.add(right,weight=3)
+        self.cv=tk.Canvas(left,bg='#06111a',highlightthickness=0);self.cv.pack(fill='both',expand=True);self.cv.bind('<Button-1>',self.click);self.cv.bind('<B1-Motion>',self.drag);self.cv.bind('<ButtonRelease-1>',lambda e:setattr(self,'drag0',None));self.cv.bind('<MouseWheel>',self.wheel);self.cv.bind('<Configure>',lambda e:self.render())
+        ttk.Label(right,text='GLOBAL OBJECT INSPECTOR',font=('Segoe UI',11,'bold')).pack(anchor='w',padx=10,pady=(10,4));self.info=tk.Text(right,height=15,bg='#08131d',fg=TEXT,relief='flat',wrap='word');self.info.pack(fill='x',padx=10,pady=4)
+        ttk.Label(right,text='LIVE FREIGHT / RISK',font=('Segoe UI',10,'bold')).pack(anchor='w',padx=10,pady=(8,3));self.table=ttk.Treeview(right,columns=('type','route','progress','risk'),show='headings',height=18);[(self.table.heading(c,text=t),self.table.column(c,width=w,anchor='center')) for c,t,w in [('type','Type',58),('route','Route',130),('progress','%',48),('risk','Risk',65)]];self.table.pack(fill='both',expand=True,padx=10,pady=4);self.table.bind('<<TreeviewSelect>>',self.table_select)
+        buttons=ttk.Frame(right);buttons.pack(fill='x',padx=10,pady=8);ttk.Button(buttons,text='ADV CHART',command=self.open_chart).pack(side='left',expand=True,fill='x');ttk.Button(buttons,text='OPTIONS',command=self.open_options).pack(side='left',expand=True,fill='x',padx=4)
+        ttk.Label(right,text='Legend: ◆ exchange   ■ port   ▰ ship   ✈ aircraft   ☠ piracy   ☁ storm',foreground=MUTED,wraplength=320).pack(anchor='w',padx=10,pady=(0,10));self.after(200,self._loop)
+    def xy(self,lat,lon,w,h):
+        x=(lon+180)/360*w;y=(90-lat)/180*h;cx,cy=w/2,h/2;return (cx+(x-cx)*self.zoom+self.panx,cy+(y-cy)*self.zoom+self.pany)
+    def render(self):
+        c=self.cv;c.delete('all');self.hits=[];w=max(900,c.winfo_width());h=max(620,c.winfo_height());
+        # graticule
+        for lon in range(-150,181,30):x1,y1=self.xy(-80,lon,w,h);x2,y2=self.xy(80,lon,w,h);c.create_line(x1,y1,x2,y2,fill='#102b3a')
+        for lat in range(-60,61,30):x1,y1=self.xy(lat,-180,w,h);x2,y2=self.xy(lat,180,w,h);c.create_line(x1,y1,x2,y2,fill='#102b3a')
+        for poly in self.LAND:
+            pts=[]
+            for lon,lat in poly:x,y=self.xy(lat,lon,w,h);pts.extend((x,y))
+            c.create_polygon(*pts,fill='#163b2d',outline='#3f7f62',width=1)
+        # routes
+        for route in getattr(self.market,'freight_routes',[]):
+            pts=[]
+            for lat,lon in route.get('points',[]):x,y=self.xy(lat,lon,w,h);pts.extend((x,y))
+            if len(pts)>=4:c.create_line(*pts,fill='#1b7995',width=2,smooth=True,arrow='last',arrowshape=(7,8,3))
+        # exchanges
+        for name,code,lat,lon in self.EXCHANGES:
+            x,y=self.xy(lat,lon,w,h);c.create_polygon(x,y-7,x+7,y,x,y+7,x-7,y,fill='#5bd8f2',outline='white');c.create_text(x+9,y-9,text=name,anchor='sw',fill='#9ddff1',font=('Segoe UI',7,'bold'));self.hits.append((x,y,10,('exchange',name,code)))
+        for name,lat,lon,proxy in self.PORTS:
+            x,y=self.xy(lat,lon,w,h);c.create_rectangle(x-5,y-5,x+5,y+5,fill='#e1bd55',outline='#fff0ae');self.hits.append((x,y,9,('port',name,proxy,lat,lon)))
+        # ships use authoritative route progress; no render callback can advance game time.
+        for i,sh in enumerate(getattr(self.market,'shipments',[])):
+            route=sh.get('route') or {};pts=route.get('points',[]);prog=max(0,min(1,float(sh.get('progress',0))))
+            if len(pts)>=2:
+                segf=prog*(len(pts)-1);j=min(len(pts)-2,int(segf));t=segf-j;lat=pts[j][0]+(pts[j+1][0]-pts[j][0])*t;lon=pts[j][1]+(pts[j+1][1]-pts[j][1])*t;x,y=self.xy(lat,lon,w,h)
+                c.create_polygon(x-9,y+4,x+9,y+4,x+5,y-4,x-5,y-4,fill='#69dcff',outline='white');self.hits.append((x,y,11,('ship',i,sh)))
+                hz=sh.get('hazard','NONE')
+                if hz=='PIRATES':c.create_text(x+16,y-14,text='☠',fill=RED,font=('Segoe UI Symbol',13,'bold'))
+                elif hz=='STORM':c.create_text(x+16,y-14,text='☁',fill=YELLOW,font=('Segoe UI Symbol',13,'bold'))
+        # aircraft follow major real-world freight city pairs, phase derives only from game clock.
+        air=[((33.94,-118.40),(35.55,139.78),'LAX→NRT'),((40.64,-73.78),(51.47,-0.45),'JFK→LHR'),((1.36,103.99),(50.04,8.56),'SIN→FRA'),((22.31,113.91),(33.94,-118.40),'HKG→LAX')]
+        phase=((self.market.clock.current.timestamp()/3600)%1.0)
+        for k,(p1,p2,name) in enumerate(air):
+            t=(phase+k*.23)%1;lat=p1[0]+(p2[0]-p1[0])*t;lon=p1[1]+(p2[1]-p1[1])*t;x,y=self.xy(lat,lon,w,h);c.create_text(x,y,text='✈',fill='#c8b7ff',font=('Segoe UI Symbol',12,'bold'));self.hits.append((x,y,10,('plane',name,t)))
+        c.create_text(10,10,anchor='nw',text=f'{self.market.clock.current:%a %Y-%m-%d %H:%M:%S} • MAP VIEW • wheel zoom / drag pan',fill=TEXT,font=('Segoe UI',9,'bold'))
+    def _loop(self):
+        if not self.winfo_exists():return
+        self.render();self.refresh_table();self.after(350,self._loop)
+    def refresh_table(self):
+        keep=self.table.selection();self.table.delete(*self.table.get_children())
+        for i,sh in enumerate(getattr(self.market,'shipments',[])):
+            route=sh.get('route',{}).get('name','Route');risk=sh.get('hazard','NONE');self.table.insert('','end',iid=f'ship:{i}',values=('SHIP',route,f'{sh.get("progress",0)*100:.0f}',risk))
+        if keep and keep[0] in self.table.get_children():self.table.selection_set(keep[0])
+    def click(self,e):
+        hit=min(((x-e.x)**2+(y-e.y)**2,r,obj) for x,y,r,obj in self.hits if (x-e.x)**2+(y-e.y)**2<=r*r) if any((x-e.x)**2+(y-e.y)**2<=r*r for x,y,r,obj in self.hits) else None
+        if hit:self.selected=hit[2];self.describe(self.selected)
+        else:self.drag0=(e.x,e.y,self.panx,self.pany)
+    def drag(self,e):
+        if self.drag0:
+            x,y,px,py=self.drag0;self.panx=px+(e.x-x);self.pany=py+(e.y-y);self.render()
+    def wheel(self,e):
+        self.zoom=max(.65,min(3.5,self.zoom*(1.12 if e.delta>0 else .89)));self.render();return 'break'
+    def table_select(self,e=None):
+        it=self.table.selection()
+        if it and it[0].startswith('ship:'):
+            i=int(it[0].split(':')[1]);sh=self.market.shipments[i];self.selected=('ship',i,sh);self.describe(self.selected)
+    def describe(self,obj):
+        self.info.delete('1.0','end');typ=obj[0]
+        if typ=='ship':
+            sh=obj[2];route=sh.get('route',{});txt=f"CARGO VESSEL\nCarrier: {sh.get('carrier')}\nCargo owner: {sh.get('cargo_owner')}\nRoute: {route.get('name')}\nProgress: {sh.get('progress',0)*100:.1f}%\nCargo value: ${sh.get('cargo_value',0):,.0f}\nRisk: {sh.get('hazard','NONE')}\nStatus: {'DISRUPTED' if sh.get('hazard_resolved') else 'IN TRANSIT'}"
+        elif typ=='port':txt=f'PORT\n{obj[1]}\nInvestable proxy: {obj[2]}\nCoordinates: {obj[3]:.2f}, {obj[4]:.2f}'
+        elif typ=='exchange':txt=f'EXCHANGE\n{obj[1]}\nSession code: {obj[2]}\nStatus: {"OPEN" if market_status(obj[2],self.market.clock.current) else "CLOSED"}'
+        else:txt=f'AIR FREIGHT\nRoute: {obj[1]}\nProgress: {obj[2]*100:.1f}%'
+        self.info.insert('end',txt)
+    def selected_asset(self):
+        if not self.selected:return None
+        if self.selected[0]=='ship':return self.market.get_asset(self.selected[2].get('carrier'))
+        if self.selected[0]=='port':return self.market.get_asset(self.selected[2])
+        return None
+    def open_chart(self):
+        a=self.selected_asset()
+        if a:self.market.ui_app.advanced_chart(a)
+    def open_options(self):
+        a=self.selected_asset()
+        if a:self.market.ui_app.options_for(a)
+
+GlobeWindow=GlobalTradeWorkstation
+def _sgp22_globe(self):GlobalTradeWorkstation(self.root,self.market)
+App.globe=_sgp22_globe
+
+# ---------- options strategy builder enhancements ----------
+_Spread_v22_base=SpreadBuilder
+class SpreadBuilder(_Spread_v22_base):
+    """Professional custom options strategy builder with scenario controls and date curves.
+
+    This mirrors the capabilities of modern strategy visualizers without copying a third-party
+    site's branding or exact trade dress.
+    """
+    def __init__(self,parent,market,portfolio,refresh,first=None):
+        super().__init__(parent,market,portfolio,refresh,first)
+        self.title('STOCK GAME PRO • PROFESSIONAL OPTIONS STRATEGY BUILDER')
+        self.iv_shift=tk.DoubleVar(value=0.0);self.target_days=tk.IntVar(value=max(0,dict(EXPIRATIONS).get(self.exp.get(),30)//2))
+        extra=ttk.Frame(self);extra.pack(fill='x',padx=10,pady=(0,7));ttk.Label(extra,text='Scenario IV shift').pack(side='left');iv=tk.Scale(extra,from_=-60,to=150,resolution=1,orient='horizontal',variable=self.iv_shift,length=180,showvalue=0,bg=PANEL,highlightthickness=0);iv.pack(side='left');self.ivlab=ttk.Label(extra,text='0%');self.ivlab.pack(side='left',padx=(2,10));self.iv_shift.trace_add('write',lambda *_:(self.ivlab.config(text=f'{self.iv_shift.get():+.0f}%'),self.draw()))
+        ttk.Label(extra,text='P/L curve day').pack(side='left');td=tk.Scale(extra,from_=0,to=max(1,dict(EXPIRATIONS).get(self.exp.get(),30)),resolution=1,orient='horizontal',variable=self.target_days,length=180,showvalue=0,bg=PANEL,highlightthickness=0,command=lambda v:self.draw());td.pack(side='left');self.daylab=ttk.Label(extra,text='');self.daylab.pack(side='left',padx=4);self._v22_day_scale=td
+        ttk.Button(extra,text='EXPIRATION',command=lambda:(self.target_days.set(dict(EXPIRATIONS).get(self.exp.get(),30)),self.draw())).pack(side='right')
+    def draw(self):
+        # Keep the robust expiration payoff from the base class, then overlay a current/target-day
+        # approximation so users can reason about theta/IV path dependence before expiry.
+        try:super().draw()
+        except Exception:return
+        if not hasattr(self,'target_days'):return
+        a=self.asset();s=self.build_strategy() if self.rows else None
+        if not a or not s:return
+        days=dict(EXPIRATIONS).get(self.exp.get(),30);td=max(0,min(days,int(self.target_days.get())));self.daylab.config(text=f'{td}D')
+        try:self._v22_day_scale.config(to=max(1,days))
+        except Exception:pass
+        c=self.payoff;w=max(420,c.winfo_width());h=max(260,c.winfo_height());spots=[a.price*(.65+i*(.70/100)) for i in range(101)];vals=[];iv_mult=max(.20,1+self.iv_shift.get()/100)
+        for spot in spots:
+            # Blend current mark toward terminal intrinsic as time passes. This is intentionally
+            # lightweight but gives a useful non-expiration curve in a fast Tk simulator.
+            terminal=s.expiration_pnl(spot);current=s.current_value()-s.open_cost;progress=1-td/max(1,days);vol_bump=(iv_mult-1)*abs(spot-a.price)*10;vals.append(current*(1-progress)+terminal*progress+vol_bump)
+        mx=max(max(abs(v) for v in vals),1);left,right,top,bottom=48,w-18,34,h-36
+        pts=[]
+        for i,v in enumerate(vals):pts.extend((left+i*(right-left)/(len(vals)-1), (top+bottom)/2-v/mx*(bottom-top)*.42))
+        if len(pts)>=4:c.create_line(*pts,fill=CYAN,width=2,dash=(5,3));c.create_text(right,top+5,text=f'{td}D curve • IV {self.iv_shift.get():+.0f}%',anchor='ne',fill=CYAN,font=('Segoe UI',8,'bold'))
+
+# Rewire all later callers to the new builder class.
+
+def _sgp22_options_for(self,a):
+    w=OptionsWindow(self.root,self.market,self.portfolio,self.refresh);w.entry.delete(0,'end');w.entry.insert(0,a.symbol);w.apply_symbol()
+App.options_for=_sgp22_options_for
+
+
+# Final 2.2 refresh/menu cleanup: the clock owns its label, preventing competing callbacks from flickering it.
+_App_refresh_v22_base=App.refresh
+def _sgp22_refresh(self):
+    old=''
+    try:old=self.clock_label.cget('text')
+    except Exception:pass
+    try:_App_refresh_v22_base(self)
+    finally:
+        try:self.clock_label.config(text=old)
+        except Exception:pass
+App.refresh=_sgp22_refresh
+
+# Final post-init menu normalization must be the outermost wrapper.
+_App_init_v22_menu_base=App.__init__
+def _sgp22_app_init_menu(self,root,market,portfolio):
+    _App_init_v22_menu_base(self,root,market,portfolio)
+    try:
+        mb=self.root.nametowidget(self.root.cget('menu'))
+        for i in range(mb.index('end')+1):
+            if mb.entrycget(i,'label')=='Time':
+                tm=mb.nametowidget(mb.entrycget(i,'menu'));tm.delete(0,'end')
+                for x in (1,2,3,5,7.5,10):tm.add_command(label=f'{x:g}x',command=lambda v=x:self.set_time_warp(v))
+                tm.add_separator();tm.add_command(label='Pause / Resume',command=self.toggle_pause);tm.add_command(label='Skip to Next Open (closed market only)',command=self.skip_to_next_open);break
+    except Exception:pass
+App.__init__=_sgp22_app_init_menu

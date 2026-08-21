@@ -1,4 +1,4 @@
-STOCK GAME PRO 2.0 - WINDOWS INSTALLATION
+STOCK GAME PRO 2.2 - WINDOWS INSTALLATION
 ==========================================
 
 FOR NORMAL PLAYERS
@@ -33,7 +33,7 @@ On a Windows development machine:
 3. Double-click BUILD_WINDOWS_INSTALLER.bat.
 
 The script builds a standalone StockGamePro.exe with PyInstaller and then
-creates a conventional Stock_Game_Pro_2.0_Setup.exe with Inno Setup. Players
+creates a conventional Stock_Game_Pro_2.2_Setup.exe with Inno Setup. Players
 using that Setup.exe do NOT need Python installed separately.
 
 The Inno installer includes a Start Menu shortcut, optional Desktop shortcut,

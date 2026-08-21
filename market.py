@@ -1324,3 +1324,102 @@ def _sgp_asset_return_v21(self,a,game_minutes,market_z,sector_z):
         st['pressure']=pressure*math.exp(-max(.0,float(game_minutes))/35.0)
     return max(-.70,min(.70,r))
 Market._asset_return=_sgp_asset_return_v21
+
+# ===== Stock Game Pro 2.2 realism / correlation / research-model patch =====
+# This patch intentionally keeps the simulation deterministic enough for strategy testing while
+# giving the main US ETF/index complex tighter factor relationships and a richer predictive model.
+_Market_init_v22_base=Market.__init__
+def _sgp22_market_init(self):
+    _Market_init_v22_base(self)
+    self.time_warp=.25
+    self.scenario_correlation=float(getattr(self,'scenario_correlation',.82))
+    self.scenario_mean_reversion=float(getattr(self,'scenario_mean_reversion',1.0))
+    self.scenario_trend=float(getattr(self,'scenario_trend',1.0))
+    self.scenario_option_iv=float(getattr(self,'scenario_option_iv',1.0))
+    self.scenario_rate_shock=float(getattr(self,'scenario_rate_shock',0.0))
+    self.scenario_credit_stress=float(getattr(self,'scenario_credit_stress',0.0))
+    self.scenario_oil_shock=float(getattr(self,'scenario_oil_shock',0.0))
+    self.scenario_fx_shock=float(getattr(self,'scenario_fx_shock',0.0))
+    # Broaden the index baskets so index/ETF behavior is driven by actual constituents rather
+    # than only a handful of names.  SPY is treated as the investable tracker for SPX.
+    spx=self.get_asset('SPX');ndx=self.get_asset('NDX');dji=self.get_asset('DJI')
+    us=[a.symbol for a in self.stocks if getattr(a,'category','') not in ('ETF','Index')]
+    if spx is not None:spx.components=us[:]
+    if ndx is not None:ndx.components=[a.symbol for a in self.stocks if getattr(a,'category','') in ('Tech','Media','Consumer')][:80]
+    if dji is not None:dji.components=[s for s in ('AAPL','MSFT','AMZN','JPM','V','WMT','MCD','CAT','HON','RTX','UNH','GS','HD','KO','DIS','IBM','AXP') if self.get_asset(s)]
+Market.__init__=_sgp22_market_init
+
+# Timestamp-aware regular-session helper used by chart overnight shading.
+def _sgp22_regular_open_at(self,a,dt):
+    try:return bool(market_status(self.asset_session(a),dt))
+    except Exception:return True
+Market.asset_regular_open_at=_sgp22_regular_open_at
+
+_predict_v22_base=Market.predict
+def _sgp22_predict(self,a):
+    """Multi-factor educational forecast seeded from the newest available real quote/history.
+
+    The score combines multi-horizon momentum, RSI mean reversion, market/index direction,
+    macro regime and volatility.  It is a simulator signal, not a claim of future returns.
+    """
+    try:
+        hist=[float(x) for x in list(a.history)]
+        daily=list(a.chart_candles('1d'))
+        if daily and len(daily)>=5: hist=[float(c.close) for c in daily[-260:]]
+        if len(hist)<3:return _predict_v22_base(self,a)
+        def ret(n):return hist[-1]/hist[-min(len(hist),n+1)]-1 if len(hist)>1 else 0.0
+        r5,r20,r60=ret(5),ret(20),ret(60)
+        # RSI without importing UI helpers.
+        w=hist[-15:];g=[max(0,b-a0) for a0,b in zip(w,w[1:])];l=[max(0,a0-b) for a0,b in zip(w,w[1:])]
+        ag=sum(g)/max(1,len(g));al=sum(l)/max(1,len(l));rsi_v=100. if al==0 else 100-100/(1+ag/al)
+        trend=(.45*r5+.35*r20+.20*r60)*float(getattr(self,'scenario_trend',1.0))
+        meanrev=((50-rsi_v)/50.0)*.006*float(getattr(self,'scenario_mean_reversion',1.0))
+        macro=self.macro;sector=str(getattr(a,'category',''))
+        macro_score=float(macro.get('sentiment',0))*.006
+        rate=float(macro.get('policy_rate',4.0));infl=float(macro.get('inflation',2.5));growth=float(macro.get('gdp_growth',2.0))
+        if sector in ('Tech','Consumer','Real Estate'):macro_score-=max(0,rate-3.0)*.0007
+        if sector in ('Finance',):macro_score+=(rate-3.0)*.00035
+        if sector in ('Energy',):macro_score+=float(getattr(self,'scenario_oil_shock',0))*0.004
+        macro_score+=(growth-2.0)*.0006-(infl-2.0)*.00035-float(getattr(self,'scenario_credit_stress',0))*0.003
+        spx=self.get_asset('SPX');market_mom=0.0
+        if spx is not None and len(spx.history)>=20:
+            hh=list(spx.history);market_mom=hh[-1]/hh[-20]-1
+        corr=max(0,min(1.25,float(getattr(self,'scenario_correlation',.82))))
+        expected=trend+meanrev+macro_score+market_mom*.20*corr
+        vol=max(.0001,float(getattr(a,'volatility',.002))*float(getattr(self,'scenario_volatility',1.0)))
+        z=expected/max(.002,vol*4);conf=max(.50,min(.96,.52+abs(z)*.18))
+        label='BULLISH' if expected>.003 else 'BEARISH' if expected<-.003 else 'NEUTRAL'
+        real_stamp=getattr(a,'last_real_timestamp',None)
+        return {'label':label,'confidence':conf,'momentum':r20,'volatility':vol,'expected_return':expected,
+                'rsi':rsi_v,'market_momentum':market_mom,'real_timestamp':real_stamp}
+    except Exception:return _predict_v22_base(self,a)
+Market.predict=_sgp22_predict
+
+_asset_return_v22_base=Market._asset_return
+def _sgp22_asset_return(self,a,game_minutes,market_z,sector_z):
+    r=float(_asset_return_v22_base(self,a,game_minutes,market_z,sector_z))
+    gm=max(.001,float(game_minutes));corr=max(0,min(1.25,float(getattr(self,'scenario_correlation',.82))))
+    # Correlated broad-market impulse.  It is deliberately small per tick but persistent.
+    r += float(market_z)*float(getattr(a,'volatility',.002))*0.16*corr*math.sqrt(gm)
+    # Explicit scenario variables used by the experiment lab.
+    cat=str(getattr(a,'category',''))
+    r += float(getattr(self,'scenario_rate_shock',0.0)) * (-.00030 if cat in ('Tech','Consumer','Real Estate') else .00010 if cat=='Finance' else -.00005) * gm
+    r += float(getattr(self,'scenario_credit_stress',0.0)) * (-.00032 if cat in ('Finance','Consumer','Real Estate') else -.00012) * gm
+    r += float(getattr(self,'scenario_oil_shock',0.0)) * (.00038 if cat=='Energy' else -.00008 if cat in ('Industrial','Consumer') else 0) * gm
+    # SPY closely tracks SPX but retains a little ETF microstructure noise.
+    if getattr(a,'symbol','')=='SPY':
+        spx=self.get_asset('SPX')
+        if spx is not None and float(getattr(spx,'previous_price',0))>0:
+            spx_r=float(spx.price)/float(spx.previous_price)-1
+            r=.96*spx_r+.04*r
+    return max(-.70,min(.70,r))
+Market._asset_return=_sgp22_asset_return
+
+# Quote/option volatility scenario multiplier.  Existing option contracts already use the
+# underlying's volatility, so assigning this per-asset value keeps the strategy lab coherent.
+_old_get_book_v22=Market.get_book
+def _sgp22_get_book(self,a):
+    try:a.scenario_option_iv=float(getattr(self,'scenario_option_iv',1.0))
+    except Exception:pass
+    return _old_get_book_v22(self,a)
+Market.get_book=_sgp22_get_book

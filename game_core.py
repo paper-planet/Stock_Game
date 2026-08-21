@@ -945,3 +945,43 @@ def _sgp_set_dataset_v21(self,interval,candles):
         try:self.fundamental_value=max(.0001,float(candles[-1].close))
         except Exception:pass
 Asset.set_dataset=_sgp_set_dataset_v21
+
+
+# ===== Stock Game Pro 2.2 expanded professional universe =====
+# Keep the core list compact enough to render quickly while broadening every major sector.
+def _sgp22_extend_unique(seq, rows):
+    have={r[0] for r in seq}
+    for row in rows:
+        if row[0] not in have:
+            seq.append(row);have.add(row[0])
+
+_sgp22_extend_unique(STOCKS,[
+ ('ADBE','Adobe','Tech',.0022),('NOW','ServiceNow','Tech',.0024),('PANW','Palo Alto Networks','Tech',.0027),('CRWD','CrowdStrike','Tech',.0030),('MU','Micron','Tech',.0030),('TXN','Texas Instruments','Tech',.0018),
+ ('HD','Home Depot','Consumer',.0015),('LOW','Lowe\'s','Consumer',.0016),('TGT','Target','Consumer',.0022),('SBUX','Starbucks','Consumer',.0020),('BKNG','Booking Holdings','Consumer',.0019),('ABNB','Airbnb','Consumer',.0028),
+ ('ABBV','AbbVie','Health',.0013),('MRK','Merck','Health',.0014),('TMO','Thermo Fisher','Health',.0017),('AMGN','Amgen','Health',.0016),('ISRG','Intuitive Surgical','Health',.0020),
+ ('BRK-B','Berkshire Hathaway B','Finance',.0011),('AXP','American Express','Finance',.0016),('BLK','BlackRock','Finance',.0016),('SCHW','Charles Schwab','Finance',.0019),('SPGI','S&P Global','Finance',.0016),
+ ('COP','ConocoPhillips','Energy',.0021),('SLB','SLB','Energy',.0022),('EOG','EOG Resources','Energy',.0020),('OXY','Occidental Petroleum','Energy',.0026),
+ ('DE','Deere','Industrial',.0018),('HON','Honeywell','Industrial',.0015),('RTX','RTX','Industrial',.0016),('LMT','Lockheed Martin','Industrial',.0015),('UPS','UPS','Industrial',.0017),('FDX','FedEx','Industrial',.0020),
+ ('NEE','NextEra Energy','Utilities',.0014),('DUK','Duke Energy','Utilities',.0011),('SO','Southern Company','Utilities',.0011),
+ ('LIN','Linde','Materials',.0014),('FCX','Freeport-McMoRan','Materials',.0028),('NEM','Newmont','Materials',.0025),
+ ('AMT','American Tower','Real Estate',.0017),('PLD','Prologis','Real Estate',.0016),('EQIX','Equinix','Real Estate',.0016),
+ ('T','AT&T','Telecom',.0013),('VZ','Verizon','Telecom',.0012),('TMUS','T-Mobile US','Telecom',.0016),
+ ('QQQ','Invesco QQQ','ETF',.0012),('IWM','iShares Russell 2000','ETF',.0015),('DIA','SPDR Dow Jones','ETF',.0010),('TLT','iShares 20+ Year Treasury','ETF',.0010),('HYG','iShares High Yield Bond','ETF',.0008)
+])
+
+_sgp22_extend_unique(GLOBAL_STOCKS,[
+ ('SHEL','Shell',70,.0018,'Energy','SHEL','LSE','USD'),('BP','BP',34,.0020,'Energy','BP','LSE','USD'),('AZN','AstraZeneca',78,.0015,'Health','AZN','LSE','USD'),('UL','Unilever',63,.0013,'Consumer','UL','LSE','USD'),
+ ('SIEGY','Siemens ADR',105,.0017,'Industrial','SIEGY','XETRA','USD'),('BASFY','BASF ADR',12,.0020,'Materials','BASFY','XETRA','USD'),('DTEGY','Deutsche Telekom ADR',38,.0013,'Telecom','DTEGY','XETRA','USD'),
+ ('HMC','Honda',31,.0017,'Consumer','HMC','TSE','USD'),('MUFG','Mitsubishi UFJ',15,.0017,'Finance','MUFG','TSE','USD'),('SMFG','Sumitomo Mitsui',16,.0017,'Finance','SMFG','TSE','USD'),('NTDOY','Nintendo ADR',22,.0020,'Consumer','NTDOY','TSE','USD'),
+ ('JD','JD.com ADR',35,.0028,'Consumer','JD','HKEX','USD'),('BIDU','Baidu ADR',96,.0027,'Tech','BIDU','HKEX','USD'),('PDD','PDD Holdings',120,.0030,'Consumer','PDD','HKEX','USD'),
+ ('BHP','BHP Group',55,.0018,'Materials','BHP','ASX','USD'),('RIO','Rio Tinto',62,.0019,'Materials','RIO','ASX','USD'),('CSL.AX','CSL Limited',290,.0018,'Health','CSL.AX','ASX','AUD'),('CBA.AX','Commonwealth Bank',165,.0015,'Finance','CBA.AX','ASX','AUD'),
+ ('RY','Royal Bank of Canada',145,.0014,'Finance','RY','US','USD'),('TD','Toronto-Dominion Bank',72,.0015,'Finance','TD','US','USD'),('CNQ','Canadian Natural Resources',36,.0019,'Energy','CNQ','US','USD'),
+ ('VALE','Vale ADR',11,.0025,'Materials','VALE','US','USD'),('PBR','Petrobras ADR',14,.0027,'Energy','PBR','US','USD')
+])
+
+# Stock Game Pro 2.2 option-IV scenario integration.
+def _sgp22_option_volatility(self):
+    regime=max(.10,min(8.0,float(getattr(self.underlying,'scenario_vol_mult',1.0))))
+    iv=max(.20,min(5.0,float(getattr(self.underlying,'scenario_option_iv',1.0))))
+    return max(.04,(self.underlying.volatility*20+.12+abs(self.strike/max(.0001,self.underlying.price)-1)*.30)*math.sqrt(regime)*iv)
+OptionContract.volatility=property(_sgp22_option_volatility)

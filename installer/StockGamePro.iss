@@ -1,5 +1,5 @@
 #define MyAppName "Stock Game Pro"
-#define MyAppVersion "2.0"
+#define MyAppVersion "2.2"
 #define MyAppPublisher "Stock Game Pro"
 #define MyAppExeName "StockGamePro.exe"
 
@@ -13,11 +13,11 @@ DefaultGroupName=Stock Game Pro
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist-installer
-OutputBaseFilename=Stock_Game_Pro_2.0_Setup
+OutputBaseFilename=Stock_Game_Pro_2.2_Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayName=Stock Game Pro 2.0
+UninstallDisplayName=Stock Game Pro 2.2
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: checkedonce
