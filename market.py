@@ -1506,3 +1506,591 @@ _Market_init_v23_base=Market.__init__
 def _sgp23_market_init(self):
     _Market_init_v23_base(self);self.time_warp=1.0/60.0
 Market.__init__=_sgp23_market_init
+
+# ===== Stock Game Pro 2.4 real-time pacing / opening-bell baseline / S&P universe =====
+try:
+    from sp500_constituents import SP500_SYMBOLS as _SGP24_SP500_SYMBOLS
+except Exception:
+    _SGP24_SP500_SYMBOLS=[]
+
+_Market_init_v24_base=Market.__init__
+def _sgp24_market_init(self):
+    _Market_init_v24_base(self)
+    # Internal time_warp is simulated minutes per real second. 1/60 therefore means
+    # exactly one simulated second per real-world second; 100x is 100/60.
+    self.time_warp=1.0/60.0
+    self._session_groups24={}
+    for a in self.all_assets():
+        code=str(getattr(a,'session','US') or 'US')
+        if code not in SESSIONS:code='US'
+        self._session_groups24.setdefault(code,[]).append(a)
+        a.regular_close_price=float(getattr(a,'regular_close_price',0.0) or getattr(a,'last_real_close',0.0) or a.price)
+        a.previous_close_price=float(getattr(a,'previous_close_price',a.regular_close_price))
+    self._session_state24={code:bool(market_status(code,self.clock.current)) for code in self._session_groups24}
+    self._v24_last_autosave_day=None
+    # Keep SPX tied only to actual index constituents. Non-index research names remain tradable
+    # without contaminating S&P 500 movement.
+    spx=self.get_asset('SPX')
+    if spx is not None and _SGP24_SP500_SYMBOLS:
+        spx.components=[s for s in _SGP24_SP500_SYMBOLS if self.get_asset(s) is not None]
+Market.__init__=_sgp24_market_init
+
+def _sgp24_handle_session_transitions(self):
+    """Reset each exchange's daily % baseline at its opening bell, before new prints occur."""
+    opened_any=False
+    for code,assets in self._session_groups24.items():
+        try:regular=bool(market_status(code,self.clock.current))
+        except Exception:regular=False
+        prev=bool(self._session_state24.get(code,regular))
+        if regular and not prev:
+            for a in assets:
+                try:
+                    a.previous_close_price=float(getattr(a,'regular_close_price',a.price) or a.price)
+                    self._apply_open_gap(a)
+                    a.reset_day()  # change_percent() is now exactly 0 at the new opening baseline.
+                    a.day_open_timestamp=self.clock.current
+                except Exception as e:
+                    self.errors.append(f'open baseline {a.symbol}: {e}')
+            opened_any=True
+        elif prev and not regular:
+            for a in assets:
+                try:
+                    a.regular_close_price=float(a.price)
+                    a.regular_close_timestamp=self.clock.current
+                except Exception:pass
+            if code=='US':
+                day=self.clock.current.date()
+                if self._v24_last_autosave_day!=day and callable(getattr(self,'autosave_callback',None)):
+                    self._v24_last_autosave_day=day
+                    try:self.autosave_callback('end of trading day')
+                    except Exception as e:self.errors.append(f'autosave: {type(e).__name__}: {e}')
+        self._session_state24[code]=regular
+    if opened_any:
+        self.visual_version+=1
+        app=getattr(self,'ui_app',None)
+        try:app.root.after(0,app.refresh_watch)
+        except Exception:pass
+Market._handle_session_transitions24=_sgp24_handle_session_transitions
+
+async def _sgp24_tick(self):
+    """Final engine loop: true real-second 1x pacing, up to 100x, with transition-safe baselines."""
+    if not self.running:return
+    if self.paused:
+        self._last_real_tick=time.monotonic();await asyncio.sleep(.025);return
+    now=time.monotonic();real_dt=max(.001,min(.12,now-self._last_real_tick));self._last_real_tick=now
+    warp=max(1.0/60.0,min(100.0/60.0,float(getattr(self,'time_warp',1.0/60.0))))
+    game_seconds=real_dt*60.0*warp
+    game_minutes=game_seconds/60.0
+    try:
+        self.clock.advance_seconds(game_seconds)
+        # Do this before the first tradable print of the new session so CHG% never carries
+        # yesterday's baseline through the bell.
+        self._handle_session_transitions24()
+        self._update_macro(game_minutes)
+        with self._lock:
+            assets=self._v20_assets;n=len(assets)
+            if n:
+                start=self._v20_cursor;count=min(self._v20_batch,n);market_z=random.gauss(0,1);sector_cache={}
+                for j in range(count):
+                    a=assets[(start+j)%n]
+                    if not self.asset_quote_open(a):continue
+                    last=self._v20_last_asset_time.get(a.symbol,now);elapsed=max(.005,min(.8,now-last));self._v20_last_asset_time[a.symbol]=now
+                    amin=elapsed*warp
+                    cat=getattr(a,'category','OTHER');sector_z=sector_cache.setdefault(cat,random.gauss(0,1));r=self._asset_return(a,amin,market_z,sector_z)
+                    state=self.asset_trade_state(a)
+                    if state=='OVERNIGHT ECN':r*=.28;vol=random.randint(10,7000)
+                    else:vol=random.randint(100,50000)
+                    a.update_price(a.price*max(.75,1+r),vol,self.clock.current)
+                self._v20_cursor=(start+count)%n
+            # Index calculations are deliberately slower than quote prints. With 503 SPX
+            # constituents this remains responsive while still keeping SPY/SPX tightly linked.
+            if now-self._v20_last_index>=.12:
+                self._v20_last_index=now
+                for idx in self.indexes:
+                    if not self.asset_regular_open(idx):continue
+                    comps=[self.get_asset(s) for s in idx.components];comps=[c for c in comps if c is not None]
+                    if not comps:continue
+                    # Market-cap weighting when useful caps are available; equal weights are the
+                    # fallback for synthetic/unseeded names.
+                    caps=[max(1.0,float(getattr(c,'market_cap',1.0))) for c in comps];tot=sum(caps)
+                    weighted=sum(w*(c.price/max(.0001,c.open_price)-1.0) for c,w in zip(comps,caps))/max(1.0,tot)
+                    target=idx.open_price*(1+weighted);blend=.18;new=idx.price+(target-idx.price)*blend+idx.price*random.gauss(0,idx.volatility*.012)
+                    idx.update_price(max(.0001,new),random.randint(1000,100000),self.clock.current)
+            if now-self._v20_last_risk>=.10:
+                elapsed=now-self._v20_last_risk;self._v20_last_risk=now;gm=elapsed*warp
+                self._update_freight(gm);self._update_geopolitics(gm);self._process_orders();self._process_expirations()
+            if now-self._v20_last_housekeeping>=.25:
+                self._v20_last_housekeeping=now
+                try:self._corporate_action_cycle();self._process_earnings_v16()
+                except Exception as e:self.errors.append(f'daily systems: {type(e).__name__}: {e}')
+                if hasattr(self,'portfolio') and now-getattr(self,'_last_networth_calc',0)>3.0:
+                    self._last_networth_calc=now;self.portfolio.best_net_worth=max(self.portfolio.best_net_worth,self.portfolio.mark_value(self.all_assets()))
+        self.visual_version+=1
+        self.data_status=f'SIMULATION RUNNING • {warp*60.0:.2f}x REAL-SECOND • CPI {self.macro["inflation"]:.2f}% • FED {self.macro["policy_rate"]:.2f}%'
+    except Exception as e:
+        self.errors.append(f'tick v2.4: {type(e).__name__}: {e}')
+        if len(self.errors)>100:self.errors=self.errors[-100:]
+    await asyncio.sleep(max(.005,float(self.speed)))
+Market.tick=_sgp24_tick
+
+# ===== Stock Game Pro 2.5 performance / index engine overhaul =====
+# Broad constituent coverage is intentionally decoupled from quote frequency. Thousands of
+# tradable symbols can exist without forcing thousands of Candle allocations every second.
+try:
+    from index_constituents import INDEX_COMPONENTS as _SGP25_INDEX_COMPONENTS, INDEX_PRICE_HINTS as _SGP25_PRICE_HINTS, INDEX_WEIGHTS as _SGP25_INDEX_WEIGHTS
+except Exception:
+    _SGP25_INDEX_COMPONENTS={};_SGP25_PRICE_HINTS={};_SGP25_INDEX_WEIGHTS={}
+try:
+    from sp500_constituents import SP500_SYMBOLS as _SGP25_SP500
+except Exception:
+    _SGP25_SP500=[]
+
+_Market_init_v25_base=Market.__init__
+def _sgp25_market_init(self):
+    _Market_init_v25_base(self)
+    # 25 Hz engine cadence is more than enough for a desktop simulator. The 2.4 build used
+    # a 40 Hz engine and up to 56 asset updates per pulse, which became costly after the
+    # constituent universe grew into the thousands.
+    self.speed=.04
+    self._v20_batch=14
+    self._v25_last_hot_refresh=0.0;self._v25_hot_cache=set()
+    self._v25_last_visual=0.0;self._v25_last_index_rebuild=time.monotonic()
+    # Restore authoritative component sets after legacy init wrappers that replaced NDX/DJI.
+    for _idx in self.indexes:
+        _comps=_SGP25_INDEX_COMPONENTS.get(getattr(_idx,'symbol',''))
+        if _comps:
+            _idx.components=[sym for sym in _comps if self.get_asset(sym) is not None]
+    self._v25_index_cache={};self._v25_index_reverse={};self._v25_index_dirty=set()
+    self._v25_quote_loading=set();self._v25_real_seeded=set()
+    # Seed Russell/IWM proxy names at their bundled snapshot prices instead of a generic $100.
+    for sym,px in _SGP25_PRICE_HINTS.items():
+        a=self.get_asset(sym)
+        if a is None or not math.isfinite(float(px)) or float(px)<=.001:continue
+        if abs(float(a.price)-100.0)>.0001:continue
+        factor=float(px)/max(.0001,float(a.price))
+        try:
+            a.price*=factor;a.open_price*=factor;a.previous_price*=factor;a.high*=factor;a.low*=factor;a.bid*=factor;a.ask*=factor;a.last_real_close*=factor
+            for bars in list(getattr(a,'live_bars',{}).values()):
+                for c in bars:
+                    c.open*=factor;c.high*=factor;c.low*=factor;c.close*=factor
+            for bars in list(getattr(a,'datasets',{}).values()):
+                for c in bars:
+                    c.open*=factor;c.high*=factor;c.low*=factor;c.close*=factor
+            try:
+                from collections import deque
+                a.history=deque((float(x)*factor for x in a.history),maxlen=getattr(a.history,'maxlen',30000))
+            except Exception:pass
+            a.fundamental_value=float(px)
+        except Exception:pass
+    self._v25_rebuild_index_cache()
+Market.__init__=_sgp25_market_init
+
+def _sgp25_rebuild_index_cache(self):
+    self._v25_index_cache={};self._v25_index_reverse={}
+    # SPX remains the complete S&P basket from 2.4. NDX/DJI/RUT use their 2.5 component lists.
+    for idx in self.indexes:
+        syms=[s for s in getattr(idx,'components',[]) if self.get_asset(s) is not None]
+        if not syms:continue
+        mode='price' if idx.symbol=='DJI' else 'return'
+        rec={'mode':mode,'num':0.0,'den':0.0,'members':len(syms)}
+        explicit=_SGP25_INDEX_WEIGHTS.get(idx.symbol,{})
+        for s in syms:
+            a=self.get_asset(s)
+            if a is None:continue
+            if mode=='price':
+                w=1.0;rec['num']+=float(a.price);rec['den']+=max(.0001,float(a.open_price))
+            else:
+                w=max(.000001,float(explicit.get(s,getattr(a,'market_cap',1.0) or 1.0)))
+                rec['num']+=w*(float(a.price)/max(.0001,float(a.open_price))-1.0);rec['den']+=w
+            self._v25_index_reverse.setdefault(s,[]).append((idx.symbol,w,mode))
+        self._v25_index_cache[idx.symbol]=rec
+    self._v25_last_index_rebuild=time.monotonic()
+Market._v25_rebuild_index_cache=_sgp25_rebuild_index_cache
+
+def _sgp25_note_asset_move(self,a,old_price):
+    for idxsym,w,mode in self._v25_index_reverse.get(getattr(a,'symbol',''),()):
+        rec=self._v25_index_cache.get(idxsym)
+        if not rec:continue
+        try:
+            if mode=='price':rec['num']+=float(a.price)-float(old_price)
+            else:
+                op=max(.0001,float(a.open_price));rec['num']+=float(w)*((float(a.price)-float(old_price))/op)
+        except Exception:self._v25_index_dirty.add(idxsym)
+Market._v25_note_asset_move=_sgp25_note_asset_move
+
+def _sgp25_hot_symbols(self,now):
+    if now-self._v25_last_hot_refresh<.40:return self._v25_hot_cache
+    self._v25_last_hot_refresh=now;hot={'SPY','SPX','NDX','DJI','RUT'}
+    try:
+        app=self.ui_app
+        for c in list(getattr(app,'charts',()))+list(getattr(app,'extra_charts',())):
+            a=getattr(c,'asset',None)
+            if a:hot.add(a.symbol)
+        sel=app.selected()
+        if sel:hot.add(sel.symbol)
+    except Exception:pass
+    try:hot.update(str(s) for s,q in self.portfolio.positions.items() if q)
+    except Exception:pass
+    for o in self.pending_orders:
+        a=o.get('asset')
+        if a:hot.add(a.symbol)
+    self._v25_hot_cache=hot;return hot
+Market._v25_hot_symbols=_sgp25_hot_symbols
+
+# Allocation-free return model. The old base model converted each asset's potentially
+# 30,000-point history deque into a Python list on every quote update. With a broad index
+# universe that single line dominated CPU time and garbage collection.
+def _sgp25_asset_return(self,a,game_minutes,market_z,sector_z):
+    m=self.macro;dt=max(float(game_minutes),1e-6);cat=str(getattr(a,'category',''))
+    sigma=float(a.volatility)*math.sqrt(dt/5.0)
+    rate_drag=max(0,float(m.get('policy_rate',4.0))-3.0)*.000012
+    growth_push=(float(m.get('gdp_growth',2.0))-2.0)*.000010
+    inflation_drag=max(0,float(m.get('inflation',2.5))-2.5)*.000008
+    drift=(growth_push-rate_drag-inflation_drag+float(m.get('sentiment',0))*.000012)*dt
+    beta=1.0
+    if cat in ('Tech','Information Technology','Consumer','Consumer Discretionary','Media','Communication Services'):beta=1.18
+    elif cat in ('Health','Health Care','Consumer Staples','Utilities'):beta=.72
+    elif cat in ('Finance','Financials'):beta=1.05;drift+=(float(m.get('policy_rate',4.0))-2.5)*.000004*dt
+    elif cat=='Energy':beta=.85;drift+=(float(m.get('inflation',2.5))-2.0)*.000008*dt
+    if isinstance(a,Crypto):beta=1.65;drift+=float(m.get('sentiment',0))*.000025*dt
+    if isinstance(a,Forex):beta=.35
+    if isinstance(a,Commodity):beta=.55
+    z=.62*beta*float(market_z)+.42*float(sector_z)+.58*random.gauss(0,1)
+    h=getattr(a,'history',())
+    try:mom=(float(h[-1])/float(h[-10])-1.0) if len(h)>=10 and float(h[-10]) else 0.0
+    except Exception:mom=0.0
+    r=drift+max(-.00008,min(.00008,mom*.015))*dt+sigma*z
+    # Scenario multipliers from the research lab.
+    vol=max(.10,min(6.0,float(getattr(self,'scenario_volatility',1.0))))*math.sqrt(max(.10,min(4.0,float(getattr(self,'scenario_event_intensity',1.0)))))
+    r*=math.sqrt(vol)
+    whale=max(-1.0,min(1.0,float(getattr(self,'scenario_whale_flow',0.0))));target=str(getattr(self,'scenario_whale_symbol','') or '').upper().strip()
+    if whale:r+=.000010*dt*whale*(4.0 if target and a.symbol.upper()==target else .35)
+    # Liquidity recovery / distressed-value anchor / persistent market impact from 2.1.
+    lh=float(self._liquidity_health.get(a.symbol,1.0));recovery=1-math.exp(-max(0.0,dt)/75.0);self._liquidity_health[a.symbol]=min(1.0,lh+(1-lh)*recovery)
+    ref=max(.0001,float(getattr(a,'fundamental_value',0) or getattr(a,'last_real_close',0) or a.price));ratio=max(1e-9,float(a.price)/ref)
+    if ratio<.20:
+        distress=math.log(.20/max(1e-9,ratio));r+=min(.035,.0012*distress*max(.05,dt))
+        if a.price<=.00012:r=max(r,random.uniform(.015,.09))
+    st=self._impact_state.get(a.symbol)
+    if st:
+        pressure=float(st.get('pressure',0.0));r+=pressure*.0015*min(1.0,max(.01,dt));st['pressure']=pressure*math.exp(-max(0.0,dt)/35.0)
+    # 2.2 correlation / macro experiment factors.
+    corr=max(0,min(1.25,float(getattr(self,'scenario_correlation',.82))))
+    r+=float(market_z)*float(getattr(a,'volatility',.002))*0.16*corr*math.sqrt(max(.001,dt))
+    r+=float(getattr(self,'scenario_rate_shock',0.0))*(-.00030 if cat in ('Tech','Information Technology','Consumer','Consumer Discretionary','Real Estate') else .00010 if cat in ('Finance','Financials') else -.00005)*dt
+    r+=float(getattr(self,'scenario_credit_stress',0.0))*(-.00032 if cat in ('Finance','Financials','Consumer','Consumer Discretionary','Real Estate') else -.00012)*dt
+    r+=float(getattr(self,'scenario_oil_shock',0.0))*(.00038 if cat=='Energy' else -.00008 if cat in ('Industrial','Industrials','Consumer','Consumer Discretionary') else 0)*dt
+    if getattr(a,'symbol','')=='SPY':
+        spx=self.get_asset('SPX')
+        if spx is not None and float(getattr(spx,'previous_price',0))>0:
+            spx_r=float(spx.price)/float(spx.previous_price)-1.0;r=.96*spx_r+.04*r
+    return max(-.70,min(.70,r))
+Market._asset_return=_sgp25_asset_return
+
+# Opening-bell reset without rebuilding a multi-thousand-row Tk Treeview. The visible-row
+# streamer updates CHG% immediately, while the index cache is rebuilt only on a session edge.
+def _sgp25_handle_session_transitions(self):
+    changed=False;opened_any=False
+    for code,assets in self._session_groups24.items():
+        try:regular=bool(market_status(code,self.clock.current))
+        except Exception:regular=False
+        prev=bool(self._session_state24.get(code,regular))
+        if regular and not prev:
+            for a in assets:
+                try:
+                    a.previous_close_price=float(getattr(a,'regular_close_price',a.price) or a.price);self._apply_open_gap(a);a.reset_day();a.day_open_timestamp=self.clock.current
+                except Exception as e:self.errors.append(f'open baseline {a.symbol}: {e}')
+            opened_any=True;changed=True
+        elif prev and not regular:
+            for a in assets:
+                try:a.regular_close_price=float(a.price);a.regular_close_timestamp=self.clock.current
+                except Exception:pass
+            if code=='US':
+                day=self.clock.current.date()
+                if self._v24_last_autosave_day!=day and callable(getattr(self,'autosave_callback',None)):
+                    self._v24_last_autosave_day=day
+                    try:self.autosave_callback('end of trading day')
+                    except Exception as e:self.errors.append(f'autosave: {type(e).__name__}: {e}')
+            changed=True
+        self._session_state24[code]=regular
+    if changed:self._v25_rebuild_index_cache()
+    if opened_any:self.visual_version+=1
+Market._handle_session_transitions24=_sgp25_handle_session_transitions
+
+async def _sgp25_tick(self):
+    if not self.running:return
+    if self.paused:
+        self._last_real_tick=time.monotonic();await asyncio.sleep(.04);return
+    now=time.monotonic();real_dt=max(.001,min(.18,now-self._last_real_tick));self._last_real_tick=now
+    warp=max(1.0/60.0,min(100.0/60.0,float(getattr(self,'time_warp',1.0/60.0))))
+    game_seconds=real_dt*60.0*warp;game_minutes=game_seconds/60.0;changed=False
+    try:
+        self.clock.advance_seconds(game_seconds);self._handle_session_transitions24();self._update_macro(game_minutes)
+        with self._lock:
+            assets=self._v20_assets;n=len(assets);updated=set();market_z=random.gauss(0,1);sector_cache={}
+            # Small hot set gets smooth quotes regardless of how large the total universe becomes.
+            for sym in tuple(self._v25_hot_symbols(now)):
+                a=self.get_asset(sym)
+                if a is None or a in self.indexes or not self.asset_quote_open(a):continue
+                last=self._v20_last_asset_time.get(a.symbol,0.0)
+                if now-last<.09:continue
+                elapsed=max(.01,min(1.5,now-last));self._v20_last_asset_time[a.symbol]=now
+                cat=getattr(a,'category','OTHER');sector_z=sector_cache.setdefault(cat,random.gauss(0,1));r=self._asset_return(a,elapsed*warp,market_z,sector_z)
+                state=self.asset_trade_state(a);vol=random.randint(10,7000) if state=='OVERNIGHT ECN' else random.randint(100,50000);old=float(a.price);a.update_price(a.price*max(.75,1+r),vol,self.clock.current);self._v25_note_asset_move(a,old);updated.add(a.symbol);changed=True
+            # Broad universe advances in a rotating low-allocation batch. Elapsed time is carried
+            # per asset, so reducing quote frequency does not slow its simulated stochastic clock.
+            if n:
+                start=self._v20_cursor;count=min(int(self._v20_batch),n)
+                for j in range(count):
+                    a=assets[(start+j)%n]
+                    if a.symbol in updated or not self.asset_quote_open(a):continue
+                    last=self._v20_last_asset_time.get(a.symbol,now);elapsed=max(.01,min(8.0,now-last));self._v20_last_asset_time[a.symbol]=now
+                    cat=getattr(a,'category','OTHER');sector_z=sector_cache.setdefault(cat,random.gauss(0,1));r=self._asset_return(a,elapsed*warp,market_z,sector_z)
+                    state=self.asset_trade_state(a);vol=random.randint(10,7000) if state=='OVERNIGHT ECN' else random.randint(100,50000);old=float(a.price);a.update_price(a.price*max(.75,1+r),vol,self.clock.current);self._v25_note_asset_move(a,old);changed=True
+                self._v20_cursor=(start+count)%n
+            # O(number of indexes), not O(number of constituents), on every index refresh.
+            if now-self._v20_last_index>=.22:
+                self._v20_last_index=now
+                for idx in self.indexes:
+                    if not self.asset_regular_open(idx):continue
+                    rec=self._v25_index_cache.get(idx.symbol)
+                    if not rec or rec.get('den',0)<=0:continue
+                    if rec['mode']=='price':ret=rec['num']/rec['den']-1.0
+                    else:ret=rec['num']/rec['den']
+                    target=max(.0001,float(idx.open_price)*(1+ret));old=float(idx.price);new=old+(target-old)*.28
+                    idx.update_price(new,random.randint(1000,100000),self.clock.current);changed=True
+            # Order handling remains responsive; freight/geopolitics can be lower cadence.
+            if now-self._v20_last_risk>=.12:
+                elapsed=now-self._v20_last_risk;self._v20_last_risk=now;gm=elapsed*warp;self._process_orders();self._process_expirations()
+                if int(now*4)!=int((now-elapsed)*4):self._update_freight(gm);self._update_geopolitics(gm)
+            if now-self._v20_last_housekeeping>=.50:
+                self._v20_last_housekeeping=now
+                try:self._corporate_action_cycle();self._process_earnings_v16()
+                except Exception as e:self.errors.append(f'daily systems: {type(e).__name__}: {e}')
+                if hasattr(self,'portfolio') and now-getattr(self,'_last_networth_calc',0)>4.0:
+                    self._last_networth_calc=now;self.portfolio.best_net_worth=max(self.portfolio.best_net_worth,self.portfolio.mark_value(self.all_assets()))
+            if now-self._v25_last_index_rebuild>30.0:self._v25_rebuild_index_cache()
+        if changed and now-self._v25_last_visual>.09:self.visual_version+=1;self._v25_last_visual=now
+        self.data_status=f'OPTIMIZED SIM • {warp*60.0:.2f}x • {len(self.stocks):,} stocks • CPI {self.macro["inflation"]:.2f}% • FED {self.macro["policy_rate"]:.2f}%'
+    except Exception as e:
+        self.errors.append(f'tick v2.5: {type(e).__name__}: {e}')
+        if len(self.errors)>100:self.errors=self.errors[-100:]
+    await asyncio.sleep(max(.02,float(self.speed)))
+Market.tick=_sgp25_tick
+
+# Keep index return caches in sync when a player moves a stock through the liquidity engine.
+_exec_liq_v25_base=Market.execute_liquidity_order
+def _sgp25_execute_liquidity_order(self,side,a,qty):
+    old=float(a.price);out=_exec_liq_v25_base(self,side,a,qty)
+    try:self._v25_note_asset_move(a,old)
+    except Exception:pass
+    return out
+Market.execute_liquidity_order=_sgp25_execute_liquidity_order
+
+# Lazy real-data hydration. Do not launch 2,000+ Yahoo/MAX-history requests at login.
+def _sgp25_ensure_real_data(self,a,history=False):
+    if a is None:return
+    sym=getattr(a,'symbol','')
+    if not sym or sym in self._v25_quote_loading:return
+    self._v25_quote_loading.add(sym)
+    def worker():
+        try:
+            from data import fetch_latest,fetch_history_max
+            q=fetch_latest(getattr(a,'data_symbol',sym))
+            if q:
+                a.last_real_close=float(q.close);a.last_real_timestamp=q.timestamp;a.fundamental_value=max(.0001,float(q.close));self._v25_real_seeded.add(sym)
+            if history and not getattr(a,'data_loaded',False):
+                candles=fetch_history_max(getattr(a,'data_symbol',sym))
+                if candles:
+                    with a.data_lock:
+                        a.datasets['1d']=candles;a.inception_date=candles[0].timestamp.date().isoformat();a.inception_price=float(candles[0].open);a.data_loaded=True
+            self.visual_version+=1
+        except Exception as e:
+            self.errors.append(f'lazy data {sym}: {e}')
+        finally:self._v25_quote_loading.discard(sym)
+    threading.Thread(target=worker,daemon=True,name=f'Data-{sym}').start()
+Market.ensure_real_data=_sgp25_ensure_real_data
+
+def _sgp25_start_background_loaders(self):
+    if getattr(self,'_loader_started',False):return
+    self._loader_started=True
+    # Prime only the symbols users see immediately; every other asset hydrates lazily when opened.
+    priority=['SPY','SPX','NDX','DJI','RUT','VIX','QQQ']
+    try:
+        for c in getattr(self.ui_app,'charts',[]):
+            if getattr(c,'asset',None):priority.append(c.asset.symbol)
+        priority.extend(getattr(self.portfolio,'positions',{}).keys())
+    except Exception:pass
+    for sym in dict.fromkeys(priority):
+        a=self.get_asset(sym)
+        if a:self.ensure_real_data(a,history=(sym in ('SPY','SPX','NDX','DJI','RUT')))
+Market.start_background_loaders=_sgp25_start_background_loaders
+
+# ===== Stock Game Pro 2.5 offline gameplay / explicit snapshot policy =====
+def _sgp251_rebase_asset(a,target):
+    """Move bundled synthetic starting history onto an account's creation-time quote."""
+    try:
+        target=max(.000001,float(target));old=max(.000001,float(a.price));factor=target/old
+        a.price*=factor;a.open_price*=factor;a.previous_price*=factor;a.high*=factor;a.low*=factor;a.bid*=factor;a.ask*=factor
+        seen=set()
+        for bars in list(getattr(a,'live_bars',{}).values())+list(getattr(a,'datasets',{}).values()):
+            for c in bars:
+                ident=id(c)
+                if ident in seen:continue
+                seen.add(ident);c.open*=factor;c.high*=factor;c.low*=factor;c.close*=factor
+        try:
+            from collections import deque
+            a.history=deque((float(x)*factor for x in a.history),maxlen=getattr(a.history,'maxlen',30000))
+        except Exception:pass
+        a.last_real_close=target;a.fundamental_value=max(.000001,target)
+        a.regular_close_price=target;a.previous_close_price=target
+        try:a._reprice_book()
+        except Exception:pass
+        return True
+    except Exception:return False
+
+
+def _sgp251_load_account_market_seed(self,username=None):
+    """Apply only local creation-time data. This method never performs network I/O."""
+    try:
+        from data import load_account_seed,fetch_macro_cached
+        quotes=load_account_seed(username);applied=0
+        for a in self.all_assets():
+            rec=quotes.get(getattr(a,'data_symbol',a.symbol)) or quotes.get(a.symbol)
+            if not isinstance(rec,dict) or rec.get('close') is None:continue
+            if _sgp251_rebase_asset(a,rec['close']):
+                applied+=1
+                try:
+                    ts=rec.get('timestamp')
+                    if ts:
+                        from datetime import datetime as _dt
+                        a.last_real_timestamp=_dt.fromisoformat(ts).replace(tzinfo=None)
+                except Exception:pass
+        macro=fetch_macro_cached()
+        if macro:
+            self.macro.update({k:v for k,v in macro.items() if k in self.macro});self.real_macro_source='LOCAL CACHE'
+        try:self._v25_rebuild_index_cache()
+        except Exception:pass
+        self.network_playback_enabled=False
+        self.data_status=f'OFFLINE PLAY • {applied:,} CREATION-SNAPSHOT QUOTES • NO NETWORK DURING GAMEPLAY'
+        return applied
+    except Exception as e:
+        self.errors.append(f'local market seed: {e}');self.network_playback_enabled=False;self.data_status='OFFLINE PLAY • BUNDLED/CACHED DATA • NO NETWORK DURING GAMEPLAY';return 0
+Market.load_account_market_seed=_sgp251_load_account_market_seed
+
+
+def _sgp251_ensure_real_data(self,a,history=False):
+    """Cache-only replacement for the old lazy online hydrator."""
+    if a is None:return False
+    sym=getattr(a,'symbol','')
+    try:
+        from data import fetch_latest_cached,fetch_history_max_cached
+        q=fetch_latest_cached(getattr(a,'data_symbol',sym))
+        if q:
+            a.last_real_close=float(q.close);a.last_real_timestamp=q.timestamp
+            if not getattr(a,'fundamental_value',None):a.fundamental_value=max(.0001,float(q.close))
+            self._v25_real_seeded.add(sym)
+        if history and not getattr(a,'data_loaded',False):
+            candles=fetch_history_max_cached(getattr(a,'data_symbol',sym))
+            if candles:
+                with a.data_lock:
+                    a.datasets['1d']=list(candles);a.inception_date=candles[0].timestamp.date().isoformat();a.inception_price=float(candles[0].open);a.data_loaded=True
+        return bool(q or (history and getattr(a,'data_loaded',False)))
+    except Exception as e:
+        self.errors.append(f'local data {sym}: {e}');return False
+Market.ensure_real_data=_sgp251_ensure_real_data
+
+
+def _sgp251_load_ipo_history(self,a):
+    if a is None:return False
+    sym=getattr(a,'symbol','')
+    try:
+        from data import fetch_history_max_cached
+        candles=fetch_history_max_cached(getattr(a,'data_symbol',sym))
+        if not candles:
+            self.data_status=f'OFFLINE PLAY • NO LOCAL MAX HISTORY FOR {sym} • NO NETWORK REQUEST SENT';return False
+        with a.data_lock:
+            a.datasets['1d']=list(candles);a.inception_date=candles[0].timestamp.date().isoformat();a.inception_price=float(candles[0].open);a.data_loaded=True
+        self.visual_version+=1;self.data_status=f'LOCAL MAX HISTORY • {sym} • {a.inception_date} • OFFLINE PLAY';return True
+    except Exception as e:
+        self.errors.append(f'local MAX history {sym}: {e}');return False
+Market.load_ipo_history=_sgp251_load_ipo_history
+
+
+def _sgp251_start_background_loaders(self):
+    # Deliberately no thread and no downloader. Local data was loaded before the
+    # simulation thread started; gameplay is network-silent by design.
+    if getattr(self,'_loader_started',False):return
+    self._loader_started=True;self.network_playback_enabled=False
+    if 'OFFLINE PLAY' not in str(getattr(self,'data_status','')):
+        self.data_status='OFFLINE PLAY • LOCAL ACCOUNT SNAPSHOT • NO NETWORK DURING GAMEPLAY'
+Market.start_background_loaders=_sgp251_start_background_loaders
+Market._background_loader=lambda self: None
+
+
+# ===== Stock Game Pro 2.5 production manual snapshot application =====
+def _sgp25_apply_refreshed_market_snapshot(self,username=None):
+    """Apply a freshly downloaded (or cache-fallback) account snapshot in-place.
+
+    Holdings, cost basis, realized P/L, working orders, and options are intentionally left
+    untouched. Only market marks/baselines are replaced, which is why the UI requires an
+    explicit warning before calling this method. The operation performs no network I/O; the
+    download has already completed in data.refresh_account_market_snapshot().
+    """
+    try:
+        from data import load_account_seed,fetch_macro_cached
+        quotes=load_account_seed(username);applied=0;now=self.clock.current
+        # Keep the simulation thread paused while thousands of symbols are repriced.
+        lock=getattr(self,'_lock',None)
+        if lock is None:
+            class _Null:
+                def __enter__(self):return self
+                def __exit__(self,*a):return False
+            lock=_Null()
+        with lock:
+            for a in self.all_assets():
+                ds=getattr(a,'data_symbol',a.symbol)
+                special={'SPX':'^GSPC','NDX':'^NDX','DJI':'^DJI','RUT':'^RUT','VIX':'^VIX'}.get(getattr(a,'symbol',''))
+                rec=quotes.get(special) if special else None
+                rec=rec or quotes.get(ds) or quotes.get(getattr(a,'symbol',''))
+                if not isinstance(rec,dict) or rec.get('close') is None:continue
+                try:
+                    target=float(rec['close'])
+                    if not math.isfinite(target) or target<=0:continue
+                    target=max(.000001,min(1.0e12,target))
+                    a.previous_price=target;a.price=target;a.open_price=target;a.high=target;a.low=target
+                    a.last_real_close=target;a.fundamental_value=target
+                    a.regular_close_price=target;a.previous_close_price=target
+                    a.volume=max(0,int(rec.get('volume',0) or 0));a.last_market_impact=0.0
+                    try:
+                        ts=rec.get('timestamp')
+                        if ts:
+                            from datetime import datetime as _dt
+                            dt=_dt.fromisoformat(str(ts).replace('Z','+00:00'))
+                            if getattr(dt,'tzinfo',None):dt=dt.replace(tzinfo=None)
+                            a.last_real_timestamp=dt
+                    except Exception:pass
+                    try:a._reprice_book()
+                    except Exception:pass
+                    self._book_cache_time[a.symbol]=0
+                    applied+=1
+                except Exception:continue
+            # A refresh is a new simulation baseline: market change percentages start from
+            # the refreshed marks rather than comparing real-world quotes with the old sim.
+            try:self._pct_open_state={a.symbol:self.asset_regular_open(a) for a in self.all_assets()}
+            except Exception:pass
+            try:self._impact_state.clear();self._liquidity_health.clear()
+            except Exception:pass
+            try:self._v25_rebuild_index_cache()
+            except Exception:pass
+            macro=fetch_macro_cached()
+            if macro:
+                self.macro.update({k:v for k,v in macro.items() if k in self.macro});self.real_macro_source='REFRESHED LOCAL SNAPSHOT'
+        self.visual_version+=1;self.network_playback_enabled=False
+        self.data_status=f'OFFLINE PLAY • MANUAL SNAPSHOT APPLIED • {applied:,} QUOTES • NO BACKGROUND NETWORK'
+        return applied
+    except Exception as e:
+        self.errors.append(f'manual snapshot apply: {type(e).__name__}: {e}')
+        self.network_playback_enabled=False
+        return 0
+Market.apply_refreshed_market_snapshot=_sgp25_apply_refreshed_market_snapshot

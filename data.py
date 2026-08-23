@@ -123,3 +123,233 @@ def fetch_history_max(symbol,cache_days=7):
             with path.open('rb') as f:return pickle.load(f)
     except Exception:pass
     return []
+
+# ===== Stock Game Pro 2.5 explicit-snapshot network policy =====
+# Gameplay is deliberately offline. Internet access is allowed only in two explicit,
+# user-visible workflows: (1) creating a new account and (2) pressing the manual
+# Experimental -> Refresh Market Snapshot command and confirming its warning. All ordinary
+# fetch_* entry points below remain cache-only, so charts, FIT MAX, options, global views,
+# watchlists, and the simulation engine cannot silently create network traffic.
+import json as _sgp26_json, pathlib as _sgp26_pathlib, threading as _sgp26_threading
+from concurrent.futures import ThreadPoolExecutor as _sgp26_TPE, as_completed as _sgp26_as_completed
+from datetime import datetime as _sgp26_datetime, timezone as _sgp26_timezone
+
+_SGP26_CACHE_ROOT=_sgp26_pathlib.Path.home()/'.stock_game_pro_cache'
+_SGP26_QUOTE_CACHE=_SGP26_CACHE_ROOT/'latest_quotes.json'
+_SGP26_MACRO_CACHE=_SGP26_CACHE_ROOT/'macro_snapshot.json'
+_SGP26_ACCOUNT_SEEDS=_SGP26_CACHE_ROOT/'account_seeds'
+for _p in (_SGP26_CACHE_ROOT,_SGP26_ACCOUNT_SEEDS):
+    try:_p.mkdir(parents=True,exist_ok=True)
+    except Exception:pass
+_SGP26_CACHE_LOCK=_sgp26_threading.RLock()
+
+# Preserve the original network-capable functions privately. They are never called by
+# normal gameplay after this patch.
+_sgp26_fetch_latest_online=fetch_latest
+_sgp26_fetch_many_latest_online=fetch_many_latest
+_sgp26_fetch_history_online=_fetch_history_max_network
+_sgp26_fetch_fred_online=fetch_fred_macro_snapshot
+
+
+def _sgp26_atomic_json(path,obj):
+    try:
+        path=_sgp26_pathlib.Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+        tmp=path.with_suffix(path.suffix+'.tmp');tmp.write_text(_sgp26_json.dumps(obj,separators=(',',':')));tmp.replace(path);return True
+    except Exception:return False
+
+
+def load_local_quote_snapshot():
+    """Return the newest locally stored quote snapshot without touching the network."""
+    try:
+        obj=_sgp26_json.loads(_SGP26_QUOTE_CACHE.read_text())
+        return obj.get('quotes',obj) if isinstance(obj,dict) else {}
+    except Exception:return {}
+
+
+def _sgp26_quote_dict_from_history(symbol):
+    """Recover a quote from the existing MAX-history disk cache when possible."""
+    try:
+        p=_hist_cache_path(symbol)
+        if not p.exists():return None
+        with p.open('rb') as f:bars=pickle.load(f)
+        if not bars:return None
+        c=bars[-1]
+        ts=getattr(c,'timestamp',None)
+        return {'close':float(c.close),'volume':int(getattr(c,'volume',0) or 0),
+                'timestamp':ts.isoformat() if hasattr(ts,'isoformat') else None,
+                'saved_at':float(p.stat().st_mtime),'source':'history-cache'}
+    except Exception:return None
+
+
+def cached_quote_record(symbol):
+    symbol=str(symbol or '').strip()
+    if not symbol:return None
+    rec=load_local_quote_snapshot().get(symbol)
+    if isinstance(rec,dict) and rec.get('close') is not None:return rec
+    return _sgp26_quote_dict_from_history(symbol)
+
+
+def fetch_latest_cached(symbol):
+    rec=cached_quote_record(symbol)
+    if not rec:return None
+    try:
+        ts=rec.get('timestamp');dt=_sgp26_datetime.fromisoformat(ts) if ts else _sgp26_datetime.fromtimestamp(float(rec.get('saved_at',0) or 0),_sgp26_timezone.utc).replace(tzinfo=None)
+        if getattr(dt,'tzinfo',None):dt=dt.astimezone(_sgp26_timezone.utc).replace(tzinfo=None)
+        return Quote(dt,float(rec['close']),int(rec.get('volume',0) or 0))
+    except Exception:return None
+
+
+def fetch_history_max_cached(symbol):
+    """Read MAX daily history only from disk. Never performs an HTTP request."""
+    try:
+        p=_hist_cache_path(symbol)
+        if p.exists():
+            with p.open('rb') as f:return pickle.load(f)
+    except Exception:pass
+    return []
+
+
+def load_account_seed(username):
+    """Per-account creation-time quote snapshot. Falls back to the global local cache."""
+    name=''.join(ch for ch in str(username or '').lower() if ch.isalnum() or ch in ('-','_','.'))
+    if name:
+        p=_SGP26_ACCOUNT_SEEDS/f'{name}.json'
+        try:
+            obj=_sgp26_json.loads(p.read_text());q=obj.get('quotes',{})
+            if isinstance(q,dict) and q:return q
+        except Exception:pass
+    return load_local_quote_snapshot()
+
+
+def _sgp26_parse_spark(obj):
+    out={}
+    try:rows=((obj or {}).get('spark') or {}).get('result') or []
+    except Exception:rows=[]
+    for row in rows:
+        try:
+            sym=str(row.get('symbol') or '').strip();resp=(row.get('response') or [{}])[0];meta=resp.get('meta') or {}
+            price=meta.get('regularMarketPrice');ts=meta.get('regularMarketTime');vol=meta.get('regularMarketVolume',0)
+            if price is None:
+                stamps=resp.get('timestamp') or [];quote=((resp.get('indicators') or {}).get('quote') or [{}])[0]
+                closes=quote.get('close') or [];vols=quote.get('volume') or []
+                for i in range(len(closes)-1,-1,-1):
+                    if closes[i] is not None:
+                        price=closes[i];ts=stamps[i] if i<len(stamps) else ts;vol=vols[i] if i<len(vols) and vols[i] is not None else vol;break
+            if not sym or price is None:continue
+            dt=_sgp26_datetime.fromtimestamp(float(ts),_sgp26_timezone.utc).isoformat() if ts else _sgp26_datetime.now(_sgp26_timezone.utc).isoformat()
+            out[sym]={'close':float(price),'volume':int(vol or 0),'timestamp':dt,'saved_at':_time.time(),'source':'snapshot-network'}
+        except Exception:continue
+    return out
+
+
+def _sgp26_spark_batch(symbols,timeout=4):
+    syms=[str(s).strip() for s in symbols if str(s).strip()]
+    if not syms:return {}
+    qs=urllib.parse.urlencode({'symbols':','.join(syms),'range':'5d','interval':'1d'})
+    # Yahoo's spark endpoint is used only here because one request can seed dozens of
+    # securities, avoiding thousands of individual requests during account creation.
+    obj=_json('https://query1.finance.yahoo.com/v7/finance/spark?'+qs,timeout=timeout)
+    return _sgp26_parse_spark(obj)
+
+
+def refresh_history_cache_online(symbol):
+    """Explicit account-creation-only MAX history refresh."""
+    try:candles=_sgp26_fetch_history_online(symbol)
+    except Exception:candles=[]
+    if candles:
+        try:
+            with _hist_cache_path(symbol).open('wb') as f:pickle.dump(candles,f,pickle.HIGHEST_PROTOCOL)
+        except Exception:pass
+    return candles or fetch_history_max_cached(symbol)
+
+
+def refresh_account_creation_snapshot(symbols,username=None,progress=None):
+    """One-time online seed performed only while creating a brand-new account.
+
+    If the network is unavailable, this returns the newest local quote/history cache.
+    Once this call returns, the simulator's public fetch APIs are cache-only.
+    """
+    syms=list(dict.fromkeys(str(s).strip() for s in symbols if str(s).strip()))
+    local=load_local_quote_snapshot();fresh={};network_ok=False
+    # Fast probe. If this fails we immediately stay offline instead of allowing hundreds
+    # of timeouts to continue after the player enters the workstation.
+    probe=syms[:min(8,len(syms))]
+    if progress:
+        try:progress('Checking market-data connection…',0,len(syms))
+        except Exception:pass
+    try:
+        got=_sgp26_spark_batch(probe,timeout=3)
+        if got:fresh.update(got);network_ok=True
+    except Exception:network_ok=False
+    if network_ok:
+        remaining=[s for s in syms if s not in fresh];batches=[remaining[i:i+60] for i in range(0,len(remaining),60)]
+        done=len(fresh)
+        with _sgp26_TPE(max_workers=6) as ex:
+            futs={ex.submit(_sgp26_spark_batch,b,4):b for b in batches}
+            for f in _sgp26_as_completed(futs):
+                try:fresh.update(f.result() or {})
+                except Exception:pass
+                done+=len(futs[f])
+                if progress:
+                    try:progress(f'Updating creation-time market snapshot… {min(done,len(syms)):,}/{len(syms):,}',min(done,len(syms)),len(syms))
+                    except Exception:pass
+        if fresh:
+            with _SGP26_CACHE_LOCK:
+                merged=dict(local);merged.update(fresh);local=merged
+                _sgp26_atomic_json(_SGP26_QUOTE_CACHE,{'saved_at':_time.time(),'quotes':local})
+        # Prime only high-value broad-market history at account creation. Ordinary chart
+        # use later is cache-only and can never start another download.
+        for hs in ('SPY','^GSPC','^NDX','^DJI','^RUT','^VIX','QQQ'):
+            try:refresh_history_cache_online(hs)
+            except Exception:pass
+        try:
+            macro=_sgp26_fetch_fred_online()
+            if macro:_sgp26_atomic_json(_SGP26_MACRO_CACHE,{'saved_at':_time.time(),'macro':macro})
+        except Exception:pass
+    # Fill holes from any historical files already saved locally.
+    account_quotes={}
+    for s in syms:
+        rec=local.get(s)
+        if not rec:rec=_sgp26_quote_dict_from_history(s)
+        if rec:account_quotes[s]=rec
+    if username:
+        name=''.join(ch for ch in str(username).lower() if ch.isalnum() or ch in ('-','_','.'))
+        if name:_sgp26_atomic_json(_SGP26_ACCOUNT_SEEDS/f'{name}.json',{'created_at':_time.time(),'network_refresh':bool(network_ok),'quotes':account_quotes})
+    source='NETWORK + LOCAL CACHE' if network_ok and fresh else ('LOCAL CACHE' if account_quotes else 'BUNDLED SIMULATION DEFAULTS')
+    return {'network_used':bool(network_ok),'fresh_quotes':len(fresh),'cached_quotes':len(account_quotes),'requested':len(syms),'source':source,'saved_at':_time.time()}
+
+
+
+def refresh_account_market_snapshot(symbols,username=None,progress=None):
+    """Explicit user-requested refresh for an existing account.
+
+    This is intentionally the *only* gameplay-time function allowed to access the network.
+    It reuses the same bounded/batched snapshot fetch used during account creation, writes
+    the common local cache and the named account seed atomically, and then returns. Nothing
+    keeps polling after this function exits. If internet access is unavailable it falls back
+    to the newest locally cached quote/history snapshot.
+    """
+    info=refresh_account_creation_snapshot(symbols,username,progress)
+    try:
+        info=dict(info or {});info['manual_refresh']=True;info['reason']='explicit-user-refresh'
+        name=''.join(ch for ch in str(username or '').lower() if ch.isalnum() or ch in ('-','_','.'))
+        if name:
+            p=_SGP26_ACCOUNT_SEEDS/f'{name}.json'
+            try:obj=_sgp26_json.loads(p.read_text())
+            except Exception:obj={'quotes':load_local_quote_snapshot()}
+            obj['refreshed_at']=_time.time();obj['network_refresh']=bool(info.get('network_used'));obj['refresh_reason']='explicit-user-refresh'
+            _sgp26_atomic_json(p,obj)
+        return info
+    except Exception:
+        return info if isinstance(info,dict) else {'network_used':False,'fresh_quotes':0,'cached_quotes':0,'source':'LOCAL CACHE','manual_refresh':True}
+
+def fetch_macro_cached():
+    try:
+        obj=_sgp26_json.loads(_SGP26_MACRO_CACHE.read_text());return dict(obj.get('macro',{}))
+    except Exception:return {}
+
+# Public gameplay API is OFFLINE-ONLY from this point onward.
+def fetch_latest(symbol):return fetch_latest_cached(symbol)
+def fetch_many_latest(symbols,workers=6):return {s:q for s in symbols if (q:=fetch_latest_cached(s)) is not None}
+def fetch_history_max(symbol,cache_days=7):return fetch_history_max_cached(symbol)
+def fetch_fred_macro_snapshot():return fetch_macro_cached()

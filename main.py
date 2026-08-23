@@ -11,9 +11,23 @@ def simulation(market):
     try:asyncio.run(_simulation(market))
     except Exception as e:market.errors.append(f'simulation thread: {type(e).__name__}: {e}')
 
+def _account_creation_seed_symbols():
+    """Yahoo/data symbols to snapshot once when a new account is created."""
+    try:
+        from game_core import STOCKS,COMMODITIES,INDEXES,GLOBAL_STOCKS,GLOBAL_INDEXES
+        out=[r[0] for r in STOCKS]+[r[0] for r in COMMODITIES]
+        out += [r[5] for r in GLOBAL_STOCKS if len(r)>5]
+        out += [r[5] for r in GLOBAL_INDEXES if len(r)>5]
+        idx_map={'SPX':'^GSPC','NDX':'^NDX','DJI':'^DJI','RUT':'^RUT'}
+        out += [idx_map.get(r[0],r[0]) for r in INDEXES]
+        out += ['^VIX','ES=F','NQ=F','YM=F','RTY=F','BTC-USD','ETH-USD','SOL-USD','XRP-USD',
+                'EURUSD=X','USDJPY=X','GBPUSD=X','AUDUSD=X','USDCAD=X','USDCHF=X']
+        return list(dict.fromkeys(str(x) for x in out if x))
+    except Exception:return ['SPY','^GSPC','^NDX','^DJI','^RUT','^VIX']
+
 def main_menu(root,accounts):
-    """Stock Game Pro 1.9 trader portal with fitted port-to-port commerce."""
-    result={'action':'cancel','mode':'MEDIUM','cash':250000,'username':None,'profile':{}}
+    """Stock Game Pro 2.5 trader portal with fitted port-to-port commerce."""
+    result={'action':'cancel','mode':'MEDIUM','cash':25000,'username':None,'profile':{}}
     w=tk.Toplevel(root);w.title('Stock Game Pro • Global Trader Portal');w.geometry('1360x820');w.minsize(1120,720);w.configure(bg='#02070c');w.protocol('WM_DELETE_WINDOW',w.destroy)
     style=ttk.Style(w);style.configure('Login.Treeview',rowheight=29,font=('Segoe UI',9),background='#071623',fieldbackground='#071623',foreground='#dceaf2');style.configure('Login.Treeview.Heading',font=('Segoe UI',9,'bold'),background='#102b3c',foreground='#b8dff1');style.map('Login.Treeview',background=[('selected','#174e6d')],foreground=[('selected','#ffffff')])
     canvas=tk.Canvas(w,bg='#02070c',highlightthickness=0);canvas.place(relx=0,rely=0,relwidth=1,relheight=1)
@@ -79,7 +93,7 @@ def main_menu(root,accounts):
     panel=tk.Frame(w,bg='#07131e',highlightbackground='#1e617e',highlightthickness=1);panel.place(relx=.555,rely=.035,relwidth=.42,relheight=.93)
     header=tk.Frame(panel,bg='#07131e');header.pack(fill='x',padx=22,pady=(18,8))
     tk.Label(header,text='STOCK GAME PRO',bg='#07131e',fg='#f3f8fb',font=('Segoe UI',24,'bold')).pack(anchor='w')
-    tk.Label(header,text='1.9  •  GLOBAL TRADER PORTAL',bg='#07131e',fg='#57cce9',font=('Segoe UI',10,'bold')).pack(anchor='w',pady=(2,0))
+    tk.Label(header,text='2.5  •  GLOBAL TRADER PORTAL',bg='#07131e',fg='#57cce9',font=('Segoe UI',10,'bold')).pack(anchor='w',pady=(2,0))
     tk.Label(header,text='Select a saved account, review the profile, then enter the workstation.',bg='#07131e',fg='#8fa9b8',font=('Segoe UI',10),wraplength=440,justify='left').pack(anchor='w',pady=(8,0))
     table_wrap=tk.Frame(panel,bg='#07131e');table_wrap.pack(fill='both',expand=True,padx=20,pady=(4,6))
     tv=ttk.Treeview(table_wrap,style='Login.Treeview',columns=('account','mode','cash','credit','xp','last'),show='headings',selectmode='browse',height=10)
@@ -112,7 +126,35 @@ def main_menu(root,accounts):
             ok,msg=accounts.delete(name);status.config(text=msg,fg='#31d6a0' if ok else '#ff6b7d');refresh_accounts()
     def create():
         name=user.get().strip().lower();name='' if name=='account name' else name;ok,msg=accounts.create(name,mode.get());status.config(text=msg,fg='#31d6a0' if ok else '#ff6b7d')
-        if ok:user.delete(0,'end');refresh_accounts(name)
+        if not ok:return
+        user.delete(0,'end');refresh_accounts(name)
+        # The ONLY intentional network window in Stock Game Pro is this creation-time
+        # snapshot. A modal keeps the player out of the workstation until every request
+        # has completed, ensuring no downloader can remain alive during gameplay.
+        sync=tk.Toplevel(w);sync.title('Create Market Snapshot');sync.geometry('520x180');sync.resizable(False,False);sync.transient(w);sync.grab_set();sync.configure(bg='#07131e');sync.protocol('WM_DELETE_WINDOW',lambda:None)
+        tk.Label(sync,text='SETTING ACCOUNT MARKET BASELINE',bg='#07131e',fg='#f3f8fb',font=('Segoe UI',13,'bold')).pack(anchor='w',padx=20,pady=(20,6))
+        tk.Label(sync,text='Checking for the newest market quotes now. This is the only time the game uses the internet. If unavailable, the newest local cache is used instead.',bg='#07131e',fg='#8fa9b8',font=('Segoe UI',9),wraplength=475,justify='left').pack(anchor='w',padx=20,pady=(0,12))
+        bar=ttk.Progressbar(sync,mode='indeterminate');bar.pack(fill='x',padx=20,pady=4);bar.start(12)
+        sync_msg=tk.Label(sync,text='Creation-time data sync…',bg='#07131e',fg='#57cce9',font=('Segoe UI',9,'bold'));sync_msg.pack(anchor='w',padx=20,pady=6)
+        state={}
+        def worker():
+            try:
+                from data import refresh_account_creation_snapshot
+                state['result']=refresh_account_creation_snapshot(_account_creation_seed_symbols(),name)
+            except Exception as e:state['error']=str(e)
+        threading.Thread(target=worker,daemon=True,name='AccountCreationMarketSeed').start()
+        def poll():
+            if 'result' not in state and 'error' not in state:
+                if sync.winfo_exists():w.after(120,poll)
+                return
+            try:bar.stop();sync.grab_release();sync.destroy()
+            except Exception:pass
+            info=state.get('result') or {'source':'BUNDLED SIMULATION DEFAULTS','fresh_quotes':0,'cached_quotes':0,'network_used':False,'error':state.get('error')}
+            try:accounts.set_market_seed_info(name,info)
+            except Exception:pass
+            status.config(text=f"Account created • market baseline: {info.get('source','LOCAL')} • {int(info.get('cached_quotes',0)):,} cached / {int(info.get('fresh_quotes',0)):,} freshly updated • gameplay will be offline",fg='#31d6a0')
+            refresh_accounts(name)
+        w.after(120,poll)
     def guest():result.update(action='start',username=None,mode=mode.get(),cash={'EASY':50000,'MEDIUM':25000,'EXPERT':1000}[mode.get()],profile={});w.destroy()
     ttk.Button(create_box,text='CREATE PROFILE',command=create).grid(row=1,column=2,padx=(5,10),pady=(2,10))
     buttons=tk.Frame(panel,bg='#07131e');buttons.pack(fill='x',padx=28,pady=(2,20));ttk.Button(buttons,text='ENTER WORKSTATION',command=login).pack(side='left',fill='x',expand=True,ipady=5);ttk.Button(buttons,text='DELETE',command=delete).pack(side='left',padx=6,ipady=5);ttk.Button(buttons,text='GUEST',command=guest).pack(side='left',ipady=5)
@@ -121,11 +163,18 @@ def main_menu(root,accounts):
 def main():
     root=tk.Tk();root.withdraw();accounts=AccountManager();choice={'action':'start','username':None,'mode':'MEDIUM','cash':25000} if '--guest' in sys.argv else main_menu(root,accounts)
     if choice['action']!='start':root.destroy();return
-    root.deiconify();market=Market();market.difficulty=choice['mode'];market.speed=.025;market.time_warp=1/60;portfolio=Portfolio(choice['cash']);profile=choice.get('profile') or {};portfolio.xp=int(profile.get('xp',0));portfolio.credit_score=int(profile.get('credit_score',700));portfolio.loan_balance=float(profile.get('loan_balance',0.0));portfolio.loan_apr=float(profile.get('loan_apr',0.0));portfolio.loan_origin=profile.get('loan_origin');portfolio.last_loan_payment=profile.get('last_loan_payment');portfolio.tutorials=dict(profile.get('tutorials',{}));portfolio.career=dict(profile.get('career',portfolio.career));portfolio.market=market;market.portfolio=portfolio;
+    root.deiconify();market=Market();market.difficulty=choice['mode'];market.speed=.025;market.time_warp=1/60;market.account_username=choice.get('username')
+    # Apply the account's frozen creation-time quote snapshot from disk before the simulation
+    # starts. Existing saved game-state prices are restored immediately afterward.
+    try:market.load_account_market_seed(choice.get('username'))
+    except Exception as e:market.errors.append(f'local account seed: {e}')
+    portfolio=Portfolio(choice['cash']);profile=choice.get('profile') or {};portfolio.xp=int(profile.get('xp',0));portfolio.credit_score=int(profile.get('credit_score',700));portfolio.loan_balance=float(profile.get('loan_balance',0.0));portfolio.loan_apr=float(profile.get('loan_apr',0.0));portfolio.loan_origin=profile.get('loan_origin');portfolio.last_loan_payment=profile.get('last_loan_payment');portfolio.tutorials=dict(profile.get('tutorials',{}));portfolio.career=dict(profile.get('career',portfolio.career));portfolio.market=market;market.portfolio=portfolio;
     if choice.get('username'):
         try:accounts.restore_game_state(choice.get('username'),portfolio,market)
         except Exception as e:print(f'Unable to restore saved trading state: {e}')
     app=App(root,market,portfolio);app.account_username=choice.get('username');app.account_manager=accounts
+    try:app.update_experiment_account_menu()
+    except Exception:pass
     def autosave(reason='autosave'):
         if not app.account_username:return
         try:

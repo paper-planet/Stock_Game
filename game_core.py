@@ -1380,3 +1380,159 @@ def _sgp23_restore_game(self,username,portfolio,market):
         portfolio.day_trade_log=list(st.get('day_trade_log',[]));portfolio.pdt_flagged=bool(st.get('pdt_flagged',False));portfolio._intraday_open=dict(st.get('intraday_open',{}));portfolio.equity_history=list(st.get('equity_history',[]));portfolio._daily_equity_open=dict(st.get('daily_equity_open',{}));portfolio._pdt_prune()
     return ok
 AccountManager.restore_game_state=_sgp23_restore_game
+
+# ===== Stock Game Pro 2.4 S&P 500 universe + session metrics =====
+# The S&P 500 contains 503 listed securities representing 500 companies because a few
+# constituents have multiple public share classes.  Keep the simulator's extra research
+# symbols, but guarantee every current S&P constituent is available in the STOCK watchlist.
+try:
+    from sp500_constituents import SP500_CONSTITUENTS, SP500_SYMBOLS
+except Exception:
+    SP500_CONSTITUENTS=[];SP500_SYMBOLS=[]
+
+if SP500_CONSTITUENTS:
+    _sgp24_have={r[0] for r in STOCKS}
+    for _sym,_name,_sector,_vol,_official,_subindustry in SP500_CONSTITUENTS:
+        if _sym not in _sgp24_have:
+            STOCKS.append((_sym,_name,_sector,float(_vol)));_sgp24_have.add(_sym)
+    # The index definition itself is updated too, so SPX uses the actual constituent set
+    # instead of every US research symbol in the game.
+    _sgp24_indexes=[]
+    for _row in INDEXES:
+        if _row[0]=='SPX':
+            _sgp24_indexes.append((_row[0],_row[1],_row[2],list(SP500_SYMBOLS),_row[4]))
+        else:_sgp24_indexes.append(_row)
+    INDEXES[:]=_sgp24_indexes
+
+def _sgp24_after_hours_percent(self):
+    base=float(getattr(self,'regular_close_price',0.0) or getattr(self,'last_real_close',0.0) or getattr(self,'open_price',0.0) or self.price)
+    return (float(self.price)/base-1.0)*100.0 if base else 0.0
+Asset.after_hours_percent=_sgp24_after_hours_percent
+
+# ===== Stock Game Pro 2.5 full index-universe patch =====
+# Keep the core S&P 500 universe from 2.4 and add complete/publicly available
+# constituent snapshots for the other US indexes represented by the simulator.
+try:
+    from index_constituents import INDEX_STOCK_ROWS as _SGP25_INDEX_STOCK_ROWS, INDEX_COMPONENTS as _SGP25_INDEX_COMPONENTS
+except Exception:
+    _SGP25_INDEX_STOCK_ROWS=[];_SGP25_INDEX_COMPONENTS={}
+
+if _SGP25_INDEX_STOCK_ROWS:
+    _sgp25_have={r[0] for r in STOCKS}
+    for _sym,_name,_sector,_vol in _SGP25_INDEX_STOCK_ROWS:
+        if _sym and _sym not in _sgp25_have:
+            STOCKS.append((_sym,_name,_sector,float(_vol)));_sgp25_have.add(_sym)
+    _sgp25_indexes=[]
+    for _row in INDEXES:
+        _sym,_name,_price,_components,_vol=_row
+        comps=_SGP25_INDEX_COMPONENTS.get(_sym)
+        _sgp25_indexes.append((_sym,_name,_price,list(comps) if comps else _components,_vol))
+    INDEXES[:]=_sgp25_indexes
+
+
+# ===== Stock Game Pro 2.5 major global-index constituent coverage =====
+# Add bundled FTSE 100, DAX 40 and Hang Seng members as true international assets with
+# their home sessions. Other global indexes keep their existing representative baskets.
+try:
+    from global_index_constituents import GLOBAL_INDEX_COMPONENTS as _SGP25_GLOBAL_COMPONENTS, GLOBAL_INDEX_ROWS as _SGP25_GLOBAL_ROWS
+except Exception:
+    _SGP25_GLOBAL_COMPONENTS={};_SGP25_GLOBAL_ROWS={}
+
+if _SGP25_GLOBAL_ROWS:
+    _existing_global={r[0] for r in GLOBAL_STOCKS}
+    _cfg={
+        'FTSE':('LSE','GBP','UK Equity',.0018),
+        'DAX':('XETRA','EUR','Germany Equity',.0019),
+        'HSI':('HKEX','HKD','Hong Kong Equity',.0024),
+    }
+    for _idx,_rows in _SGP25_GLOBAL_ROWS.items():
+        _session,_currency,_cat,_vol=_cfg[_idx]
+        for _sym,_name in _rows:
+            if _sym and _sym not in _existing_global:
+                GLOBAL_STOCKS.append((_sym,_name,100.0,_vol,_cat,_sym,_session,_currency));_existing_global.add(_sym)
+    _new_global=[]
+    for _row in GLOBAL_INDEXES:
+        _sym,_name,_price,_components,_vol,_ds,_session=_row
+        _comps=_SGP25_GLOBAL_COMPONENTS.get(_sym)
+        _new_global.append((_sym,_name,_price,list(_comps) if _comps else _components,_vol,_ds,_session))
+    GLOBAL_INDEXES[:]=_new_global
+
+# ===== Stock Game Pro 2.5 production offline-play account seed / persistent market state =====
+# Prevent legacy helpers in this consolidated module from ever creating network traffic
+# during gameplay. The data module exposes cache-only public reads in production 2.5.
+def fetch_latest(symbol,timeout=5):
+    try:
+        from data import fetch_latest_cached
+        q=fetch_latest_cached(symbol)
+        if q is None:return None
+        return Candle(q.timestamp,float(q.close),float(q.close),float(q.close),float(q.close),int(q.volume))
+    except Exception:return None
+
+def fetch_many_latest(symbols,workers=8):
+    out={}
+    for sym in symbols:
+        c=fetch_latest(sym)
+        if c is not None:out[sym]=c
+    return out
+
+def fetch_history(symbol,period1=0,interval='1d',timeout=5):
+    if interval!='1d':return []
+    try:
+        from data import fetch_history_max_cached
+        return list(fetch_history_max_cached(symbol))
+    except Exception:return []
+
+_AccountManager_create_v251_base=AccountManager.create
+def _sgp251_account_create(self,username,mode):
+    ok,msg=_AccountManager_create_v251_base(self,username,mode)
+    if ok:
+        key=str(username).strip().lower();rec=self.accounts.get(key)
+        if rec is not None:
+            rec['market_seed_complete']=False;rec['market_seed_info']={'source':'PENDING','saved_at':None,'fresh_quotes':0,'cached_quotes':0}
+            self._save()
+    return ok,msg
+AccountManager.create=_sgp251_account_create
+
+def _sgp251_set_market_seed_info(self,username,info):
+    key=str(username or '').strip().lower();rec=self.accounts.get(key)
+    if rec is None:return False
+    rec['market_seed_complete']=True;rec['market_seed_info']=dict(info or {});self._save();return True
+AccountManager.set_market_seed_info=_sgp251_set_market_seed_info
+
+# Persist simulator prices so reopening an established account continues its simulated
+# market rather than re-seeding from the creation-time snapshot.
+_AccountManager_save_game_v251_base=AccountManager.save_game_state
+def _sgp251_save_game_state(self,username,portfolio,market,reason='autosave'):
+    ok=_AccountManager_save_game_v251_base(self,username,portfolio,market,reason)
+    if ok and username:
+        try:
+            rec=self.accounts.get(str(username).lower()) or self.accounts.get(username);st=rec.get('game_state',{})
+            prices={}
+            for a in market.all_assets():
+                prices[a.symbol]=[
+                    float(a.price),float(a.open_price),float(a.previous_price),float(a.high),float(a.low),
+                    float(getattr(a,'regular_close_price',a.price)),float(getattr(a,'previous_close_price',getattr(a,'regular_close_price',a.price)))
+                ]
+            st['market_prices']=prices;rec['game_state']=st;self._save()
+        except Exception:pass
+    return ok
+AccountManager.save_game_state=_sgp251_save_game_state
+
+_AccountManager_restore_game_v251_base=AccountManager.restore_game_state
+def _sgp251_restore_game_state(self,username,portfolio,market):
+    ok=_AccountManager_restore_game_v251_base(self,username,portfolio,market)
+    try:
+        rec=self.accounts.get(str(username).lower()) or self.accounts.get(username) or {};prices=(rec.get('game_state') or {}).get('market_prices') or {}
+        if prices:
+            for sym,v in prices.items():
+                a=market.get_asset(sym)
+                if a is None or not isinstance(v,(list,tuple)) or not v:continue
+                try:
+                    a.price=max(.000001,float(v[0]));a.open_price=max(.000001,float(v[1] if len(v)>1 else a.price));a.previous_price=max(.000001,float(v[2] if len(v)>2 else a.price));a.high=max(a.price,float(v[3] if len(v)>3 else a.price));a.low=max(.000001,min(a.price,float(v[4] if len(v)>4 else a.price)))
+                    a.regular_close_price=max(.000001,float(v[5] if len(v)>5 else a.price));a.previous_close_price=max(.000001,float(v[6] if len(v)>6 else a.regular_close_price));a._reprice_book()
+                except Exception:pass
+            try:market._v25_rebuild_index_cache()
+            except Exception:pass
+    except Exception:pass
+    return ok
+AccountManager.restore_game_state=_sgp251_restore_game_state

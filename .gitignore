@@ -1,0 +1,19 @@
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Local environments / build outputs
+.venv/
+venv/
+build/
+dist/
+dist-installer/
+*.spec
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -916,7 +916,7 @@ class OrderWindow(ToolWindow):
 class WorkspaceControls(ToolWindow):
     def __init__(self,parent,app):
         super().__init__(parent);self.app=app;self.style_window('WORKSPACE — VARIABLES / LAYOUT','700x760');ttk.Label(self,text='Customize the terminal',font=('Arial',15,'bold')).pack(anchor='w',padx=12,pady=10);self.vars={}
-        for name,val,lo,hi in [('Time warp',float(app.time_warp.get()) if hasattr(app,'time_warp') else 10,.25,40),('Active chart tick',app.charts[app.active_chart].refresh_ms/1000,.025,5.0),('Chart zoom',1,.5,3)]:
+        for name,val,lo,hi in [('Time warp',float(app.time_warp.get()) if hasattr(app,'time_warp') else 1,1,100),('Active chart tick',app.charts[app.active_chart].refresh_ms/1000,.025,5.0),('Chart zoom',1,.5,3)]:
             row=ttk.Frame(self);row.pack(fill='x',padx=12,pady=7);ttk.Label(row,text=name,width=18).pack(side='left');v=tk.DoubleVar(value=val);self.vars[name]=v;tk.Scale(row,from_=lo,to=hi,resolution=.01 if hi<5 else 1,orient='horizontal',variable=v,length=350,bg=PANEL,fg=TEXT,highlightthickness=0,command=lambda x:self.apply()).pack(side='left',fill='x',expand=True);ttk.Label(row,textvariable=v,width=8).pack(side='right')
         ttk.Label(self,text='Main workspace charts',font=('Arial',9,'bold')).pack(anchor='w',padx=12,pady=(15,5));self.count=tk.IntVar(value=len(app.charts));ttk.Combobox(self,textvariable=self.count,values=[4,6,8],state='readonly',width=8).pack(anchor='w',padx=20);ttk.Button(self,text='APPLY CHART COUNT',command=app.set_chart_count).pack(anchor='w',padx=20,pady=5);ttk.Label(self,text='Indicators are removable/addable from the Chart Tools menu and chart variables panel.',wraplength=640).pack(anchor='w',padx=12,pady=15)
     def apply(self):self.app.set_time_warp(float(self.vars['Time warp'].get()));self.app.charts[self.app.active_chart].set_refresh_rate(max(25,int(self.vars['Active chart tick'].get()*1000)))
@@ -4642,7 +4642,7 @@ def _sgp_app_init_v19(self,root,market,portfolio):
     except Exception:pass
     # Experiment menu is intentionally separate from order-entry/options menus.
     try:
-        mb=self.root.nametowidget(self.root.cget('menu'));exp=tk.Menu(mb,tearoff=0);exp.add_command(label='Market Conditions / Whale & Options Lab',command=self.market_conditions_lab);mb.add_cascade(label='Experiment',menu=exp)
+        mb=self.root.nametowidget(self.root.cget('menu'));exp=tk.Menu(mb,tearoff=0);exp.add_command(label='Market Conditions / Whale & Options Lab',command=self.market_conditions_lab);mb.add_cascade(label='Experimental',menu=exp)
     except Exception:pass
 App.__init__=_sgp_app_init_v19
 
@@ -5718,3 +5718,828 @@ def _sgp23_refresh(self):
     except Exception:pass
     return out
 App.refresh=_sgp23_refresh
+
+# ===== Stock Game Pro 2.4 world geometry / chart controls / session display =====
+try:
+    from world_land import LAND_POLYGONS as _SGP24_LAND, COUNTRY_BORDERS as _SGP24_BORDERS
+except Exception:
+    _SGP24_LAND=[];_SGP24_BORDERS=[]
+
+# --- True real-second time warp, now 1x..100x ---
+def _sgp24_set_time_warp(self,value=None):
+    try:display=max(1.0,min(100.0,float(self.time_warp.get() if value is None else value)))
+    except Exception:display=1.0
+    self.market.time_warp=display/60.0
+    try:self.time_warp.set(display);self.time_warp_label.config(text=f'{display:g}x')
+    except Exception:pass
+App.set_time_warp=_sgp24_set_time_warp
+
+# --- Dense startup history with visible pre/post market sessions ---
+def _sgp24_tf_days(tf,available):
+    return min(available,{'1D':1,'1W':5,'1M':22,'3M':66,'6M':132,'1Y':252,'5Y':1260,'MAX':available}.get(tf,22))
+
+def _sgp24_intraday_display(self,daily,period,maxbars=1400):
+    """Build deterministic display-only 24h US-equity bars until real intraday history fills in.
+
+    The simulated equity market has an overnight ECN, pre/post-market extended hours and a
+    regular 09:30-16:00 session.  Generating the full clock day makes those regions visible
+    immediately instead of hiding the overnight band simply because the startup cache is daily.
+    """
+    mins=max(1,_sgp23_period_minutes(period));days=max(1,len(daily))
+    native=max(1,int(round(1440.0/mins)))
+    # Keep the complete day for short windows; for long ranges sample evenly to a hard render budget.
+    per_day=max(4,min(native,max(4,int(maxbars/max(1,days)))))
+    step=1440.0/per_day;out=[]
+    for di,dc in enumerate(daily):
+        prev_close=float(daily[di-1].close if di else dc.open);o=float(dc.open);cl=float(dc.close);hi=float(dc.high);lo=float(dc.low)
+        next_open=float(daily[di+1].open if di+1<len(daily) else cl)
+        base=dc.timestamp.replace(hour=0,minute=0,second=0,microsecond=0)
+        # Stable synthetic anchors for the non-regular sessions. These are display seeds only and
+        # are replaced automatically when genuine simulator/real intraday bars are available.
+        seed=sum(ord(ch) for ch in str(getattr(self.asset,'symbol',''))) + int(dc.timestamp.toordinal())
+        wiggle=((seed%17)-8)/8000.0
+        pre4=prev_close*(1+wiggle*.35)
+        post20=cl*(1+wiggle*.25)
+        for j in range(per_day):
+            m=(j+.5)*step;mp=max(0.0,m-step)
+            def px_at(mm):
+                # 00:00-04:00 overnight ECN: drift from previous close toward the pre-market anchor.
+                if mm<240.0:
+                    t=max(0.0,min(1.0,mm/240.0));return prev_close+(pre4-prev_close)*t
+                # 04:00-09:30 pre-market: converge toward the opening auction.
+                if mm<570.0:
+                    t=(mm-240.0)/330.0;return pre4+(o-pre4)*t
+                # 09:30-16:00 regular session: respect the day's OHLC envelope.
+                if mm<960.0:
+                    t=(mm-570.0)/390.0
+                    p=o+(cl-o)*t+(hi-lo)*math.sin(t*math.pi*2)*.14
+                    return max(lo,min(hi,p))
+                # 16:00-20:00 after-hours.
+                if mm<1200.0:
+                    t=(mm-960.0)/240.0;return cl+(post20-cl)*t
+                # 20:00-20:15 maintenance pause: flat print for visual continuity.
+                if mm<1215.0:return post20
+                # 20:15-midnight overnight ECN: begin drifting toward the following opening regime.
+                t=(mm-1215.0)/225.0;return post20+(next_open-post20)*t*.20
+            pp=px_at(mp);pcur=px_at(m);bh=max(pp,pcur);bl=min(pp,pcur)
+            if 570.0<=m<960.0:
+                rt=(m-570.0)/390.0
+                if abs(rt-.34)<step/390.0:bh=max(bh,hi)
+                if abs(rt-.68)<step/390.0:bl=min(bl,lo)
+            ts=base+_sgp23_ui_td(minutes=j*step)
+            out.append(Candle(ts,pp,bh,bl,pcur,max(1,int(getattr(dc,'volume',0)/max(1,per_day)))))
+    return out
+
+_Chart_data_v24_base=Chart.data
+def _sgp24_chart_data(self):
+    base=list(_Chart_data_v24_base(self))
+    if self.asset is None or getattr(self,'fit_inception',False):return base
+    period=getattr(self,'candle_period','Auto')
+    if period not in ('3 Min','5 Min','10 Min','30 Min','1 Hour'):return base
+    daily=list(self.asset.chart_candles('1d'))
+    if not daily:return base
+    n=_sgp24_tf_days(self.timeframe,len(daily));daily=daily[-n:]
+    native=max(1,int(round(1440.0/_sgp23_period_minutes(period))))
+    desired=min(1400,max(12,n*native))
+    # If genuine intraday data already fills the selected viewport, prefer it. Otherwise
+    # build a deterministic, full-window display from the daily OHLC history.
+    if len(base)>=max(12,int(desired*.72)):return base
+    synth=_sgp24_intraday_display(self,daily,period,1400)
+    return synth if len(synth)>len(base) else base
+Chart.data=_sgp24_chart_data
+
+# Add stronger extended-session bands plus DAY/AH percentages without replacing the
+# professional renderer. Bands are grouped, not one Canvas object per candle.
+_Chart_draw_v24_base=Chart.draw
+def _sgp24_chart_draw(self):
+    _Chart_draw_v24_base(self)
+    try:self.delete('sgp24_session_shade');self.delete('sgp24_metrics')
+    except Exception:return
+    a=self.asset
+    if a is None:return
+    try:
+        d=list(self.data());w=max(300,self.winfo_width());h=max(190,self.winfo_height())
+        show_rsi=bool(getattr(self.app,'ind_vars',{}).get('RSI') and self.app.ind_vars['RSI'].get());show_macd=bool(getattr(self.app,'ind_vars',{}).get('MACD') and self.app.ind_vars['MACD'].get());subcount=int(show_rsi)+int(show_macd);sub_h=68 if h>360 else 52
+        left,right,top=64,w-14,36;axis_y=h-25;price_bottom=axis_y-8-subcount*sub_h
+        if price_bottom<top+70:price_bottom=top+70
+        if getattr(self,'show_overnight',True) and len(d)>1 and self.timeframe in ('1D','1W','1M','3M','6M','1Y'):
+            step=(right-left)/max(1,len(d));states=[]
+            code=str(getattr(a,'session','US') or 'US')
+            for c in d:
+                reg=_sgp22_regular_at(self,c.timestamp)
+                if reg:states.append('REG');continue
+                ext=False
+                if code=='US':
+                    try:ext=bool(market_status('EXT',c.timestamp))
+                    except Exception:pass
+                states.append('EXT' if ext else 'NIGHT')
+            start=0
+            while start<len(states):
+                st=states[start];end=start+1
+                while end<len(states) and states[end]==st:end+=1
+                if st!='REG':
+                    x1=left+start*step;x2=left+end*step;fill='#17304b' if st=='EXT' else '#101420';stip='gray25' if st=='EXT' else 'gray12'
+                    self.create_rectangle(x1,top,x2,price_bottom,fill=fill,outline='',stipple=stip,tags=('sgp24_session_shade',))
+                start=end
+            self.tag_lower('sgp24_session_shade')
+        day=float(a.change_percent());regular=False
+        try:regular=bool(self.app.market.asset_regular_open(a))
+        except Exception:pass
+        ah=float(a.after_hours_percent()) if hasattr(a,'after_hours_percent') else 0.0
+        state='REGULAR' if regular else str(self.app.market.asset_trade_state(a))
+        metric=f'DAY {day:+.2f}%  •  AH {"—" if regular else f"{ah:+.2f}%"}  •  {state}'
+        self.create_text(8,22,anchor='nw',text=metric,fill=GREEN if day>=0 else RED,font=('Segoe UI',7,'bold'),tags=('sgp24_metrics',))
+        if getattr(self,'show_overnight',True):self.create_text(right,22,anchor='ne',text='EXTENDED HOURS SHADED',fill='#7f9fbd',font=('Segoe UI',6,'bold'),tags=('sgp24_metrics',))
+    except Exception:pass
+Chart.draw=_sgp24_chart_draw
+
+# --- Regular-chart vertical zoom control (not advanced-chart-only anymore) ---
+def _sgp24_set_main_vertical(self,value=None):
+    if not getattr(self,'charts',None):return
+    try:v=max(.25,min(8.0,float(self.v24_var.get() if value is None else value)))
+    except Exception:v=1.0
+    c=self.charts[self.active_chart];c.set_vertical_scale(v)
+    try:self.v24_label.config(text=f'{v:.2f}x')
+    except Exception:pass
+App.set_main_vertical=_sgp24_set_main_vertical
+
+def _sgp24_fit_main_vertical(self):
+    try:self.v24_var.set(1.0)
+    except Exception:pass
+    self.set_main_vertical(1.0)
+App.fit_main_vertical=_sgp24_fit_main_vertical
+
+_App_init_v24_base=App.__init__
+def _sgp24_app_init(self,root,market,portfolio):
+    _App_init_v24_base(self,root,market,portfolio)
+    try:self.root.title('Stock Game Pro 2.4 — Global Trading Simulator')
+    except Exception:pass
+    # 100x upper bound; 1x remains exact real-world seconds.
+    try:
+        self.time_warp_scale.config(from_=1,to=100,resolution=.25,length=132);self.set_time_warp(1.0)
+    except Exception:pass
+    # Make extended-hours shading unmistakably ON for every new/main chart.
+    try:
+        if hasattr(self,'overnight_var'):self.overnight_var.set(True)
+        for c in list(self.charts)+list(getattr(self,'extra_charts',[])):c.show_overnight=True
+    except Exception:pass
+    # Compact vertical-scale control for the active regular chart.
+    try:
+        top=self.tf.master;self.v24_var=tk.DoubleVar(value=float(getattr(self.charts[self.active_chart],'vertical_scale',1.0)));self.v24_title=ttk.Label(top,text='V');self.v24_scale=ttk.Scale(top,from_=.25,to=8.0,orient='horizontal',length=82,variable=self.v24_var,command=lambda v:self.set_main_vertical(v));self.v24_label=ttk.Label(top,text='1.00x',width=6);self.v24_fit=ttk.Button(top,text='FIT Y',width=5,command=self.fit_main_vertical)
+        self.v24_title.pack(side='left',padx=(4,1),before=self.ctype);self.v24_scale.pack(side='left',before=self.ctype);self.v24_label.pack(side='left',before=self.ctype);self.v24_fit.pack(side='left',padx=(1,3),before=self.ctype)
+    except Exception:pass
+    # Rebuild the Time menu with the new upper range.
+    try:
+        mb=self.root.nametowidget(self.root.cget('menu'))
+        for i in range(mb.index('end')+1):
+            if mb.entrycget(i,'label')=='Time':
+                tm=mb.nametowidget(mb.entrycget(i,'menu'));tm.delete(0,'end')
+                for x in (1,2,5,10,25,50,100):tm.add_command(label=f'{x:g}x',command=lambda v=x:self.set_time_warp(v))
+                tm.add_separator();tm.add_command(label='Pause / Resume',command=self.toggle_pause);tm.add_command(label='Skip to Next Open (closed market only)',command=self.skip_to_next_open);break
+    except Exception:pass
+    self.sync_chart_controls()
+App.__init__=_sgp24_app_init
+
+_sync_controls_v24_base=App.sync_chart_controls
+def _sgp24_sync_controls(self):
+    _sync_controls_v24_base(self)
+    try:
+        v=float(getattr(self.charts[self.active_chart],'vertical_scale',1.0));self.v24_var.set(v);self.v24_label.config(text=f'{v:.2f}x')
+    except Exception:pass
+App.sync_chart_controls=_sgp24_sync_controls
+
+# Workspace variables should expose the same 100x ceiling.
+_WorkspaceControls_init_v24_base=WorkspaceControls.__init__
+def _sgp24_workspace_init(self,parent,app):
+    _WorkspaceControls_init_v24_base(self,parent,app)
+    def walk(w):
+        for ch in w.winfo_children():
+            try:
+                if isinstance(ch,tk.Scale) and float(ch.cget('to'))==40.0:ch.config(from_=1,to=100,resolution=.25)
+            except Exception:pass
+            walk(ch)
+    walk(self)
+WorkspaceControls.__init__=_sgp24_workspace_init
+
+# --- Earth-shaped global monitor using bundled low-resolution real coastlines/country borders ---
+def _sgp24_map_path(canvas,viewer,points,fill,width=1,dash=None):
+    if len(points)<2:return
+    w=max(700,canvas.winfo_width());segments=[];cur=[];lastx=None
+    for lat,lon in points:
+        x,y=viewer.proj(lat,lon)
+        if lastx is not None and abs(x-lastx)>w*.55:
+            if len(cur)>=4:segments.append(cur)
+            cur=[]
+        cur.extend((x,y));lastx=x
+    if len(cur)>=4:segments.append(cur)
+    for seg in segments:canvas.create_line(*seg,fill=fill,width=width,dash=dash,smooth=False)
+
+def _sgp24_geo_interp(lat1,lon1,lat2,lon2,t,arc=0.0):
+    dlon=((lon2-lon1+180.0)%360.0)-180.0;lon=((lon1+dlon*t+180.0)%360.0)-180.0;lat=lat1+(lat2-lat1)*t+math.sin(math.pi*t)*arc
+    return lat,lon
+
+def _sgp24_global_draw(self):
+    c=self.canvas;c.delete('all');w=max(700,c.winfo_width());h=max(450,c.winfo_height())
+    # Ocean + proper equirectangular Earth geometry.
+    c.create_rectangle(0,0,w,h,fill='#04101b',outline='')
+    for lon in range(-180,181,30):x,_=self.proj(0,lon);c.create_line(x,0,x,h,fill='#102633')
+    for lat in range(-60,91,30):_,y=self.proj(lat,0);c.create_line(0,y,w,y,fill='#102633')
+    # Land polygons first; lake/island holes are drawn back in ocean color.
+    for typ,poly in _SGP24_LAND:
+        if typ not in (1,5):continue
+        pts=[]
+        for lon,lat in poly:pts.extend(self.proj(lat,lon))
+        if len(pts)>=6:c.create_polygon(*pts,fill='#102a25',outline='#2e6658',width=1)
+    for typ,poly in _SGP24_LAND:
+        if typ!=2:continue
+        pts=[]
+        for lon,lat in poly:pts.extend(self.proj(lat,lon))
+        if len(pts)>=6:c.create_polygon(*pts,fill='#071824',outline='#173747',width=1)
+    # National borders make the flat projection immediately recognizable as a world map.
+    for seg in _SGP24_BORDERS:
+        pts=[]
+        for lon,lat in seg:pts.extend(self.proj(lat,lon))
+        if len(pts)>=4:c.create_line(*pts,fill='#1d473f',width=1)
+    # Equator / prime meridian reference lines.
+    x0,_=self.proj(0,0);_,y0=self.proj(0,0);c.create_line(x0,0,x0,h,fill='#244352',dash=(3,5));c.create_line(0,y0,w,y0,fill='#244352',dash=(3,5))
+    q=self.search.get().strip().upper()
+    if self.layer_freight.get():
+        for sh in getattr(self.market,'shipments',[]):
+            route=sh.get('route',{});pts=list(route.get('points',[]))
+            if len(pts)<2:continue
+            _sgp24_map_path(c,self,pts,'#17627b',1,(4,4))
+            pr=float(sh.get('progress',0.0))%1.0;u=pr*(len(pts)-1);idx=min(len(pts)-2,int(u));lt=u-idx;la1,lo1=pts[idx];la2,lo2=pts[idx+1];la,lo=_sgp24_geo_interp(la1,lo1,la2,lo2,lt);x,y=self.proj(la,lo)
+            c.create_polygon(x-7,y+3,x+7,y+3,x+4,y-3,x-4,y-3,fill=CYAN,outline='#c9f7ff',tags=('ship',str(sh.get('id',''))))
+    if self.layer_air.get():
+        for j,(aa,bb,la1,lo1,la2,lo2) in enumerate(self.AIR):
+            path=[_sgp24_geo_interp(la1,lo1,la2,lo2,t/24.0,arc=10.0) for t in range(25)];_sgp24_map_path(c,self,path,'#5d4f8f',1,(2,4));t=(self.phase*.035+j*.19)%1.0;la,lo=_sgp24_geo_interp(la1,lo1,la2,lo2,t,arc=10.0);x,y=self.proj(la,lo);c.create_text(x,y,text='✈',fill='#d8ceff',font=('Segoe UI Symbol',10))
+    if self.layer_ex.get():
+        for name,code,lat,lon in self.EXCH:
+            x,y=self.proj(lat,lon)
+            try:isopen=market_status(code,self.market.clock.current)
+            except Exception:isopen=False
+            hit=(not q or q in name.upper());r=6 if hit else 4;col=GREEN if isopen else '#687583';c.create_oval(x-r,y-r,x+r,y+r,fill=col,outline='#e1edf2',tags=('exchange',name));c.create_text(x+8,y-8,text=name,anchor='w',fill=YELLOW if q and hit else '#d8e4e9',font=('Consolas',7,'bold'),tags=('exchange',name))
+    if self.layer_risk.get():
+        for ev in getattr(self.market,'geopolitical_events',[]):
+            if ev.get('resolved'):continue
+            x,y=self.proj(float(ev.get('lat',0)),float(ev.get('lon',0)));c.create_oval(x-7,y-7,x+7,y+7,outline=ORANGE,width=2);c.create_text(x+9,y,text='RISK',anchor='w',fill=ORANGE,font=('Consolas',6,'bold'))
+    c.create_rectangle(6,6,310,48,fill='#06131d',outline='#294a5c');c.create_text(14,13,anchor='nw',text='WORLD MARKETS / FREIGHT / RISK',fill='#e9f0f3',font=('Segoe UI',9,'bold'));c.create_text(14,31,anchor='nw',text='Real coastlines • country borders • exchange sessions',fill='#7f9caa',font=('Segoe UI',7))
+    c.create_text(8,h-8,anchor='sw',text='Right-drag pan • wheel zoom • click exchange • ships use ocean routes • aircraft use international corridors',fill='#80919d',font=('Segoe UI',7))
+GlobalTradeWorkstation.draw=_sgp24_global_draw
+
+# Slow the map animation slightly; market simulation remains completely independent.
+def _sgp24_global_animate(self):
+    if not self.winfo_exists():return
+    self.phase+=1;self.draw();self.after(160,self.animate)
+GlobalTradeWorkstation.animate=_sgp24_global_animate
+
+# ===== Stock Game Pro 2.5 chart stability / low-CPU UI patch =====
+# Cache deterministic startup synthesis. In 2.4 the same hundreds/thousands of synthetic
+# Candle objects were rebuilt on every chart repaint even though the source daily bars had not changed.
+_sgp23_expand_daily_v25_base=_sgp23_expand_daily
+def _sgp25_expand_daily(chart,daily,period):
+    if not daily:return []
+    key=('v23',getattr(getattr(chart,'asset',None),'symbol',None),period,len(daily),daily[0].timestamp,daily[-1].timestamp)
+    cache=getattr(chart,'_synth_cache25',None)
+    if cache and cache[0]==key:return cache[1]
+    out=_sgp23_expand_daily_v25_base(chart,daily,period);chart._synth_cache25=(key,out);return out
+_sgp23_expand_daily=_sgp25_expand_daily
+
+_sgp24_intraday_display_v25_base=_sgp24_intraday_display
+def _sgp25_intraday_display(chart,daily,period,maxbars=1400):
+    if not daily:return []
+    key=('v24',getattr(getattr(chart,'asset',None),'symbol',None),period,int(maxbars),len(daily),daily[0].timestamp,daily[-1].timestamp)
+    cache=getattr(chart,'_synth24_cache25',None)
+    if cache and cache[0]==key:return cache[1]
+    out=_sgp24_intraday_display_v25_base(chart,daily,period,maxbars);chart._synth24_cache25=(key,out);return out
+_sgp24_intraday_display=_sgp25_intraday_display
+
+# Stable live viewport. Wicks/candle ranges no longer continuously resize the y-axis. The
+# viewport holds its scale and only translates once price reaches an edge dead-band; it expands
+# only when a candle actually clips the plot. This removes the pump/dump "rubber chart" effect.
+def _sgp25_bounds(self,d,live,plot_height=300):
+    scale=max(.25,min(8.0,float(getattr(self,'vertical_scale',1.0))))
+    if not d:return (0.0,1.0)
+    if getattr(self,'fit_inception',False):
+        sig=('max',getattr(self.asset,'symbol',None),len(d),round(scale,4))
+        cached=getattr(self,'_max_bounds25',None)
+        if cached and cached[0]==sig:return cached[1]
+        lo=min(float(c.low) for c in d);hi=max(float(c.high) for c in d);span=max(hi-lo,abs((hi+lo)/2)*.01,1e-9);pad=span*.045
+        b=(lo-pad,hi+pad);self._max_bounds25=(sig,b);return b
+    if not live:
+        lo=min(float(c.low) for c in d);hi=max(float(c.high) for c in d);mid=(lo+hi)/2+float(getattr(self,'_manual_y_shift',0.0));rng=max(hi-lo,abs(mid)*.002,1e-6)/scale
+        return mid-rng*.55,mid+rng*.55
+    p=float(self.asset.price);view_sig=(getattr(self.asset,'symbol',None),self.timeframe,getattr(self,'candle_period','Auto'),round(scale,4),int(getattr(self,'view_offset',0)))
+    state=getattr(self,'_stable_bounds25',None)
+    if not state or state.get('sig')!=view_sig:
+        recent=d[-min(120,len(d)):];sample=recent[:-1] if len(recent)>2 else recent
+        vals=[]
+        for c in sample:vals.extend((float(c.low),float(c.high)))
+        if vals:
+            svals=sorted(vals);qlo=svals[max(0,int(len(svals)*.06)-1)];qhi=svals[min(len(svals)-1,int(len(svals)*.94))]
+        else:qlo=qhi=p
+        half=max((qhi-qlo)*.62,abs(p)*.0035,0.015 if abs(p)>=1 else abs(p)*.02,1e-6)/scale
+        # Keep the initial quote comfortably in view without requiring it to be the exact center.
+        center=(qhi+qlo)/2 if qhi>qlo else p
+        if p>center+half*.70:center=p-half*.35
+        elif p<center-half*.70:center=p+half*.35
+        state={'sig':view_sig,'center':center,'half':half};self._stable_bounds25=state
+    center=float(state['center']);half=max(1e-9,float(state['half']));span=2*half;lo=center-half;hi=center+half
+    # Translation only: price can move through ~82% of the panel before the chart follows.
+    top_trigger=hi-span*.10;bot_trigger=lo+span*.10
+    if p>top_trigger:center+=p-top_trigger
+    elif p<bot_trigger:center+=p-bot_trigger
+    lo=center-half;hi=center+half
+    # A wick cannot distort the scale before it reaches the edge. Once it truly clips, expand
+    # only enough to expose it, and never shrink during this live view.
+    cur=d[-1];wick_hi=float(cur.high);wick_lo=float(cur.low);pad=span*.025
+    if wick_hi>hi:
+        need=wick_hi-hi+pad;hi+=need;half=(hi-lo)/2;center=(hi+lo)/2
+    if wick_lo<lo:
+        need=lo-wick_lo+pad;lo-=need;half=(hi-lo)/2;center=(hi+lo)/2
+    state['center']=center;state['half']=half
+    return center-half,center+half
+_sgp22_bounds=_sgp25_bounds
+
+# Reset viewport/synthesis caches only when the user actually changes chart context.
+_Chart_set_asset_v25_base=Chart.set_asset
+def _sgp25_set_asset(self,a):
+    self._stable_bounds25=None;self._max_bounds25=None;self._synth_cache25=None;self._synth24_cache25=None;self._volume_cache25={};self._volume_scale25=None
+    out=_Chart_set_asset_v25_base(self,a)
+    try:self.app.market.ensure_real_data(a,history=False)
+    except Exception:pass
+    return out
+Chart.set_asset=_sgp25_set_asset
+
+_Chart_set_tf_v25_base=Chart.set_tf
+def _sgp25_set_tf(self,tf):
+    self._stable_bounds25=None;self._max_bounds25=None
+    return _Chart_set_tf_v25_base(self,tf)
+Chart.set_tf=_sgp25_set_tf
+
+_Chart_set_candle_v25_base=Chart.set_candle_period
+def _sgp25_set_candle_period(self,value):
+    self._stable_bounds25=None;self._max_bounds25=None
+    return _Chart_set_candle_v25_base(self,value)
+Chart.set_candle_period=_sgp25_set_candle_period
+
+_set_vertical_v25_base=Chart.set_vertical_scale
+def _sgp25_set_vertical(self,value):
+    self._stable_bounds25=None;self._max_bounds25=None
+    return _set_vertical_v25_base(self,value)
+Chart.set_vertical_scale=_sgp25_set_vertical
+
+_fit_max_v25_base=App.fit_inception
+def _sgp25_fit_inception(self,chart=None):
+    c=chart or self.charts[self.active_chart];c._stable_bounds25=None;c._max_bounds25=None
+    out=_fit_max_v25_base(self,chart)
+    c._stable_bounds25=None;c._max_bounds25=None
+    return out
+App.fit_inception=_sgp25_fit_inception
+
+# Draw stable volume after the main renderer, and put session/day metrics in separate corners.
+# Temporarily disable the legacy volume pass so 1-tick volume isn't deleted/rebuilt twice.
+_Chart_draw_v25_base=Chart.draw
+def _sgp25_chart_draw(self):
+    volvar=getattr(self.app,'ind_vars',{}).get('Volume');showvol=bool(volvar and volvar.get())
+    if showvol:
+        try:volvar.set(False)
+        except Exception:showvol=False
+    try:_Chart_draw_v25_base(self)
+    finally:
+        if showvol:
+            try:volvar.set(True)
+            except Exception:pass
+    a=self.asset
+    if a is None:return
+    try:
+        self.delete('sgp24_metrics');self.delete('sgp25_metrics');self.delete('sgp25_volume')
+        d=list(self.data());w=max(300,self.winfo_width());h=max(190,self.winfo_height())
+        show_rsi=bool(getattr(self.app,'ind_vars',{}).get('RSI') and self.app.ind_vars['RSI'].get());show_macd=bool(getattr(self.app,'ind_vars',{}).get('MACD') and self.app.ind_vars['MACD'].get());subcount=int(show_rsi)+int(show_macd);sub_h=68 if h>360 else 52
+        left,right,top=64,w-14,36;axis_y=h-25;price_bottom=axis_y-8-subcount*sub_h
+        if price_bottom<top+70:price_bottom=top+70
+        # Stable tick-volume scale and per-timestamp nonzero cache eliminate the blink caused
+        # by transient zero-volume live prints and a constantly rescaled maximum.
+        if showvol and d:
+            vc=getattr(self,'_volume_cache25',None)
+            if vc is None:vc={};self._volume_cache25=vc
+            vals=[]
+            for c in d:
+                v=max(0,int(getattr(c,'volume',0) or 0));k=getattr(c,'timestamp',None)
+                if v>0:vc[k]=v
+                else:v=int(vc.get(k,0))
+                vals.append(v)
+            target=max(vals or [1]);scalev=getattr(self,'_volume_scale25',None)
+            if scalev is None or not math.isfinite(scalev):scalev=max(1.0,float(target))
+            elif target>scalev:scalev=target
+            else:scalev=max(float(target),scalev*.997)
+            self._volume_scale25=max(1.0,scalev);vh=max(12,(price_bottom-top)*.11);step=(right-left)/max(1,len(d))
+            for i,v in enumerate(vals):
+                if v<=0:continue
+                x=left+(i+.5)*step;y=price_bottom-(v/self._volume_scale25)*vh
+                self.create_line(x,price_bottom,x,max(top,y),fill='#34485a',width=max(1,min(3,int(step*.42))),tags=('sgp25_volume',))
+        day=float(a.change_percent());regular=False
+        try:regular=bool(self.app.market.asset_regular_open(a))
+        except Exception:pass
+        ah=float(a.after_hours_percent()) if hasattr(a,'after_hours_percent') else 0.0;state='REG' if regular else str(self.app.market.asset_trade_state(a))
+        metric=(f'D {day:+.2f}% • AH {"—" if regular else f"{ah:+.2f}%"}' if w<590 else f'DAY {day:+.2f}%  •  AH {"—" if regular else f"{ah:+.2f}%"}  •  {state}')
+        # The base session/open-close countdown owns the left side of row 22; metrics own right.
+        self.create_text(right,22,anchor='ne',text=metric,fill=GREEN if day>=0 else RED,font=('Segoe UI',6 if w<520 else 7,'bold'),tags=('sgp25_metrics',))
+    except Exception:pass
+Chart.draw=_sgp25_chart_draw
+
+# Visible-row watch streaming: don't rewrite thousands of off-screen Treeview rows every 300 ms.
+_refresh_watch_v25_base=App.refresh_watch
+def _sgp25_refresh_watch(self):
+    out=_refresh_watch_v25_base(self)
+    try:self._watch_iids25=tuple(self.watch.get_children())
+    except Exception:self._watch_iids25=()
+    return out
+App.refresh_watch=_sgp25_refresh_watch
+
+def _sgp25_fast_watch_stream(self):
+    try:
+        rows=getattr(self,'_watch_iids25',None)
+        if rows is None:rows=tuple(self.watch.get_children());self._watch_iids25=rows
+        n=len(rows)
+        if n:
+            try:f0,f1=self.watch.yview();start=max(0,int(f0*n)-8);end=min(n,max(start+25,int(f1*n)+9))
+            except Exception:start,end=0,min(n,60)
+            for iid in rows[start:end]:
+                try:
+                    vals=list(self.watch.item(iid,'values'));a=self.market.get_asset(vals[0]) if vals else None
+                    if a and len(vals)>=4:
+                        price=f'${a.price:,.2f}';chg=f'{a.change_percent():+.2f}%'
+                        if vals[2]!=price or vals[3]!=chg:vals[2]=price;vals[3]=chg;self.watch.item(iid,values=vals)
+                except Exception:pass
+    finally:self._watch_stream_job=self.root.after(400,self._fast_watch_stream)
+App._fast_watch_stream=_sgp25_fast_watch_stream
+
+# Compact clock always gets pack priority on the right edge of the chart toolbar.
+def _sgp25_clock_stream(self):
+    try:
+        if not self.root.winfo_exists():return
+        a=self.charts[self.active_chart].asset if getattr(self,'charts',None) else self.market.get_asset('SPY');status,remain=_sgp_session_countdown(a,self.market.clock.current) if a else ('','')
+        topw=max(0,self.clock_label.master.winfo_width());sym=getattr(a,'symbol','SPY')
+        txt=(f'{self.market.clock.current:%H:%M:%S} • {sym} {status}' if topw<880 else f'{self.market.clock.current:%a %m-%d %H:%M:%S} • {sym} {status} • {remain}')
+        if txt!=getattr(self,'_last_clock_text25',None):self.clock_label.config(text=txt);self._last_clock_text25=txt
+    except Exception:pass
+    self._clock_stream_job=self.root.after(250,self._smooth_clock_stream)
+App._smooth_clock_stream=_sgp25_clock_stream
+
+_App_init_v25_base=App.__init__
+def _sgp25_app_init(self,root,market,portfolio):
+    _App_init_v25_base(self,root,market,portfolio)
+    try:self.root.title('Stock Game Pro 2.5 — Optimized Global Trading Simulator')
+    except Exception:pass
+    # Repack clock before left-side controls so Tk reserves its space even when the portfolio pane grows.
+    try:
+        self.clock_label.pack_forget();self.clock_label.config(font=('Segoe UI',7,'bold'),width=31,anchor='e');self.clock_label.pack(side='right',padx=(4,2),before=self.active_label)
+    except Exception:pass
+    # Calm defaults: a 160ms chart repaint is still visually smooth while cutting Canvas churn ~38%.
+    try:
+        for c in self.charts:
+            if int(getattr(c,'refresh_ms',100))<=100:c.set_refresh_rate(160)
+        self.chart_rate.set('180ms')
+    except Exception:pass
+    # Guarantee overnight highlighting survives all wrapper initialization paths.
+    try:
+        if hasattr(self,'overnight_var'):self.overnight_var.set(True)
+        for c in self.charts:c.show_overnight=True
+    except Exception:pass
+    try:self.refresh_watch()
+    except Exception:pass
+App.__init__=_sgp25_app_init
+
+
+# ===== Stock Game Pro 2.5 final chart/render stability pass =====
+# Cache the final display slice so the renderer and session overlay do not rebuild the
+# same aggregation two or three times during one paint.
+_Chart_data_v25_final_base=Chart.data
+def _sgp25_data_final(self):
+    a=getattr(self,'asset',None)
+    sig=(getattr(a,'symbol',None),getattr(a,'last_update',None),getattr(a,'last_real_timestamp',None),
+         self.timeframe,getattr(self,'candle_period','Auto'),round(float(getattr(self,'zoom',1.0)),4),
+         int(getattr(self,'view_offset',0)),bool(getattr(self,'fit_inception',False)))
+    cached=getattr(self,'_display_data_cache25',None)
+    if cached and cached[0]==sig:
+        self._last_render_data25=cached[1];return cached[1]
+    out=list(_Chart_data_v25_final_base(self))
+    # Never weld the live quote onto an old historical/synthetic candle. The professional
+    # renderer updates d[-1] to the live price; if that bar is from yesterday, a pump/dump
+    # becomes an artificial giant wick that bends the whole chart. Append a true current
+    # display candle first, so overnight/session gaps remain gaps rather than fake wicks.
+    if out and a is not None and int(getattr(self,'view_offset',0))==0 and getattr(self,'follow_latest',True) and not getattr(self,'fit_inception',False):
+        now=getattr(getattr(self.app,'market',None),'clock',None);now=getattr(now,'current',None)
+        if now is not None:
+            pm={'1 Tick':1,'30 Sec':30,'1 Min':60,'3 Min':180,'5 Min':300,'10 Min':600,'30 Min':1800,'1 Hour':3600,'1 Day':86400,'Auto':300}
+            secs=pm.get(getattr(self,'candle_period','Auto'),300)
+            try:age=(now-out[-1].timestamp).total_seconds()
+            except Exception:age=0
+            if age>max(secs*1.75,90):
+                p=float(a.price)
+                if getattr(self,'candle_period','Auto')=='1 Day':
+                    o=float(getattr(a,'open_price',p));hi=max(float(getattr(a,'high',p)),p,o);lo=min(float(getattr(a,'low',p)),p,o)
+                else:o=hi=lo=p
+                out.append(Candle(now,o,hi,lo,p,max(0,int(getattr(self,'_last_tick_volume25',0) or 0))))
+    # Some tick prints have zero reported volume. Preserve the last visible non-zero bar
+    # for display only so the volume column never flashes out of existence for one frame.
+    if out and getattr(self,'candle_period','Auto')=='1 Tick':
+        last=out[-1];v=max(0,int(getattr(last,'volume',0) or 0))
+        if v>0:self._last_tick_volume25=v
+        elif getattr(self,'_last_tick_volume25',0)>0:
+            out[-1]=Candle(last.timestamp,float(last.open),float(last.high),float(last.low),float(last.close),int(self._last_tick_volume25))
+    self._display_data_cache25=(sig,out);self._last_render_data25=out
+    return out
+Chart.data=_sgp25_data_final
+
+# Replace live bounds one last time: live range is a rigid camera, not a rubber band.
+# It does not move while the current candle is inside the viewport. If the candle actually
+# exits, the camera translates without changing scale. Scale expands only when the candle's
+# total high-low range physically cannot fit in the existing viewport.
+def _sgp25_bounds_rigid(self,d,live,plot_height=300):
+    scale=max(.25,min(8.0,float(getattr(self,'vertical_scale',1.0))))
+    if not d:return (0.0,1.0)
+    if getattr(self,'fit_inception',False):
+        sig=('max',getattr(self.asset,'symbol',None),len(d),round(scale,4),getattr(self.asset,'last_real_timestamp',None))
+        cached=getattr(self,'_max_bounds25',None)
+        if cached and cached[0]==sig:return cached[1]
+        lo=min(float(c.low) for c in d);hi=max(float(c.high) for c in d);span=max(hi-lo,abs((hi+lo)/2)*.01,1e-9);pad=span*.045
+        b=(lo-pad,hi+pad);self._max_bounds25=(sig,b);return b
+    if not live:
+        lo=min(float(c.low) for c in d);hi=max(float(c.high) for c in d);mid=(lo+hi)/2+float(getattr(self,'_manual_y_shift',0.0));rng=max(hi-lo,abs(mid)*.002,1e-6)/scale
+        return mid-rng*.55,mid+rng*.55
+    p=float(self.asset.price);sig=(getattr(self.asset,'symbol',None),self.timeframe,getattr(self,'candle_period','Auto'),round(scale,4),int(getattr(self,'view_offset',0)))
+    state=getattr(self,'_stable_bounds25',None)
+    if not state or state.get('sig')!=sig:
+        recent=d[-min(160,len(d)):];sample=recent[:-1] if len(recent)>2 else recent
+        vals=[]
+        for c in sample:vals.extend((float(c.low),float(c.high)))
+        if vals:
+            sv=sorted(vals);qlo=sv[max(0,int(len(sv)*.05)-1)];qhi=sv[min(len(sv)-1,int(len(sv)*.95))]
+        else:qlo=qhi=p
+        half=max((qhi-qlo)*.70,abs(p)*.0045,0.02 if abs(p)>=1 else abs(p)*.03,1e-6)/scale
+        center=(qhi+qlo)/2 if qhi>qlo else p
+        # Only the initial camera setup is allowed to bring the quote back into frame.
+        if p>center+half:center=p-half*.75
+        elif p<center-half:center=p+half*.75
+        state={'sig':sig,'center':center,'half':half};self._stable_bounds25=state
+    center=float(state['center']);half=max(1e-9,float(state['half']));lo=center-half;hi=center+half;span=hi-lo
+    cur=d[-1];wick_hi=max(float(cur.high),p);wick_lo=min(float(cur.low),p);wick_span=max(0.0,wick_hi-wick_lo)
+    # Expand only if the one candle literally cannot fit at the present vertical scale.
+    if wick_span>span*.92:
+        half=max(half,wick_span/.88/2);center=(wick_hi+wick_lo)/2;lo=center-half;hi=center+half;span=hi-lo
+    else:
+        # No movement until a wick/quote actually crosses the visible boundary. Then translate
+        # the camera and retain exactly the same span, leaving a small edge buffer.
+        pad=span*.035
+        if wick_hi>hi:center+=wick_hi-hi+pad
+        lo=center-half;hi=center+half
+        if wick_lo<lo:center-=lo-wick_lo+pad
+    state['center']=center;state['half']=half
+    return center-half,center+half
+_sgp22_bounds=_sgp25_bounds_rigid
+
+# Render only once per frame. The 2.4 path drew overnight shading twice and the previous 2.5
+# path requested chart data a third time. This uses the professional renderer once, then adds
+# grouped session bands and a non-overlapping compact DAY/AH status line.
+def _sgp25_chart_draw_final(self):
+    oldkey=getattr(self,'_key',None);wanted=bool(getattr(self,'show_overnight',True))
+    try:self.show_overnight=False;_Chart_draw_v24_base(self)
+    finally:self.show_overnight=wanted
+    # If the base renderer reused its previous frame, preserve existing overlay items too.
+    if oldkey is not None and getattr(self,'_key',None)==oldkey:return
+    a=self.asset
+    if a is None:return
+    try:
+        d=getattr(self,'_last_render_data25',None) or list(self.data());w=max(300,self.winfo_width());h=max(190,self.winfo_height())
+        show_rsi=bool(getattr(self.app,'ind_vars',{}).get('RSI') and self.app.ind_vars['RSI'].get());show_macd=bool(getattr(self.app,'ind_vars',{}).get('MACD') and self.app.ind_vars['MACD'].get());subcount=int(show_rsi)+int(show_macd);sub_h=68 if h>360 else 52
+        left,right,top=64,w-14,36;axis_y=h-25;price_bottom=axis_y-8-subcount*sub_h
+        if price_bottom<top+70:price_bottom=top+70
+        if wanted and len(d)>1 and self.timeframe in ('1D','1W','1M','3M','6M','1Y'):
+            step=(right-left)/max(1,len(d));states=[];code=str(getattr(a,'session','US') or 'US')
+            for c in d:
+                if _sgp22_regular_at(self,c.timestamp):states.append('REG');continue
+                ext=False
+                if code=='US':
+                    try:ext=bool(market_status('EXT',c.timestamp))
+                    except Exception:pass
+                states.append('EXT' if ext else 'NIGHT')
+            start=0
+            while start<len(states):
+                st=states[start];end=start+1
+                while end<len(states) and states[end]==st:end+=1
+                if st!='REG':
+                    x1=left+start*step;x2=left+end*step;fill='#17304b' if st=='EXT' else '#101420';stip='gray25' if st=='EXT' else 'gray12'
+                    self.create_rectangle(x1,top,x2,price_bottom,fill=fill,outline='',stipple=stip,tags=('sgp25_session_shade',))
+                start=end
+            self.tag_lower('sgp25_session_shade')
+        day=float(a.change_percent());regular=False
+        try:regular=bool(self.app.market.asset_regular_open(a))
+        except Exception:pass
+        ah=float(a.after_hours_percent()) if hasattr(a,'after_hours_percent') else 0.0
+        state='REG' if regular else str(self.app.market.asset_trade_state(a))
+        metric=(f'D {day:+.2f}%  AH {"—" if regular else f"{ah:+.2f}%"}' if w<560 else f'DAY {day:+.2f}%  •  AH {"—" if regular else f"{ah:+.2f}%"}  •  {state}')
+        # Session countdown remains at upper-left; DAY/AH gets its own row at upper-right.
+        self.create_text(right,31,anchor='se',text=metric,fill=GREEN if day>=0 else RED,font=('Segoe UI',6 if w<520 else 7,'bold'),tags=('sgp25_metrics',))
+    except Exception:pass
+Chart.draw=_sgp25_chart_draw_final
+
+# Avoid a fixed-width clock consuming the center toolbar. The label is packed first so it
+# always receives a right-edge allocation, then its copy collapses as the center pane narrows.
+def _sgp25_clock_stream_final(self):
+    try:
+        if not self.root.winfo_exists():return
+        a=self.charts[self.active_chart].asset if getattr(self,'charts',None) else self.market.get_asset('SPY');status,remain=_sgp_session_countdown(a,self.market.clock.current) if a else ('','')
+        topw=max(0,self.clock_label.master.winfo_width());sym=getattr(a,'symbol','SPY');t=self.market.clock.current
+        if topw<650:txt=f'{t:%H:%M:%S}'
+        elif topw<850:txt=f'{t:%H:%M:%S} • {sym} {status}'
+        else:txt=f'{t:%a %m-%d %H:%M:%S} • {sym} {status} • {remain}'
+        if txt!=getattr(self,'_last_clock_text25',None):self.clock_label.config(text=txt);self._last_clock_text25=txt
+    except Exception:pass
+    self._clock_stream_job=self.root.after(300,self._smooth_clock_stream)
+App._smooth_clock_stream=_sgp25_clock_stream_final
+
+_App_init_v25_final_base=App.__init__
+def _sgp25_app_init_final(self,root,market,portfolio):
+    _App_init_v25_final_base(self,root,market,portfolio)
+    try:
+        self.clock_label.pack_forget();self.clock_label.config(font=('Segoe UI',7,'bold'),width=0,anchor='e');self.clock_label.pack(side='right',padx=(3,2),before=self.active_label)
+    except Exception:pass
+    try:
+        for c in self.charts:c.set_refresh_rate(max(150,int(getattr(c,'refresh_ms',150))))
+        if self.charts:
+            c=self.charts[0];c.timeframe='1D';c.candle_period='5 Min';c.zoom=.85;c._stable_bounds25=None;c._display_data_cache25=None;c.request_draw(force=True)
+            self.tf.set('1D')
+        self.chart_rate.set('180ms')
+    except Exception:pass
+App.__init__=_sgp25_app_init_final
+
+
+_Chart_set_asset_v25_final_base=Chart.set_asset
+def _sgp25_set_asset_final(self,a):
+    self._display_data_cache25=None;self._last_render_data25=None;self._last_tick_volume25=0
+    return _Chart_set_asset_v25_final_base(self,a)
+Chart.set_asset=_sgp25_set_asset_final
+
+_Chart_set_candle_v25_final_base=Chart.set_candle_period
+def _sgp25_set_candle_final(self,value):
+    self._display_data_cache25=None;self._last_tick_volume25=0
+    return _Chart_set_candle_v25_final_base(self,value)
+Chart.set_candle_period=_sgp25_set_candle_final
+
+
+# Lighter startup and scheduler: 1D / 5-minute gives a dense full-session chart without
+# immediately painting ~1,400 synthetic candles. Users can still select larger windows.
+_Chart_init_v25_light_base=Chart.__init__
+def _sgp25_chart_init_light(self,parent,app,index):
+    _Chart_init_v25_light_base(self,parent,app,index)
+    self.timeframe='1D';self.candle_period='5 Min';self.refresh_ms=160
+Chart.__init__=_sgp25_chart_init_light
+
+def _sgp25_chart_refresh_pulse_final(self):
+    if not getattr(self,'_chart_refresh_running',True):return
+    try:
+        if not self.root.winfo_exists():return
+    except tk.TclError:return
+    now_ms=time.monotonic()*1000.0;extras=[]
+    for c in tuple(getattr(self,'extra_charts',())):
+        try:
+            if c.winfo_exists():extras.append(c)
+        except tk.TclError:pass
+    self.extra_charts=extras;charts=list(getattr(self,'charts',()))+extras
+    if charts:
+        start=int(getattr(self,'_chart_rr',0))%len(charts)
+        for off in range(len(charts)):
+            c=charts[(start+off)%len(charts)]
+            try:
+                if c.winfo_exists() and c.due_for_refresh(now_ms):
+                    c.request_draw(False);c.mark_refreshed(now_ms);self._chart_rr=(start+off+1)%len(charts);break
+            except Exception:pass
+    self._chart_refresh_job=self.root.after(16,self._chart_refresh_pulse)
+App._chart_refresh_pulse=_sgp25_chart_refresh_pulse_final
+
+
+# ===== Stock Game Pro 2.5 production: explicit account market refresh =====
+def _sgp25_snapshot_symbols(self):
+    special={'SPX':'^GSPC','NDX':'^NDX','DJI':'^DJI','RUT':'^RUT','VIX':'^VIX'}
+    out=[]
+    for a in self.market.all_assets():
+        sym=special.get(getattr(a,'symbol','')) or getattr(a,'data_symbol',None) or getattr(a,'symbol','')
+        if sym:out.append(str(sym))
+    # Broad-market instruments that may not be represented by a directly tradable object.
+    out += ['SPY','QQQ','^GSPC','^NDX','^DJI','^RUT','^VIX','ES=F','NQ=F','YM=F','RTY=F']
+    return list(dict.fromkeys(out))
+App._snapshot_symbols=_sgp25_snapshot_symbols
+
+def _sgp25_find_experiment_menu(self):
+    try:
+        mb=self.root.nametowidget(self.root.cget('menu'));end=mb.index('end')
+        if end is None:return None
+        for i in range(int(end)+1):
+            try:
+                if str(mb.entrycget(i,'label')).strip().lower() in ('experiment','experimental'):
+                    return self.root.nametowidget(mb.entrycget(i,'menu'))
+            except Exception:pass
+    except Exception:pass
+    return None
+App._find_experiment_menu=_sgp25_find_experiment_menu
+
+def _sgp25_update_snapshot_menu(self):
+    # The command exists only for a saved account. Guest/training sessions keep the
+    # Experimental menu clean and remain strictly cache-only.
+    if not bool(getattr(self,'account_username',None) and getattr(self,'account_manager',None)):return
+    menu=getattr(self,'_snapshot_refresh_menu',None) or self._find_experiment_menu()
+    if menu is None:return
+    self._snapshot_refresh_menu=menu
+    idx=getattr(self,'_snapshot_refresh_menu_index',None)
+    if idx is None:
+        try:
+            menu.add_separator();menu.add_command(label='Refresh Market Snapshot…',command=self.refresh_market_snapshot)
+            idx=menu.index('end');self._snapshot_refresh_menu_index=idx
+        except Exception:return
+    try:menu.entryconfig(idx,state='normal')
+    except Exception:pass
+App.update_experiment_account_menu=_sgp25_update_snapshot_menu
+
+def _sgp25_refresh_market_snapshot(self):
+    username=getattr(self,'account_username',None)
+    if not username or not getattr(self,'account_manager',None):
+        return messagebox.showinfo('Refresh Market Snapshot','Create or log into a saved account before refreshing its market snapshot.')
+    positions=[(s,q) for s,q in getattr(self.portfolio,'positions',{}).items() if q]
+    option_count=len(getattr(self.portfolio,'options',[]) or [])
+    working=len(getattr(self.market,'pending_orders',[]))+len(getattr(self.market,'pending_option_orders',[]))+len(getattr(self.market,'pending_spread_orders',[]))
+    equity=self.portfolio.cached_net_worth(self.market.all_assets()) if hasattr(self.portfolio,'cached_net_worth') else self.portfolio.mark_value(self.market.all_assets())
+    warning=(
+        'This will make an explicit internet request for the newest available market snapshot, then immediately return the game to offline mode.\n\n'
+        'The refresh REPRICES the simulated market. Your share quantities and cost basis are not changed, but current P/L, option values, margin, and working-order behavior can change immediately. '
+        'A limit/stop order may become marketable after the new prices are applied.\n\n'
+        f'Account: {username}\nCurrent equity: ${equity:,.2f}\nOpen stock positions: {len(positions):,}\nOption positions: {option_count:,}\nWorking orders: {working:,}\n\n'
+        'If the internet is unavailable, the newest local cache will be used instead. Continue?'
+    )
+    if not messagebox.askyesno('Refresh Market Snapshot — Position Warning',warning,icon='warning'):return
+    # Prevent accidental double-starts and freeze simulation state while the bounded refresh runs.
+    if getattr(self,'_snapshot_refresh_active',False):return
+    self._snapshot_refresh_active=True;was_paused=bool(getattr(self.market,'paused',False));self.market.paused=True
+    w=tk.Toplevel(self.root);w.title('Refreshing Market Snapshot');w.geometry('560x210');w.resizable(False,False);w.configure(bg=BG);w.transient(self.root);w.grab_set()
+    ttk.Label(w,text='REFRESHING MARKET SNAPSHOT',font=('Segoe UI',13,'bold')).pack(anchor='w',padx=18,pady=(18,4))
+    ttk.Label(w,text='This is the only gameplay action that is allowed to use the network.',foreground=MUTED).pack(anchor='w',padx=18)
+    status=tk.StringVar(value='Preparing explicit snapshot request…');ttk.Label(w,textvariable=status,wraplength=520).pack(fill='x',padx=18,pady=(14,6))
+    bar=ttk.Progressbar(w,mode='determinate',maximum=100);bar.pack(fill='x',padx=18,pady=6)
+    ttk.Label(w,text='The simulation is paused until the request finishes. No background polling is started.',foreground=MUTED).pack(anchor='w',padx=18,pady=(4,0))
+    state={'done':False,'info':None,'error':None,'msg':status.get(),'cur':0,'total':1}
+    import threading as _threading
+    def progress(msg,cur=0,total=1):
+        state['msg']=str(msg);state['cur']=int(cur or 0);state['total']=max(1,int(total or 1))
+    def worker():
+        try:
+            from data import refresh_account_market_snapshot
+            state['info']=refresh_account_market_snapshot(self._snapshot_symbols(),username,progress)
+        except Exception as e:state['error']=f'{type(e).__name__}: {e}'
+        finally:state['done']=True
+    _threading.Thread(target=worker,daemon=True,name='ExplicitMarketSnapshotRefresh').start()
+    def finish():
+        info=state.get('info') or {}
+        try:
+            applied=self.market.apply_refreshed_market_snapshot(username) if not state.get('error') else 0
+            if not state.get('error'):
+                try:self.account_manager.set_market_seed_info(username,info)
+                except Exception:pass
+                try:
+                    cb=getattr(self.market,'autosave_callback',None)
+                    if callable(cb):cb('manual market snapshot refresh')
+                except Exception:pass
+            self.market.paused=was_paused;self._snapshot_refresh_active=False
+            try:w.grab_release();w.destroy()
+            except Exception:pass
+            if state.get('error'):
+                self.market.data_status='OFFLINE PLAY • SNAPSHOT REFRESH FAILED • EXISTING LOCAL MARKET PRESERVED'
+                messagebox.showerror('Market Snapshot Refresh',f'Refresh failed. The existing simulated market was left in place.\n\n{state["error"]}')
+                return
+            fresh=int(info.get('fresh_quotes',0) or 0);cached=int(info.get('cached_quotes',0) or 0);src=info.get('source','LOCAL CACHE')
+            self.status_flash(f'Market snapshot refreshed • {applied:,} marks applied • {src}')
+            try:self.refresh_watch();self.refresh_positions();self.refresh_orders()
+            except Exception:pass
+            for c in list(getattr(self,'charts',()))+list(getattr(self,'extra_charts',())):
+                try:c._stable_bounds25=None;c._display_data_cache25=None;c.request_draw(force=True)
+                except Exception:pass
+            messagebox.showinfo('Market Snapshot Refreshed',f'Applied {applied:,} market marks.\nSource: {src}\nFresh network quotes: {fresh:,}\nQuotes available after cache fallback: {cached:,}\n\nGameplay is offline again; no market-data polling is running.')
+        except Exception as e:
+            self.market.paused=was_paused;self._snapshot_refresh_active=False
+            try:w.grab_release();w.destroy()
+            except Exception:pass
+            messagebox.showerror('Market Snapshot Refresh',f'The snapshot finished but could not be applied safely:\n\n{type(e).__name__}: {e}')
+    def poll():
+        if not w.winfo_exists():return
+        status.set(state.get('msg') or 'Refreshing…');bar['value']=min(100,max(0,state.get('cur',0)/max(1,state.get('total',1))*100))
+        if state.get('done'):finish()
+        else:w.after(100,poll)
+    w.protocol('WM_DELETE_WINDOW',lambda:None);w.after(100,poll)
+App.refresh_market_snapshot=_sgp25_refresh_market_snapshot
+
+_App_init_v25_prod_base=App.__init__
+def _sgp25_app_init_production(self,root,market,portfolio):
+    _App_init_v25_prod_base(self,root,market,portfolio)
+    try:self.update_experiment_account_menu()
+    except Exception:pass
+App.__init__=_sgp25_app_init_production

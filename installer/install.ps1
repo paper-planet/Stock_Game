@@ -79,7 +79,7 @@ function New-Shortcut($Path, $Target, $Arguments, $WorkingDirectory, $Descriptio
 }
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'Stock Game Pro 2.2.1 - Setup'
+$form.Text = 'Stock Game Pro 2.5 - Setup'
 $form.Size = New-Object System.Drawing.Size(570,430)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
@@ -96,7 +96,7 @@ $title.Size = New-Object System.Drawing.Size(500,45)
 $form.Controls.Add($title)
 
 $sub = New-Object System.Windows.Forms.Label
-$sub.Text = 'One-click Windows installation • Version 2.2.1'
+$sub.Text = 'One-click Windows installation • Version 2.5'
 $sub.ForeColor = [System.Drawing.Color]::FromArgb(150,190,220)
 $sub.Location = New-Object System.Drawing.Point(31,71)
 $sub.Size = New-Object System.Drawing.Size(500,28)
@@ -172,7 +172,7 @@ $installButton.Add_Click({
 
         $status.Text = 'Copying Stock Game Pro...'
         $form.Refresh()
-        foreach ($name in @('main.py','ui.py','market.py','game_core.py','data.py','requirements.txt')) {
+        foreach ($name in @('main.py','ui.py','market.py','game_core.py','data.py','sp500_constituents.py','index_constituents.py','global_index_constituents.py','world_land.py','requirements.txt')) {
             Copy-Item (Join-Path $sourceRoot $name) (Join-Path $installDir $name) -Force
         }
         New-Item -ItemType Directory -Force -Path (Join-Path $installDir 'installer') | Out-Null
@@ -204,21 +204,21 @@ $installButton.Add_Click({
 
         if ($desktop.Checked) {
             $desktopDir = [Environment]::GetFolderPath('Desktop')
-            New-Shortcut (Join-Path $desktopDir 'Stock Game Pro.lnk') $pythonw $args $installDir 'Stock Game Pro 2.2.1'
+            New-Shortcut (Join-Path $desktopDir 'Stock Game Pro.lnk') $pythonw $args $installDir 'Stock Game Pro 2.5'
         }
         if ($startMenu.Checked) {
             $programs = [Environment]::GetFolderPath('Programs')
             $folder = Join-Path $programs 'Stock Game Pro'
             New-Item -ItemType Directory -Force -Path $folder | Out-Null
-            New-Shortcut (Join-Path $folder 'Stock Game Pro.lnk') $pythonw $args $installDir 'Stock Game Pro 2.2.1'
+            New-Shortcut (Join-Path $folder 'Stock Game Pro.lnk') $pythonw $args $installDir 'Stock Game Pro 2.5'
             New-Shortcut (Join-Path $folder 'Uninstall Stock Game Pro.lnk') $installedUninstaller '' $installDir 'Remove Stock Game Pro'
         }
 
         # Register a per-user uninstall entry so Stock Game Pro appears in Windows Installed Apps.
         $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\StockGamePro'
         New-Item -Path $uninstallKey -Force | Out-Null
-        Set-ItemProperty -Path $uninstallKey -Name DisplayName -Value 'Stock Game Pro 2.2.1'
-        Set-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value '2.2.1'
+        Set-ItemProperty -Path $uninstallKey -Name DisplayName -Value 'Stock Game Pro 2.5'
+        Set-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value '2.5'
         Set-ItemProperty -Path $uninstallKey -Name Publisher -Value 'Stock Game Pro'
         Set-ItemProperty -Path $uninstallKey -Name InstallLocation -Value $installDir
         Set-ItemProperty -Path $uninstallKey -Name UninstallString -Value ('"' + $installedUninstaller + '"')
@@ -236,7 +236,7 @@ start "Stock Game Pro" "$pythonw" "$mainPath"
         $form.Refresh()
         $script:installedSuccessfully = $true
         [System.Windows.Forms.MessageBox]::Show(
-            "Stock Game Pro 2.2.1 is installed and ready to play.",
+            "Stock Game Pro 2.5 is installed and ready to play.",
             'Installation complete','OK','Information'
         ) | Out-Null
         if ($launch.Checked) {
