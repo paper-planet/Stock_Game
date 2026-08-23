@@ -484,7 +484,7 @@ class AccountManager:
         username=username.strip().lower()
         if not username:return False,'Username is required.'
         if username in self.accounts:return False,'That account already exists.'
-        cash={'EASY':50000,'MEDIUM':250000,'EXPERT':1000000}.get(mode,250000)
+        cash={'EASY':50000,'MEDIUM':25000,'EXPERT':1000}.get(mode,25000)
         self.accounts[username]={'mode':mode,'cash':cash,'created':time.time(),'stats':{'trades':0,'realized':0.0,'best_net_worth':cash}}
         self._save();return True,'Account created.'
     def login(self,username):
@@ -660,7 +660,7 @@ Portfolio.buy_asset=_v13_buy;Portfolio.sell_asset=_v13_sell;Portfolio.short_asse
 
 # ===== Stock Game Pro 1.5 career / credit progression =====
 # Difficulty now follows the expected game convention: easier modes provide more starting capital.
-_SGP_STARTING_CASH={'EASY':1_000_000.0,'MEDIUM':250_000.0,'EXPERT':50_000.0}
+_SGP_STARTING_CASH={'EASY':50_000.0,'MEDIUM':25_000.0,'EXPERT':1_000.0}
 
 _AccountManager_create_v15_base=AccountManager.create
 _AccountManager_login_v15_base=AccountManager.login
@@ -985,3 +985,398 @@ def _sgp22_option_volatility(self):
     iv=max(.20,min(5.0,float(getattr(self.underlying,'scenario_option_iv',1.0))))
     return max(.04,(self.underlying.volatility*20+.12+abs(self.strike/max(.0001,self.underlying.price)-1)*.30)*math.sqrt(regime)*iv)
 OptionContract.volatility=property(_sgp22_option_volatility)
+
+# ===== Stock Game Pro 2.2.1 scalable portfolio / margin accounting =====
+# Stock positions stay O(1) regardless of share quantity.  Identical option fills are compacted
+# into one aggregate strategy, and short-sale proceeds are treated as restricted collateral so
+# they cannot be recursively re-used to pyramid into astronomical positions.
+import math as _sgp_math221
+
+def _sgp221_available_funds(self):
+    locked=0.0
+    for sym,q in self.positions.items():
+        if int(q)<0:locked+=max(0.0,float(self.cost_basis.get(sym,0.0)))
+    return max(0.0,float(self.cash)-locked-max(0.0,float(getattr(self,'reserved_margin',0.0))))
+Portfolio.available_funds=_sgp221_available_funds
+Portfolio.buying_power=property(lambda self:self.available_funds())
+
+def _sgp221_room(self,a,side,requested):
+    q=max(1,int(requested));m=getattr(self,'market',None);current=int(self.positions.get(a.symbol,0))
+    if m is None or not hasattr(m,'position_capacity'):return q
+    if side=='BUY':room=max(0,int(m.position_capacity(a,'BUY'))-max(0,current))
+    elif side=='SHORT':room=max(0,int(m.position_capacity(a,'SHORT'))-max(0,-current))
+    else:room=q
+    if room<=0:return 0
+    try:q=min(q,int(m.max_executable_qty(a,side,q)))
+    except Exception:pass
+    return min(q,room)
+Portfolio._execution_room_v221=_sgp221_room
+
+def _sgp221_fill_suffix(fill,requested,filled):
+    rem=max(0,int(requested)-int(filled));base=f'VWAP ${float(fill.get("vwap",0)):,.4f} • impact {float(fill.get("impact",0))*100:.2f}%'
+    return base+(f' • PARTIAL {filled:,}/{requested:,} filled; {rem:,} not filled' if rem else '')
+
+def _sgp221_buy(self,a,qty):
+    try:requested=int(qty)
+    except Exception:return False,'Invalid quantity.'
+    if requested<=0:return False,'Quantity must be positive.'
+    q=self._execution_room_v221(a,'BUY',requested)
+    if q<=0:return False,f'{a.symbol} position is at the simulator float/capacity limit.'
+    m=getattr(self,'market',None);preview=m.preview_execution('BUY',a,q) if m and hasattr(m,'preview_execution') else {'vwap':a.ask,'filled_qty':q}
+    q=int(preview.get('filled_qty',q));est=float(preview['vwap'])*q
+    if est>self.available_funds():return False,f'Insufficient buying power. Need about ${est:,.2f}; available ${self.available_funds():,.2f}.'
+    px,fill=self._market_fill_v21(a,'BUY',q);filled=int(fill.get('filled_qty',q));cost=px*filled;old=self._qty(a.symbol)
+    self.cash-=cost;self.positions[a.symbol]=old+filled;self.cost_basis[a.symbol]=self.cost_basis.get(a.symbol,0)+cost;self.trade_count+=1
+    return True,f'Bought {filled:,} {a.symbol} • {_sgp221_fill_suffix(fill,requested,filled)}'
+Portfolio.buy_asset=_sgp221_buy
+
+def _sgp221_sell(self,a,qty):
+    try:requested=int(qty)
+    except Exception:return False,'Invalid quantity.'
+    owned=self._qty(a.symbol)
+    if requested<=0:return False,'Quantity must be positive.'
+    if owned<=0:return False,f'No long {a.symbol} position.'
+    requested=min(requested,owned);m=getattr(self,'market',None);q=min(requested,int(m.max_executable_qty(a,'SELL',requested))) if m and hasattr(m,'max_executable_qty') else requested
+    px,fill=self._market_fill_v21(a,'SELL',q);filled=int(fill.get('filled_qty',q));proceeds=px*filled;basis_total=self.cost_basis.get(a.symbol,0);basis=basis_total*(filled/owned)
+    self.cash+=proceeds;self.realized+=proceeds-basis;remain=owned-filled
+    if remain:self.positions[a.symbol]=remain;self.cost_basis[a.symbol]=max(0,basis_total-basis)
+    else:self.positions.pop(a.symbol,None);self.cost_basis.pop(a.symbol,None)
+    self.trade_count+=1;return True,f'Sold {filled:,} {a.symbol} • {_sgp221_fill_suffix(fill,requested,filled)}'
+Portfolio.sell_asset=_sgp221_sell
+
+def _sgp221_short(self,a,qty,margin_rate=.5):
+    try:requested=int(qty)
+    except Exception:return False,'Invalid quantity.'
+    if requested<=0:return False,'Quantity must be positive.'
+    q=self._execution_room_v221(a,'SHORT',requested)
+    if q<=0:return False,f'{a.symbol} short is at the estimated borrow/float capacity limit.'
+    m=getattr(self,'market',None);preview=m.preview_execution('SHORT',a,q) if m and hasattr(m,'preview_execution') else {'vwap':a.bid,'filled_qty':q}
+    q=int(preview.get('filled_qty',q));req=float(preview['vwap'])*q*float(margin_rate)
+    avail=self.available_funds()
+    if avail<req:return False,f'Initial margin requires about ${req:,.2f}; buying power ${avail:,.2f}. Short-sale proceeds are restricted collateral.'
+    px,fill=self._market_fill_v21(a,'SHORT',q);filled=int(fill.get('filled_qty',q));proceeds=px*filled;req=px*filled*float(margin_rate);old=self._qty(a.symbol)
+    self.positions[a.symbol]=old-filled;self.cost_basis[a.symbol]=self.cost_basis.get(a.symbol,0)+proceeds;self.cash+=proceeds;self.reserved_margin+=req;self.trade_count+=1
+    return True,f'Shorted {filled:,} {a.symbol} • {_sgp221_fill_suffix(fill,requested,filled)} • margin ${req:,.2f}'
+Portfolio.short_asset=_sgp221_short
+
+def _sgp221_cover(self,a,qty):
+    try:requested=int(qty)
+    except Exception:return False,'Invalid quantity.'
+    short=-self._qty(a.symbol)
+    if short<=0:return False,'No short position.'
+    if requested<=0:return False,'Quantity must be positive.'
+    requested=min(requested,short);m=getattr(self,'market',None);q=min(requested,int(m.max_executable_qty(a,'COVER',requested))) if m and hasattr(m,'max_executable_qty') else requested
+    preview=m.preview_execution('COVER',a,q) if m and hasattr(m,'preview_execution') else {'vwap':a.ask,'filled_qty':q}
+    q=int(preview.get('filled_qty',q));est=float(preview['vwap'])*q
+    if est>self.cash:return False,f'Cover requires about ${est:,.2f}; account cash ${self.cash:,.2f}. Reduce quantity or liquidate other assets.'
+    px,fill=self._market_fill_v21(a,'COVER',q);filled=int(fill.get('filled_qty',q));cost=px*filled;basis_total=self.cost_basis.get(a.symbol,0);entry=basis_total*(filled/short)
+    self.cash-=cost;self.realized+=entry-cost;remain=short-filled;release_ratio=filled/max(1,short);self.reserved_margin=max(0.0,self.reserved_margin*(1-release_ratio))
+    if remain:self.positions[a.symbol]=-remain;self.cost_basis[a.symbol]=max(0,basis_total-entry)
+    else:self.positions.pop(a.symbol,None);self.cost_basis.pop(a.symbol,None)
+    self.trade_count+=1;return True,f'Covered {filled:,} {a.symbol} • {_sgp221_fill_suffix(fill,requested,filled)}'
+Portfolio.cover_short=_sgp221_cover
+
+# Prevent duplicate option fills from growing self.options without bound.
+def _sgp221_leg_key(leg):
+    c=leg.contract;exp=getattr(c,'expiry_at',None)
+    expkey=exp.isoformat() if hasattr(exp,'isoformat') else str(getattr(c,'days',0))
+    return (getattr(c.underlying,'symbol',''),round(float(c.strike),6),str(c.option_type),str(leg.action),expkey)
+
+def _sgp221_strategy_map(st):
+    return {_sgp221_leg_key(l):l for l in st.legs}
+
+def _sgp221_compact_options(self):
+    merged=[];by_sig={}
+    for st in list(self.options):
+        if not getattr(st,'legs',None):continue
+        keys=tuple(sorted(_sgp221_leg_key(l) for l in st.legs))
+        target=by_sig.get(keys)
+        if target is None:
+            by_sig[keys]=st;merged.append(st);continue
+        tm=_sgp221_strategy_map(target)
+        for leg in st.legs:
+            k=_sgp221_leg_key(leg)
+            if k in tm:tm[k].quantity+=int(leg.quantity)
+            else:target.legs.append(leg)
+        target.open_cost=float(getattr(target,'open_cost',0.0))+float(getattr(st,'open_cost',0.0))
+        if getattr(target,'expiry_at',None) is None:target.expiry_at=getattr(st,'expiry_at',None)
+    if len(merged)!=len(self.options):
+        self.options=merged;self.invalidate_option_cache()
+    return len(merged)
+Portfolio.compact_option_positions=_sgp221_compact_options
+
+_sgp221_exec_strategy_base=Portfolio.execute_strategy
+def _sgp221_execute_strategy(self,s):
+    # Risk checks use free buying power, not gross cash that may contain restricted short proceeds.
+    debit=s.opening_debit();margin=max(0.0,-debit*1.5);avail=self.available_funds()
+    if debit>0 and debit>avail:return False,f'Insufficient buying power. Need ${debit:,.2f}; available ${avail:,.2f}.'
+    if debit<0 and margin>avail:return False,f'Short-option margin required ${margin:,.2f}; buying power ${avail:,.2f}.'
+    before=list(self.options);ok,msg=_sgp221_exec_strategy_base(self,s)
+    if ok:
+        self.compact_option_positions()
+        if len(self.options)<len(before)+1:msg+=f' • aggregated into existing position ({len(self.options)} option position groups)'
+    return ok,msg
+Portfolio.execute_strategy=_sgp221_execute_strategy
+
+# Sanitize pathological values from older saves before they reach chart/Black-Scholes math.
+_Asset_update_v221_base=Asset.update_price
+def _sgp221_safe_update_price(self,new_price,volume=0,timestamp=None,record=True):
+    try:p=float(new_price)
+    except Exception:p=float(getattr(self,'price',1.0))
+    if not _sgp_math221.isfinite(p):p=float(getattr(self,'price',1.0))
+    p=max(.000001,min(1.0e12,p))
+    try:v=max(0,min(int(volume),9_000_000_000_000_000_000))
+    except Exception:v=0
+    return _Asset_update_v221_base(self,p,v,timestamp,record)
+Asset.update_price=_sgp221_safe_update_price
+
+# Compact duplicate option positions immediately after restoring an older account.
+_sgp221_restore_base=AccountManager.restore_game_state
+def _sgp221_restore(self,portfolio,market,state):
+    ok=_sgp221_restore_base(self,portfolio,market,state)
+    try:portfolio.compact_option_positions()
+    except Exception:pass
+    return ok
+AccountManager.restore_game_state=_sgp221_restore
+
+# 2.2.1.1: preserve session gates around the final scalable execution methods.
+def _sgp221_stock_session_gate(portfolio,a):
+    m=getattr(portfolio,'market',None)
+    if m is not None and hasattr(m,'stock_trading_allowed') and not m.stock_trading_allowed(a):
+        state=getattr(m,'asset_trade_state',lambda x:'CLOSED')(a)
+        return False,f'{a.symbol} stock trading is {state}. Queue an order or wait for a tradable session.'
+    return None
+
+_sgp221_buy_nogate=Portfolio.buy_asset;_sgp221_sell_nogate=Portfolio.sell_asset;_sgp221_short_nogate=Portfolio.short_asset;_sgp221_cover_nogate=Portfolio.cover_short
+def _sgp221_buy_gate(self,a,qty):
+    gate=_sgp221_stock_session_gate(self,a);return gate if gate else _sgp221_buy_nogate(self,a,qty)
+def _sgp221_sell_gate(self,a,qty):
+    gate=_sgp221_stock_session_gate(self,a);return gate if gate else _sgp221_sell_nogate(self,a,qty)
+def _sgp221_short_gate(self,a,qty,margin_rate=.5):
+    gate=_sgp221_stock_session_gate(self,a);return gate if gate else _sgp221_short_nogate(self,a,qty,margin_rate)
+def _sgp221_cover_gate(self,a,qty):
+    gate=_sgp221_stock_session_gate(self,a);return gate if gate else _sgp221_cover_nogate(self,a,qty)
+Portfolio.buy_asset=_sgp221_buy_gate;Portfolio.sell_asset=_sgp221_sell_gate;Portfolio.short_asset=_sgp221_short_gate;Portfolio.cover_short=_sgp221_cover_gate
+
+_sgp221_strategy_risk_base=Portfolio.execute_strategy
+def _sgp221_execute_strategy_session_safe(self,s):
+    m=getattr(self,'market',None);under=s.legs[0].contract.underlying if getattr(s,'legs',None) else None
+    before_count=len(self.options)
+    ok,msg=_sgp221_strategy_risk_base(self,s)
+    # A closed-session market-on-open queue is not an owned position yet.
+    if ok and len(self.options)==before_count and 'queued' in str(msg).lower():return ok,msg
+    return ok,msg
+Portfolio.execute_strategy=_sgp221_execute_strategy_session_safe
+
+def _sgp221_execute_strategy_final(self,s):
+    m=getattr(self,'market',None);under=s.legs[0].contract.underlying if getattr(s,'legs',None) else None
+    # Let the existing v1.3 session gate queue listed options without charging margin/cash.
+    if m is not None and under is not None and hasattr(m,'asset_regular_open') and not m.asset_regular_open(under):
+        return _sgp221_exec_strategy_base(self,s)
+    debit=s.opening_debit();margin=max(0.0,-debit*1.5);avail=self.available_funds()
+    if debit>0 and debit>avail:return False,f'Insufficient buying power. Need ${debit:,.2f}; available ${avail:,.2f}.'
+    if debit<0 and margin>avail:return False,f'Short-option margin required ${margin:,.2f}; buying power ${avail:,.2f}.'
+    before_count=len(self.options);ok,msg=_sgp221_exec_strategy_base(self,s)
+    if ok and len(self.options)>before_count:
+        precompact=len(self.options);self.compact_option_positions()
+        if len(self.options)<precompact:msg+=f' • aggregated into existing position ({len(self.options)} option position groups)'
+    return ok,msg
+Portfolio.execute_strategy=_sgp221_execute_strategy_final
+
+# 2.2.1.2: legacy-save numeric safety.  Do not throw away an old whale position; clamp only the
+# floating-point valuation used by the UI so an oversized historical integer cannot overflow Tk/Python.
+def _sgp221_money(x,limit=1.0e300):
+    try:v=float(x)
+    except Exception:return 0.0
+    if not _sgp_math221.isfinite(v):return limit if v>0 else -limit if v<0 else 0.0
+    return max(-limit,min(limit,v))
+
+def _sgp221_notional(q,price):
+    try:
+        qf=float(q);pf=float(price);v=qf*pf
+    except Exception:return 1.0e300 if int(q)>=0 else -1.0e300
+    return _sgp221_money(v)
+
+def _sgp221_available_funds_safe(self):
+    cash=_sgp221_money(self.cash);locked=0.0
+    for sym,q in self.positions.items():
+        if int(q)<0:locked=min(1.0e300,locked+max(0.0,_sgp221_money(self.cost_basis.get(sym,0.0))))
+    margin=max(0.0,_sgp221_money(getattr(self,'reserved_margin',0.0)))
+    v=cash-locked-margin
+    return max(0.0,_sgp221_money(v))
+Portfolio.available_funds=_sgp221_available_funds_safe
+Portfolio.buying_power=property(lambda self:self.available_funds())
+
+def _sgp221_mark_value_safe(self,assets):
+    total=_sgp221_money(self.cash);amap=self._asset_map(assets)
+    for sym,q in self.positions.items():
+        a=self.market.get_asset(sym) if getattr(self,'market',None) is not None else amap.get(sym)
+        if a:total=_sgp221_money(total+_sgp221_notional(q,a.price))
+    for st in self.options:
+        try:total=_sgp221_money(total+_sgp221_money(st.current_value()))
+        except Exception:pass
+    total=_sgp221_money(total-float(getattr(self,'loan_balance',0.0)))
+    return total
+Portfolio.mark_value=_sgp221_mark_value_safe
+
+def _sgp221_position_rows_safe(self,assets):
+    rows=[];amap=self._asset_map(assets)
+    for sym,q in list(self.positions.items()):
+        if not q:continue
+        a=self.market.get_asset(sym) if getattr(self,'market',None) is not None else amap.get(sym)
+        if not a:continue
+        basis=_sgp221_money(self.cost_basis.get(sym,0.0));value=_sgp221_notional(q,a.price);pnl=_sgp221_money(value-basis if q>0 else basis+value)
+        rows.append((sym,a.name,q,float(a.price),value,pnl,'LONG' if q>0 else 'SHORT','',0))
+    for st in list(self.options):
+        if not st.legs:continue
+        first=st.legs[0].contract;under=first.underlying.symbol;label=self._strategy_display_symbol(st);total_qty=max(1,sum(abs(int(l.quantity)) for l in st.legs))
+        try:v=_sgp221_money(st.current_value())
+        except Exception:v=0.0
+        rows.append((self.strategy_ref(st),label,total_qty,v,v,_sgp221_money(v-st.open_cost),'OPTION',under,min((l.contract.days for l in st.legs),default=0)))
+    return rows
+Portfolio.position_rows=_sgp221_position_rows_safe
+
+
+# ===== Stock Game Pro 2.3 account analytics + simplified PDT training rule =====
+# Simulator rule requested by the player: accounts below $25k may complete up to three
+# same-day round trips in a rolling 5-business-day window. A fourth attempted day trade
+# flags the account until equity is back at/above $25k.
+from datetime import timedelta as _sgp23_td
+
+_Portfolio_init_v23_base=Portfolio.__init__
+def _sgp23_portfolio_init(self,cash=25_000):
+    _Portfolio_init_v23_base(self,cash)
+    self.day_trade_log=[]
+    self.pdt_flagged=False
+    self._intraday_open={}
+    self.equity_history=[]
+    self._equity_last_stamp=None
+    self._daily_equity_open={}
+Portfolio.__init__=_sgp23_portfolio_init
+
+def _sgp23_now(self):
+    m=getattr(self,'market',None);return getattr(getattr(m,'clock',None),'current',None) or datetime.now()
+
+def _sgp23_equity(self):
+    m=getattr(self,'market',None)
+    try:return float(self.mark_value(m.all_assets())) if m else float(self.cash)
+    except Exception:return float(self.cash)
+Portfolio.regulatory_equity=_sgp23_equity
+
+def _sgp23_prune(self):
+    now=_sgp23_now(self).date();cut=now-_sgp23_td(days=7)
+    self.day_trade_log=[x for x in getattr(self,'day_trade_log',[]) if _sgp_dt_parse_v20(x.get('time')).date()>=cut if _sgp_dt_parse_v20(x.get('time'))]
+    # Count only the newest rolling five business dates represented in the simulator.
+    dates=[];d=now
+    while len(dates)<5:
+        if d.weekday()<5:dates.append(d)
+        d-=_sgp23_td(days=1)
+    allowed=set(dates);self.day_trade_log=[x for x in self.day_trade_log if _sgp_dt_parse_v20(x.get('time')).date() in allowed]
+    if self.regulatory_equity()>=25_000:self.pdt_flagged=False
+Portfolio._pdt_prune=_sgp23_prune
+
+def _sgp23_day_trades(self):
+    self._pdt_prune();return len(self.day_trade_log)
+Portfolio.day_trades_rolling=property(_sgp23_day_trades)
+
+def _sgp23_would_daytrade(self,a,closing_side):
+    today=_sgp23_now(self).date().isoformat();entry=getattr(self,'_intraday_open',{}).get(a.symbol)
+    if not entry or entry.get('date')!=today:return False
+    return (closing_side=='SELL' and entry.get('long',0)>0) or (closing_side=='COVER' and entry.get('short',0)>0)
+
+def _sgp23_pdt_check(self,a,side):
+    if side not in ('SELL','COVER') or not _sgp23_would_daytrade(self,a,side):return None
+    self._pdt_prune();eq=self.regulatory_equity()
+    if eq>=25_000:return None
+    if self.pdt_flagged:return f'PDT FLAGGED — day trading locked while account equity is below $25,000. Current equity ${eq:,.2f}.'
+    if self.day_trades_rolling>=3:
+        self.pdt_flagged=True
+        return f'PDT FLAGGED — this would exceed 3 day trades in the rolling week while equity is below $25,000. Day trading is locked until equity reaches $25,000.'
+    return None
+
+def _sgp23_note_open(self,a,side,qty):
+    today=_sgp23_now(self).date().isoformat();d=self._intraday_open.setdefault(a.symbol,{'date':today,'long':0,'short':0})
+    if d.get('date')!=today:d.clear();d.update(date=today,long=0,short=0)
+    if side=='BUY':d['long']=int(d.get('long',0))+int(qty)
+    elif side=='SHORT':d['short']=int(d.get('short',0))+int(qty)
+
+def _sgp23_note_close(self,a,side,qty):
+    if not _sgp23_would_daytrade(self,a,side):return
+    d=self._intraday_open.get(a.symbol,{});key='long' if side=='SELL' else 'short';closed=min(int(qty),int(d.get(key,0)))
+    if closed<=0:return
+    d[key]=max(0,int(d.get(key,0))-closed)
+    self.day_trade_log.append({'time':_sgp_dt_iso_v20(_sgp23_now(self)),'symbol':a.symbol,'side':side,'qty':closed})
+    self._pdt_prune()
+
+_buy_v23_base=Portfolio.buy_asset
+_sell_v23_base=Portfolio.sell_asset
+_short_v23_base=Portfolio.short_asset
+_cover_v23_base=Portfolio.cover_short
+
+def _sgp23_buy(self,a,qty):
+    ok,msg=_buy_v23_base(self,a,qty)
+    if ok:_sgp23_note_open(self,a,'BUY',qty)
+    return ok,msg
+
+def _sgp23_sell(self,a,qty):
+    block=_sgp23_pdt_check(self,a,'SELL')
+    if block:return False,block
+    ok,msg=_sell_v23_base(self,a,qty)
+    if ok:_sgp23_note_close(self,a,'SELL',qty)
+    return ok,msg
+
+def _sgp23_short(self,a,qty,margin_rate=.5):
+    ok,msg=_short_v23_base(self,a,qty,margin_rate)
+    if ok:_sgp23_note_open(self,a,'SHORT',qty)
+    return ok,msg
+
+def _sgp23_cover(self,a,qty):
+    block=_sgp23_pdt_check(self,a,'COVER')
+    if block:return False,block
+    ok,msg=_cover_v23_base(self,a,qty)
+    if ok:_sgp23_note_close(self,a,'COVER',qty)
+    return ok,msg
+Portfolio.buy_asset=_sgp23_buy;Portfolio.sell_asset=_sgp23_sell;Portfolio.short_asset=_sgp23_short;Portfolio.cover_short=_sgp23_cover
+
+def _sgp23_record_equity(self,force=False):
+    now=_sgp23_now(self);stamp=now.replace(second=0,microsecond=0)
+    if not force and getattr(self,'_equity_last_stamp',None)==stamp:return
+    eq=self.regulatory_equity();hold=[]
+    m=getattr(self,'market',None)
+    if m:
+        for sym,q in self.positions.items():
+            a=m.get_asset(sym)
+            if a and q:hold.append((sym,int(q),float(a.price),float(q)*float(a.price)))
+        hold=sorted(hold,key=lambda x:abs(x[3]),reverse=True)[:12]
+    rec={'time':_sgp_dt_iso_v20(now),'equity':eq,'cash':float(self.cash),'realized':float(self.realized),'holdings':hold}
+    self.equity_history.append(rec);self.equity_history=self.equity_history[-20000:];self._equity_last_stamp=stamp
+    day=now.date().isoformat();self._daily_equity_open.setdefault(day,eq)
+Portfolio.record_equity_snapshot=_sgp23_record_equity
+
+def _sgp23_daily_pl(self):
+    day=_sgp23_now(self).date().isoformat();eq=self.regulatory_equity();base=float(getattr(self,'_daily_equity_open',{}).get(day,eq));return eq-base
+Portfolio.daily_pl=property(_sgp23_daily_pl)
+
+_save_v23_base=AccountManager.save_game_state
+def _sgp23_save_game(self,username,portfolio,market,reason='autosave'):
+    portfolio.record_equity_snapshot(force=True)
+    ok=_save_v23_base(self,username,portfolio,market,reason)
+    if ok and username in self.accounts:
+        st=self.accounts[username].setdefault('game_state',{})
+        st['day_trade_log']=list(getattr(portfolio,'day_trade_log',[]))[-100:]
+        st['pdt_flagged']=bool(getattr(portfolio,'pdt_flagged',False))
+        st['intraday_open']=dict(getattr(portfolio,'_intraday_open',{}))
+        st['equity_history']=list(getattr(portfolio,'equity_history',[]))[-20000:]
+        st['daily_equity_open']=dict(getattr(portfolio,'_daily_equity_open',{}))
+        self._save()
+    return ok
+AccountManager.save_game_state=_sgp23_save_game
+
+_restore_v23_base=AccountManager.restore_game_state
+def _sgp23_restore_game(self,username,portfolio,market):
+    ok=_restore_v23_base(self,username,portfolio,market)
+    if ok:
+        rec=self.accounts.get(str(username).lower(),{});st=rec.get('game_state',{})
+        portfolio.day_trade_log=list(st.get('day_trade_log',[]));portfolio.pdt_flagged=bool(st.get('pdt_flagged',False));portfolio._intraday_open=dict(st.get('intraday_open',{}));portfolio.equity_history=list(st.get('equity_history',[]));portfolio._daily_equity_open=dict(st.get('daily_equity_open',{}));portfolio._pdt_prune()
+    return ok
+AccountManager.restore_game_state=_sgp23_restore_game

@@ -89,7 +89,7 @@ def main_menu(root,accounts):
     status=tk.Label(panel,text='Ready.',bg='#07131e',fg='#8fa9b8',font=('Segoe UI',9));status.pack(fill='x',padx=28,pady=(0,7))
     create_box=tk.Frame(panel,bg='#0a1d2b',highlightbackground='#143b50',highlightthickness=1);create_box.pack(fill='x',padx=28,pady=(0,10))
     tk.Label(create_box,text='NEW TRADER PROFILE',bg='#0a1d2b',fg='#6bcfe8',font=('Segoe UI',9,'bold')).grid(row=0,column=0,columnspan=3,sticky='w',padx=10,pady=(8,3))
-    tk.Label(create_box,text='EASY $1,000,000  •  MEDIUM $250,000  •  EXPERT $50,000',bg='#0a1d2b',fg='#6f8e9f',font=('Segoe UI',8)).grid(row=2,column=0,columnspan=3,sticky='w',padx=10,pady=(0,8))
+    tk.Label(create_box,text='EASY $50,000  •  MEDIUM $25,000  •  EXPERT $1,000',bg='#0a1d2b',fg='#6f8e9f',font=('Segoe UI',8)).grid(row=2,column=0,columnspan=3,sticky='w',padx=10,pady=(0,8))
     user=tk.Entry(create_box,bg='#eef5f8',fg='#10202a',relief='flat',font=('Segoe UI',10));user.grid(row=1,column=0,sticky='ew',padx=(10,5),pady=(2,10),ipady=6);user.insert(0,'account name')
     mode=tk.StringVar(value='MEDIUM');ttk.Combobox(create_box,textvariable=mode,values=['EASY','MEDIUM','EXPERT'],state='readonly',width=10).grid(row=1,column=1,padx=5,pady=(2,10));create_box.columnconfigure(0,weight=1)
     def selected_name():
@@ -104,7 +104,7 @@ def main_menu(root,accounts):
         if not name:return status.config(text='Select a saved trader profile first.',fg='#ff6b7d')
         rec=accounts.login(name)
         if not rec:return status.config(text='Account no longer exists.',fg='#ff6b7d')
-        result.update(action='start',username=rec['username'],mode=rec.get('mode','MEDIUM'),cash=float(rec.get('cash',250000)),profile=rec);w.destroy()
+        result.update(action='start',username=rec['username'],mode=rec.get('mode','MEDIUM'),cash=float(rec.get('cash',25000)),profile=rec);w.destroy()
     def delete():
         name=selected_name()
         if not name:return status.config(text='Select an account to delete.',fg='#ff6b7d')
@@ -113,15 +113,15 @@ def main_menu(root,accounts):
     def create():
         name=user.get().strip().lower();name='' if name=='account name' else name;ok,msg=accounts.create(name,mode.get());status.config(text=msg,fg='#31d6a0' if ok else '#ff6b7d')
         if ok:user.delete(0,'end');refresh_accounts(name)
-    def guest():result.update(action='start',username=None,mode=mode.get(),cash={'EASY':1000000,'MEDIUM':250000,'EXPERT':50000}[mode.get()],profile={});w.destroy()
+    def guest():result.update(action='start',username=None,mode=mode.get(),cash={'EASY':50000,'MEDIUM':25000,'EXPERT':1000}[mode.get()],profile={});w.destroy()
     ttk.Button(create_box,text='CREATE PROFILE',command=create).grid(row=1,column=2,padx=(5,10),pady=(2,10))
     buttons=tk.Frame(panel,bg='#07131e');buttons.pack(fill='x',padx=28,pady=(2,20));ttk.Button(buttons,text='ENTER WORKSTATION',command=login).pack(side='left',fill='x',expand=True,ipady=5);ttk.Button(buttons,text='DELETE',command=delete).pack(side='left',padx=6,ipady=5);ttk.Button(buttons,text='GUEST',command=guest).pack(side='left',ipady=5)
     tv.bind('<Double-1>',lambda e:login());refresh_accounts();root.wait_window(w);return result
 
 def main():
-    root=tk.Tk();root.withdraw();accounts=AccountManager();choice={'action':'start','username':None,'mode':'MEDIUM','cash':250000} if '--guest' in sys.argv else main_menu(root,accounts)
+    root=tk.Tk();root.withdraw();accounts=AccountManager();choice={'action':'start','username':None,'mode':'MEDIUM','cash':25000} if '--guest' in sys.argv else main_menu(root,accounts)
     if choice['action']!='start':root.destroy();return
-    root.deiconify();market=Market();market.difficulty=choice['mode'];market.speed=.025;market.time_warp=.25;portfolio=Portfolio(choice['cash']);profile=choice.get('profile') or {};portfolio.xp=int(profile.get('xp',0));portfolio.credit_score=int(profile.get('credit_score',700));portfolio.loan_balance=float(profile.get('loan_balance',0.0));portfolio.loan_apr=float(profile.get('loan_apr',0.0));portfolio.loan_origin=profile.get('loan_origin');portfolio.last_loan_payment=profile.get('last_loan_payment');portfolio.tutorials=dict(profile.get('tutorials',{}));portfolio.career=dict(profile.get('career',portfolio.career));portfolio.market=market;market.portfolio=portfolio;
+    root.deiconify();market=Market();market.difficulty=choice['mode'];market.speed=.025;market.time_warp=1/60;portfolio=Portfolio(choice['cash']);profile=choice.get('profile') or {};portfolio.xp=int(profile.get('xp',0));portfolio.credit_score=int(profile.get('credit_score',700));portfolio.loan_balance=float(profile.get('loan_balance',0.0));portfolio.loan_apr=float(profile.get('loan_apr',0.0));portfolio.loan_origin=profile.get('loan_origin');portfolio.last_loan_payment=profile.get('last_loan_payment');portfolio.tutorials=dict(profile.get('tutorials',{}));portfolio.career=dict(profile.get('career',portfolio.career));portfolio.market=market;market.portfolio=portfolio;
     if choice.get('username'):
         try:accounts.restore_game_state(choice.get('username'),portfolio,market)
         except Exception as e:print(f'Unable to restore saved trading state: {e}')

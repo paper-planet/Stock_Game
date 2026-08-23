@@ -1423,3 +1423,86 @@ def _sgp22_get_book(self,a):
     except Exception:pass
     return _old_get_book_v22(self,a)
 Market.get_book=_sgp22_get_book
+
+# ===== Stock Game Pro 2.2.1 large-position / execution safety overhaul =====
+# Keep whale trading meaningful without allowing one request to create unbounded integer/float
+# states.  Instant marketable liquidity is limited by displayed depth, ADV and estimated float;
+# oversized requests are partially filled rather than forcing the whole quantity through one tick.
+
+def _sgp221_estimated_float_shares(self,a):
+    try:adv=max(1.0,float(self.adv_shares(a)))
+    except Exception:adv=100_000.0
+    try:reported=max(1.0,float(getattr(a,'shares_outstanding',0.0) or 0.0))
+    except Exception:reported=1.0
+    # The older simulator initialized unknown companies with a generic $1B market cap, which can
+    # imply unrealistically tiny share counts for high-priced names.  ADV gives a better lower bound.
+    floor=50_000_000.0 if getattr(a,'category','') in ('ETF','Index') else 10_000_000.0
+    turnover_float=adv*(80.0 if getattr(a,'category','')=='ETF' else 45.0)
+    return max(floor,reported,turnover_float)
+Market.estimated_float_shares=_sgp221_estimated_float_shares
+
+def _sgp221_position_capacity(self,a,side='BUY'):
+    side=str(side).upper();f=self.estimated_float_shares(a)
+    # ETFs can create/redeem shares; individual equities are constrained more tightly by float.
+    if getattr(a,'category','')=='ETF':mult=2.5 if side in ('BUY','SELL') else 1.5
+    else:mult=.95 if side in ('BUY','SELL') else 1.20
+    return max(1,int(f*mult))
+Market.position_capacity=_sgp221_position_capacity
+
+def _sgp221_max_executable_qty(self,a,side,requested):
+    req=max(1,int(requested));book=self.get_book(a);buy=str(side).upper() in ('BUY','COVER')
+    levels=book.asks if buy else book.bids;visible=sum(max(0,int(x.size)) for x in levels)
+    f=max(1.0,self.estimated_float_shares(a));adv=max(float(self.adv_shares(a)),f*.01)
+    # One click may sweep several times normal daily volume, but not an effectively infinite book.
+    # Penny names are intentionally tighter because float/liquidity dominates their execution.
+    px=max(.0001,float(a.price));float_frac=.04 if px<5 else .10
+    cap=max(float(visible)*12.0,adv*3.0,f*float_frac)
+    return max(1,min(req,int(cap)))
+Market.max_executable_qty=_sgp221_max_executable_qty
+
+_sgp221_preview_base=Market.preview_execution
+def _sgp221_preview_execution(self,side,a,qty):
+    requested=max(1,int(qty));filled=self.max_executable_qty(a,side,requested)
+    q=dict(_sgp221_preview_base(self,side,a,filled))
+    # Guard the instantaneous permanent displacement.  The residual impact state still carries
+    # pressure into subsequent ticks, giving large orders a persistent footprint without overflow.
+    penny=max(.0001,float(a.price))<5
+    q['permanent']=min(float(q.get('permanent',0.0)),.35 if penny else .18)
+    q['requested_qty']=requested;q['filled_qty']=filled;q['remaining_qty']=max(0,requested-filled)
+    return q
+Market.preview_execution=_sgp221_preview_execution
+
+def _sgp221_execute_liquidity_order(self,side,a,qty):
+    side=str(side).upper();quote=self.preview_execution(side,a,qty);q=max(1,int(quote['filled_qty']));buy=side in ('BUY','COVER')
+    book=self.get_book(a);remaining=q;levels=book.asks if buy else book.bids
+    for lvl in levels:
+        take=min(remaining,max(0,int(lvl.size)))
+        if take:
+            lvl.size=max(0,int(lvl.size)-take);remaining-=take
+        if remaining<=0:break
+    adv=max(1.0,float(quote['adv']));depletion=min(.85,.45*math.sqrt(max(0.0,q/adv)))
+    old_health=float(self._liquidity_health.get(a.symbol,1.0));health=max(.05,old_health*(1-depletion))
+    self._liquidity_health[a.symbol]=health;a.liquidity_health=health
+    signed=1.0 if buy else -1.0;old=max(.000001,float(a.price));perm=float(quote.get('permanent',0.0))
+    new=old*(1+signed*perm)
+    vwap=float(quote.get('vwap',old))
+    if buy:new=max(new,old+(vwap-old)*.35)
+    else:new=min(new,old+(vwap-old)*.35)
+    if not math.isfinite(new):new=old
+    new=max(.000001,min(1.0e12,new))
+    a.update_price(new,min(q,9_000_000_000_000_000_000),self.clock.current)
+    a.last_market_impact=signed*float(quote.get('impact',0.0));a.last_execution_vwap=vwap
+    st=self._impact_state.setdefault(a.symbol,{'pressure':0.0,'last':time.monotonic()})
+    st['pressure']=max(-1.5,min(1.5,float(st.get('pressure',0.0))+signed*float(quote.get('impact',0.0))));st['last']=time.monotonic()
+    self._book_cache_time[a.symbol]=0;self.visual_version+=1
+    return quote
+Market.execute_liquidity_order=_sgp221_execute_liquidity_order
+
+
+# ===== Stock Game Pro 2.3 real-second time-warp convention =====
+# Existing engine math advances 60 simulated seconds per real second at internal 1.0.
+# Therefore UI/display 1x is represented internally as 1/60.
+_Market_init_v23_base=Market.__init__
+def _sgp23_market_init(self):
+    _Market_init_v23_base(self);self.time_warp=1.0/60.0
+Market.__init__=_sgp23_market_init

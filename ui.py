@@ -5465,3 +5465,256 @@ def _sgp22_app_init_menu(self,root,market,portfolio):
                 tm.add_separator();tm.add_command(label='Pause / Resume',command=self.toggle_pause);tm.add_command(label='Skip to Next Open (closed market only)',command=self.skip_to_next_open);break
     except Exception:pass
 App.__init__=_sgp22_app_init_menu
+
+# ===== Stock Game Pro 2.2.1 UI scaling guard =====
+# Keep portfolio repaint cost bounded during whale testing.  The heavy table refresh is coalesced;
+# explicit trade actions still invalidate the cache through changed portfolio values.
+_sgp221_refresh_positions_base=App.refresh_positions
+def _sgp221_refresh_positions(self):
+    now=time.monotonic();count=len(getattr(self.portfolio,'positions',{}))+len(getattr(self.portfolio,'options',[]))
+    min_gap=.20 if count<100 else .45 if count<500 else .80
+    if now-getattr(self,'_last_position_ui221',0.0)<min_gap:return
+    self._last_position_ui221=now
+    return _sgp221_refresh_positions_base(self)
+App.refresh_positions=_sgp221_refresh_positions
+
+# Add buying-power / scaling diagnostics to the status bar without rebuilding another widget tree.
+_App_refresh_221_base=App.refresh
+def _sgp221_refresh(self):
+    out=_App_refresh_221_base(self)
+    try:
+        bp=self.portfolio.available_funds() if hasattr(self.portfolio,'available_funds') else self.portfolio.cash
+        npos=len(self.portfolio.positions);nopt=len(self.portfolio.options)
+        txt=self.status.cget('text')
+        suffix=f' • BP ${bp:,.0f} • positions {npos}+{nopt} opt'
+        if suffix not in txt:self.status.config(text=txt+suffix)
+    except Exception:pass
+    return out
+App.refresh=_sgp221_refresh
+
+# Trade-driven changes bypass the coalescing interval so fills appear immediately.
+_sgp221_refresh_positions_coalesced=App.refresh_positions
+def _sgp221_refresh_positions_final(self):
+    sig=(int(getattr(self.portfolio,'trade_count',0)),len(getattr(self.portfolio,'positions',{})),len(getattr(self.portfolio,'options',[])))
+    if sig!=getattr(self,'_position_sig221',None):
+        self._position_sig221=sig;self._last_position_ui221=0.0
+    return _sgp221_refresh_positions_coalesced(self)
+App.refresh_positions=_sgp221_refresh_positions_final
+
+
+# ===== Stock Game Pro 2.3 professional map / chart-state / account analytics =====
+from datetime import timedelta as _sgp23_ui_td
+
+# 1x now means one simulated second per real-world second.
+def _sgp23_set_time_warp(self,value=None):
+    try:display=max(1.0,min(10.0,float(self.time_warp.get() if value is None else value)))
+    except Exception:display=1.0
+    self.market.time_warp=display/60.0
+    try:self.time_warp.set(display);self.time_warp_label.config(text=f'{display:g}x')
+    except Exception:pass
+App.set_time_warp=_sgp23_set_time_warp
+
+# FIT MAX is now a true toggle. It stores the prior viewport and restores it on second click.
+def _sgp23_fit_inception(self,chart=None):
+    c=chart or self.charts[self.active_chart]
+    if getattr(c,'fit_inception',False):
+        old=getattr(c,'_pre_fit23',None) or {}
+        c.fit_inception=False
+        for k,v in old.items():setattr(c,k,v)
+        c._pre_fit23=None;c._key=None;c.request_draw(force=True)
+        try:
+            if c is self.charts[self.active_chart]:self.tf.set(c.timeframe);self.candle_period_var.set(c.candle_period)
+        except Exception:pass
+        self.status_flash(f'{c.asset.symbol} • restored previous chart view');return
+    c._pre_fit23={'timeframe':c.timeframe,'candle_period':getattr(c,'candle_period','Auto'),'zoom':c.zoom,'view_offset':int(getattr(c,'view_offset',0)),'follow_latest':bool(getattr(c,'follow_latest',True)),'pan_mode':bool(getattr(c,'pan_mode',False)),'_manual_y_shift':float(getattr(c,'_manual_y_shift',0.0)),'vertical_scale':float(getattr(c,'vertical_scale',1.0))}
+    c.fit_inception=True;c.timeframe='MAX';c.candle_period='1 Day';c.view_offset=0;c.follow_latest=False;c.pan_mode=False;c._manual_y_shift=0.0;c._key=None
+    try:self.tf.set('MAX');self.candle_period_var.set('1 Day')
+    except Exception:pass
+    try:self.market.load_ipo_history(c.asset)
+    except Exception:pass
+    c.request_draw(force=True);self.status_flash(f'{c.asset.symbol} • full inception view (FIT MAX again to restore)')
+App.fit_inception=_sgp23_fit_inception
+
+# MAX fit uses the historical range itself, not the moving live ticker. This eliminates shimmer.
+_sgp22_bounds_v23_base=_sgp22_bounds
+def _sgp23_bounds(self,d,live,plot_height=300):
+    if getattr(self,'fit_inception',False) and d:
+        lo=min(float(c.low) for c in d);hi=max(float(c.high) for c in d);span=max(hi-lo,abs((hi+lo)/2)*.01,1e-9);pad=span*.045
+        return lo-pad,hi+pad
+    return _sgp22_bounds_v23_base(self,d,live,plot_height)
+_sgp22_bounds=_sgp23_bounds
+
+# Sparse intraday-history repair. The simulator often only has full daily history on launch.
+# Build deterministic display-only intraday bars from daily OHLC until real intraday bars accumulate.
+_Chart_data_v23_base=Chart.data
+def _sgp23_period_minutes(name):return {'1 Tick':0,'30 Sec':.5,'1 Min':1,'3 Min':3,'5 Min':5,'10 Min':10,'30 Min':30,'1 Hour':60,'1 Day':390}.get(name,5)
+def _sgp23_expand_daily(chart,daily,period):
+    mins=_sgp23_period_minutes(period)
+    if mins<=0:return []
+    per=max(1,min(390,int(round(390/mins))))
+    out=[]
+    for dc in daily:
+        n=per;start=dc.timestamp.replace(hour=9,minute=30,second=0,microsecond=0);o=float(dc.open);cl=float(dc.close);hi=float(dc.high);lo=float(dc.low)
+        for j in range(n):
+            t=(j+1)/n;prev_t=j/n
+            # Deterministic curved interpolation keeps the daily H/L represented without random launch flicker.
+            wave=math.sin(t*math.pi*2)*.16
+            c=o+(cl-o)*t+(hi-lo)*wave
+            po=o+(cl-o)*prev_t+(hi-lo)*math.sin(prev_t*math.pi*2)*.16
+            c=max(lo,min(hi,c));po=max(lo,min(hi,po));bh=max(po,c);bl=min(po,c)
+            if j==max(0,n//3):bh=hi
+            if j==max(0,2*n//3):bl=lo
+            out.append(Candle(start+_sgp23_ui_td(minutes=j*mins),po,bh,bl,c,max(1,int(dc.volume/max(1,n)))))
+    return out
+
+def _sgp23_chart_data(self):
+    d=list(_Chart_data_v23_base(self))
+    if self.asset is None or getattr(self,'fit_inception',False):return d
+    period=getattr(self,'candle_period','Auto');tf=self.timeframe
+    # Minimum visual density for chart/timeframe combinations that previously launched with 2-5 bars.
+    mins={'1D':45,'1W':70,'1M':90,'3M':100,'6M':110,'1Y':130,'5Y':160,'MAX':180}.get(tf,60)
+    if len(d)>=mins or period in ('1 Tick','30 Sec','1 Min','1 Day','Auto'):return d
+    daily=list(self.asset.chart_candles('1d'))
+    if not daily:return d
+    days={'1D':1,'1W':5,'1M':22,'3M':66,'6M':132,'1Y':252,'5Y':1260,'MAX':len(daily)}.get(tf,22)
+    synth=_sgp23_expand_daily(self,daily[-min(days,len(daily)):],period)
+    if len(synth)>len(d):return synth[-min(600,len(synth)):]
+    return d
+Chart.data=_sgp23_chart_data
+
+# -------- Bloomberg-inspired global market monitor (original implementation, no proprietary branding/assets) --------
+class GlobalTradeWorkstation(ToolWindow):
+    EXCH=[('NYSE','US',40.7128,-74.0060),('NASDAQ','US',40.758,-73.9855),('CME','CME',41.8781,-87.6298),('TSX','US',43.653,-79.383),('LSE','LSE',51.5074,-0.1278),('XETRA','XETRA',50.1109,8.6821),('EURONEXT','LSE',48.8566,2.3522),('SIX','XETRA',47.3769,8.5417),('TSE','TSE',35.6762,139.6503),('HKEX','HKEX',22.3193,114.1694),('SSE','SSE',31.2304,121.4737),('SZSE','SSE',22.5431,114.0579),('KRX','TSE',37.5665,126.978),('SGX','HKEX',1.3521,103.8198),('ASX','ASX',-33.8688,151.2093),('BSE','HKEX',19.076,72.8777),('NSE India','HKEX',19.076,72.8777),('B3','US',-23.5505,-46.6333),('JSE','LSE',-26.2041,28.0473)]
+    PORTS=[('Los Angeles',33.74,-118.27),('New York',40.67,-74.04),('Rotterdam',51.95,4.14),('Shanghai',31.23,121.49),('Singapore',1.26,103.84),('Dubai',25.27,55.30),('Santos',-23.96,-46.33),('Sydney',-33.86,151.20),('Tokyo',35.65,139.77)]
+    AIR=[('JFK','LHR',40.64,-73.78,51.47,-.45),('LAX','NRT',33.94,-118.40,35.77,140.39),('FRA','SIN',50.04,8.56,1.36,103.99),('DXB','HKG',25.25,55.36,22.31,113.91),('ORD','PVG',41.97,-87.90,31.14,121.80)]
+    def __init__(self,parent,market):
+        super().__init__(parent);self.market=market;self.style_window('GLOBAL MARKETS • WORLD MONITOR','1500x900');self.resizable(True,True);self.phase=0.0;self.zoom=1.0;self.panx=0;self.pany=0;self.selected=None
+        top=ttk.Frame(self);top.pack(fill='x',padx=7,pady=5);ttk.Label(top,text='GLOBAL MARKETS',font=('Segoe UI',13,'bold')).pack(side='left');self.layer_ex=tk.BooleanVar(value=True);self.layer_freight=tk.BooleanVar(value=True);self.layer_air=tk.BooleanVar(value=True);self.layer_risk=tk.BooleanVar(value=True)
+        for txt,var in [('Exchanges',self.layer_ex),('Ocean freight',self.layer_freight),('Air freight',self.layer_air),('Risk',self.layer_risk)]:ttk.Checkbutton(top,text=txt,variable=var,command=self.draw).pack(side='left',padx=5)
+        self.search=tk.StringVar();ttk.Entry(top,textvariable=self.search,width=18).pack(side='right');ttk.Label(top,text='Find exchange/asset').pack(side='right',padx=4);self.search.trace_add('write',lambda *_:self.draw())
+        pw=ttk.PanedWindow(self,orient='horizontal');pw.pack(fill='both',expand=True,padx=6,pady=4);self.canvas=tk.Canvas(pw,bg='#05080d',highlightthickness=0);side=ttk.Frame(pw,width=360);pw.add(self.canvas,weight=4);pw.add(side,weight=1)
+        self.canvas.bind('<Configure>',lambda e:self.draw());self.canvas.bind('<MouseWheel>',self.wheel);self.canvas.bind('<Button-1>',self.click);self.canvas.bind('<ButtonPress-3>',self.pan_start);self.canvas.bind('<B3-Motion>',self.pan_drag)
+        self.info=tk.Text(side,height=11,bg='#08121b',fg=TEXT,relief='flat',wrap='word');self.info.pack(fill='x',padx=5,pady=5)
+        self.tabs=ttk.Notebook(side);self.tabs.pack(fill='both',expand=True,padx=5,pady=4);self.ex_tab=ttk.Frame(self.tabs);self.flow_tab=ttk.Frame(self.tabs);self.macro_tab=ttk.Frame(self.tabs);self.tabs.add(self.ex_tab,text='Sessions');self.tabs.add(self.flow_tab,text='Freight');self.tabs.add(self.macro_tab,text='Macro')
+        self.ex_tv=ttk.Treeview(self.ex_tab,columns=('venue','state','local'),show='headings',height=13);[self.ex_tv.heading(c,text=c.upper()) for c in ('venue','state','local')];self.ex_tv.pack(fill='both',expand=True)
+        self.flow_tv=ttk.Treeview(self.flow_tab,columns=('route','owner','status'),show='headings',height=13);[self.flow_tv.heading(c,text=c.upper()) for c in ('route','owner','status')];self.flow_tv.pack(fill='both',expand=True)
+        self.macro=tk.Text(self.macro_tab,bg='#08121b',fg=TEXT,relief='flat');self.macro.pack(fill='both',expand=True)
+        self.refresh();self.animate()
+    def proj(self,lat,lon):
+        w=max(700,self.canvas.winfo_width());h=max(450,self.canvas.winfo_height());x=(lon+180)/360*w;y=(90-lat)/180*h;cx=w/2;cy=h/2;return cx+(x-cx)*self.zoom+self.panx,cy+(y-cy)*self.zoom+self.pany
+    def draw(self):
+        c=self.canvas;c.delete('all');w=max(700,c.winfo_width());h=max(450,c.winfo_height());
+        # Bloomberg-like dense monitor aesthetic: longitude/latitude grid + regional bands.
+        for lon in range(-180,181,30):x,_=self.proj(0,lon);c.create_line(x,0,x,h,fill='#11202b')
+        for lat in range(-60,61,30):_,y=self.proj(lat,0);c.create_line(0,y,w,y,fill='#11202b')
+        # Simplified land silhouettes, intentionally schematic and fast.
+        polys=[[(-168,72),(-55,72),(-50,10),(-82,7),(-120,25)], [(-82,12),(-35,8),(-35,-56),(-75,-55)], [(-12,72),(40,72),(55,35),(35,-35),(-18,-35)], [(35,72),(180,72),(180,-10),(105,-10),(75,20)], [(110,-10),(155,-10),(155,-45),(112,-45)]]
+        for poly in polys:
+            pts=[]
+            for lon,lat in poly:pts+=self.proj(lat,lon)
+            c.create_polygon(*pts,fill='#0b1d1b',outline='#1c4c45')
+        q=self.search.get().strip().upper()
+        if self.layer_ex.get():
+            for name,code,lat,lon in self.EXCH:
+                x,y=self.proj(lat,lon);isopen=False
+                try:isopen=market_status(code,self.market.clock.current)
+                except Exception:pass
+                col=GREEN if isopen else '#596675';r=6 if not q or q in name.upper() else 10
+                c.create_oval(x-r,y-r,x+r,y+r,fill=col,outline='#dce9ef',tags=('exchange',name));c.create_text(x+8,y-9,text=name,anchor='w',fill='#d7e4eb' if not q or q in name.upper() else YELLOW,font=('Consolas',7,'bold'),tags=('exchange',name))
+        if self.layer_freight.get():
+            for sh in getattr(self.market,'shipments',[]):
+                pts=sh.get('route',{}).get('points',[])
+                if len(pts)<2:continue
+                xy=[]
+                for lat,lon in pts:xy+=self.proj(lat,lon)
+                c.create_line(*xy,fill='#15536a',width=1,dash=(4,5))
+                pr=float(sh.get('progress',0))%1.0;idx=min(len(pts)-2,int(pr*(len(pts)-1)));lt=(pr*(len(pts)-1))-idx;la=pts[idx][0]+(pts[idx+1][0]-pts[idx][0])*lt;lo=pts[idx][1]+(pts[idx+1][1]-pts[idx][1])*lt;x,y=self.proj(la,lo);c.create_polygon(x-6,y+3,x+6,y+3,x+3,y-3,x-3,y-3,fill=CYAN,outline='',tags=('ship',str(sh.get('id',''))))
+        if self.layer_air.get():
+            for j,(a,b,la1,lo1,la2,lo2) in enumerate(self.AIR):
+                x1,y1=self.proj(la1,lo1);x2,y2=self.proj(la2,lo2);c.create_line(x1,y1,x2,y2,fill='#443c78',dash=(2,5));t=(self.phase*.06+j*.19)%1;x=x1+(x2-x1)*t;y=y1+(y2-y1)*t;c.create_text(x,y,text='✈',fill='#c6b8ff',font=('Segoe UI Symbol',9))
+        c.create_text(8,h-8,anchor='sw',text='Right-drag pan • wheel zoom • click exchange/route objects • live session/freight/macro monitor',fill='#758694',font=('Segoe UI',7))
+    def wheel(self,e):self.zoom=max(.65,min(4.0,self.zoom*(1.12 if e.delta>0 else .89)));self.draw()
+    def pan_start(self,e):self._pa=(e.x,e.y,self.panx,self.pany)
+    def pan_drag(self,e):x,y,px,py=self._pa;self.panx=px+e.x-x;self.pany=py+e.y-y;self.draw()
+    def click(self,e):
+        # Nearest exchange selection gives session and related market assets.
+        best=None
+        for name,code,lat,lon in self.EXCH:
+            x,y=self.proj(lat,lon);d=(x-e.x)**2+(y-e.y)**2
+            if best is None or d<best[0]:best=(d,name,code)
+        if best and best[0]<700:
+            _,name,code=best;assets=[a for a in self.market.all_assets() if getattr(a,'session','US')==code][:12];state='OPEN' if market_status(code,self.market.clock.current) else 'CLOSED';self.info.delete('1.0','end');self.info.insert('end',f'{name} • {state}\nSession code: {code}\n\nRelated simulator assets:\n'+', '.join(a.symbol for a in assets))
+    def refresh(self):
+        try:
+            self.ex_tv.delete(*self.ex_tv.get_children())
+            for name,code,lat,lon in self.EXCH:
+                try:state='OPEN' if market_status(code,self.market.clock.current) else 'CLOSED';z=ZoneInfo(SESSIONS[code].tz);local=self.market.clock.current.replace(tzinfo=ZoneInfo('America/New_York')).astimezone(z).strftime('%H:%M')
+                except Exception:state='—';local='—'
+                self.ex_tv.insert('','end',values=(name,state,local))
+            self.flow_tv.delete(*self.flow_tv.get_children())
+            for sh in getattr(self.market,'shipments',[])[:30]:self.flow_tv.insert('','end',values=(sh.get('route',{}).get('name',''),sh.get('cargo_owner',''),sh.get('status','IN TRANSIT')))
+            self.macro.delete('1.0','end');m=self.market.macro
+            self.macro.insert('end',f'GLOBAL MACRO\n\nInflation       {m.get("inflation",0):.2f}%\nPolicy rate     {m.get("policy_rate",0):.2f}%\nUnemployment    {m.get("unemployment",0):.2f}%\nGDP growth      {m.get("gdp_growth",0):.2f}%\n10Y yield       {m.get("ten_year",0):.2f}%\nDollar index    {m.get("dollar",0):.2f}\nSentiment       {m.get("sentiment",0):+.2f}\nLiquidity       {m.get("liquidity",1):.2f}x')
+        except Exception:pass
+        self.after(1000,self.refresh)
+    def animate(self):
+        if not self.winfo_exists():return
+        self.phase+=1;self.draw();self.after(100,self.animate)
+GlobeWindow=GlobalTradeWorkstation
+def _sgp23_globe(self):return GlobalTradeWorkstation(self.root,self.market)
+App.globe=_sgp23_globe
+
+# -------- account performance chart --------
+def _sgp23_range_cutoff(now,label):
+    days={'1D':1,'1W':7,'1M':31,'3M':93,'6M':186,'1Y':366}.get(label)
+    return now-_sgp23_ui_td(days=days) if days else None
+
+def _sgp23_perf_points(p,label):
+    rows=list(getattr(p,'equity_history',[]));now=getattr(getattr(p,'market',None),'clock',None);now=getattr(now,'current',None) or _sgp22_dt.now();cut=_sgp23_range_cutoff(now,label)
+    out=[]
+    for r in rows:
+        dt=_sgp_dt_parse_v20(r.get('time')) if '_sgp_dt_parse_v20' in globals() else None
+        if dt is None:
+            try:dt=_sgp22_dt.fromisoformat(r.get('time'))
+            except Exception:continue
+        if cut is None or dt>=cut:out.append((dt,float(r.get('equity',0)),r))
+    return out
+
+def _sgp23_draw_perf(canvas,p,label):
+    canvas.delete('all');w=max(240,canvas.winfo_width());h=max(100,canvas.winfo_height());pts=_sgp23_perf_points(p,label)
+    if len(pts)<2:canvas.create_text(w/2,h/2,text='Portfolio history builds while you trade',fill=MUTED);return
+    vals=[x[1] for x in pts];lo=min(vals);hi=max(vals);span=max(1e-9,hi-lo);pad=8;xy=[]
+    for i,(_,v,_) in enumerate(pts):xy += [pad+i*(w-2*pad)/max(1,len(pts)-1),h-pad-(v-lo)/span*(h-2*pad)]
+    canvas.create_line(*xy,fill=CYAN,width=2,smooth=True);canvas.create_text(8,6,anchor='nw',text=f'{label}  ${vals[-1]:,.2f}  {((vals[-1]/vals[0]-1)*100 if vals[0] else 0):+.2f}%',fill=TEXT,font=('Segoe UI',8,'bold'))
+
+def _sgp23_open_performance(self):
+    w=ToolWindow(self.root);w.style_window('PORTFOLIO PERFORMANCE • ATTRIBUTION','1100x720');top=ttk.Frame(w);top.pack(fill='x',padx=8,pady=5);rng=tk.StringVar(value=getattr(self,'perf_range23',tk.StringVar(value='ALL')).get());cb=ttk.Combobox(top,textvariable=rng,values=['ALL','1Y','6M','3M','1M','1W','1D'],state='readonly',width=7);cb.pack(side='left');cv=tk.Canvas(w,bg='#071019',height=390,highlightthickness=0);cv.pack(fill='both',expand=True,padx=8,pady=5);detail=tk.Text(w,height=10,bg='#08121b',fg=TEXT,relief='flat');detail.pack(fill='x',padx=8,pady=5)
+    def draw(*_):
+        _sgp23_draw_perf(cv,self.portfolio,rng.get());pts=_sgp23_perf_points(self.portfolio,rng.get());detail.delete('1.0','end')
+        if pts:
+            # Show strongest equity intervals and holdings snapshots for attribution.
+            moves=[]
+            for a,b in zip(pts,pts[1:]):moves.append((abs(b[1]-a[1]),b[1]-a[1],b[0],b[2]))
+            for _,chg,dt,rec in sorted(moves,reverse=True)[:8]:
+                hs=rec.get('holdings',[]);detail.insert('end',f'{dt:%Y-%m-%d %H:%M}   Equity move {chg:+,.2f}\n  Holdings: '+', '.join(f'{x[0]} {x[1]:,}' for x in hs[:6])+'\n')
+    cb.bind('<<ComboboxSelected>>',draw);cv.bind('<Configure>',draw);draw()
+App.open_portfolio_performance=_sgp23_open_performance
+
+_App_init_v23_base=App.__init__
+def _sgp23_app_init(self,root,market,portfolio):
+    _App_init_v23_base(self,root,market,portfolio)
+    self.set_time_warp(1.0)
+    # Embed compact account analytics above the existing account summary text.
+    try:
+        tab=self.summary.master;box=ttk.Frame(tab);box.pack(fill='x',padx=6,pady=3,before=self.summary);stats=ttk.Frame(box);stats.pack(fill='x');self.daytrade23=ttk.Label(stats,text='DAY TRADES 0/3');self.daytrade23.pack(side='left');self.dailypl23=ttk.Label(stats,text='DAILY P/L $0.00');self.dailypl23.pack(side='left',padx=12);self.pdt23=ttk.Label(stats,text='PDT CLEAR');self.pdt23.pack(side='right');self.perf_range23=tk.StringVar(value='1M');cb=ttk.Combobox(box,textvariable=self.perf_range23,values=['ALL','1Y','6M','3M','1M','1W','1D'],state='readonly',width=7);cb.pack(side='left');self.perf_canvas23=tk.Canvas(box,bg='#071019',height=125,highlightthickness=0);self.perf_canvas23.pack(side='left',fill='x',expand=True,padx=(6,0));cb.bind('<<ComboboxSelected>>',lambda e:_sgp23_draw_perf(self.perf_canvas23,self.portfolio,self.perf_range23.get()));self.perf_canvas23.bind('<Double-1>',lambda e:self.open_portfolio_performance());self.perf_canvas23.bind('<Configure>',lambda e:_sgp23_draw_perf(self.perf_canvas23,self.portfolio,self.perf_range23.get()))
+    except Exception:pass
+App.__init__=_sgp23_app_init
+
+_refresh_v23_base=App.refresh
+def _sgp23_refresh(self):
+    out=_refresh_v23_base(self)
+    try:
+        self.portfolio.record_equity_snapshot();self.daytrade23.config(text=f'DAY TRADES {self.portfolio.day_trades_rolling}/3');self.dailypl23.config(text=f'DAILY P/L ${self.portfolio.daily_pl:+,.2f}');flag=bool(getattr(self.portfolio,'pdt_flagged',False));self.pdt23.config(text='PDT FLAGGED' if flag else 'PDT CLEAR',foreground=RED if flag else GREEN);_sgp23_draw_perf(self.perf_canvas23,self.portfolio,self.perf_range23.get())
+    except Exception:pass
+    return out
+App.refresh=_sgp23_refresh
