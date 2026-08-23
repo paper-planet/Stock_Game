@@ -74,3 +74,56 @@ PRODUCTION POLISH — LIVE TABLES / TRADE HISTORY / CHART PERSISTENCE
 • Long offline 6M/1Y/5Y views receive deterministic display history when only a short local daily cache exists; richer cached real history automatically takes precedence.
 • Long/tiny-interval combinations use OHLC-preserving level-of-detail aggregation instead of collapsing to only a handful of candles or creating tens of thousands of Canvas items.
 • All gameplay market data remains offline except account creation and the explicitly confirmed Experimental → Refresh Market Snapshot action.
+
+=== FINAL SYSTEM POLISH / STABILITY CONSOLIDATION ===
+
+This production refresh keeps the public version at 2.5 and consolidates the most recent
+workstation, chart, portfolio, global-research, career and casino fixes.
+
+Portal / accounts
+- The account portal now uses the same bundled real-coastline world geometry as Global Viewer.
+- Saved-account columns resize with the window and expand the CASH column for very large balances.
+- Saved accounts receive a 60-second safety checkpoint in addition to end-of-day and clean-exit saves.
+  A hard OS/process failure can still interrupt the current checkpoint; this is damage reduction,
+  not a guarantee that software can write after a process has already crashed.
+
+Charts / account analytics
+- Intraday display backfill can no longer create future candles. Synthetic fallback bars are immutable,
+  completed-session history only; genuine simulator bars always take precedence.
+- US fallback intraday history uses the completed regular session rather than inventing overnight bars.
+  Real simulator premarket/after-hours prints remain visible and session shading remains available.
+- 1D 30-second/1/3/5/10/30-minute and Auto views no longer generate a fake wave to the right of the live bar.
+- FIT Y now fits the visible OHLC range with padding. Manual vertical scaling spans 0.05x through 50x.
+- Portfolio performance attribution includes stocks, global securities, crypto and option strategies.
+- Account model statistics aggregate the held portfolio instead of describing a single selected symbol.
+
+Universe / research
+- Crypto expanded to 15 modeled coins; physical/micro futures and international equities expanded.
+- Complete bundled constituent sets remain available for the S&P 500 listed securities, Nasdaq-100,
+  Dow 30, FTSE 100, DAX 40 and Hang Seng snapshots, with a broad Russell/IWM proxy universe.
+- Additional European, Japanese, Korean, Indian, Australian, Canadian, Brazilian, Singaporean and
+  South African securities expand representative coverage of the other global indexes.
+- Market Map now browses the whole local universe in optimized pages with filters, sector breadth,
+  index-impact decomposition, right-click trading and advanced-chart access.
+
+Global Viewer
+- Uses bundled real coastline/country geometry, with a wider default map pane.
+- Session table now shows venue state and local exchange time for the expanded session set.
+- Freight separates carrier from cargo owner. Ships and aircraft are directional and move from the
+  simulated clock rather than frame rate. Ports, routes, vehicles, venues and risk/news objects expose
+  associated tradable securities.
+- Risk blips derive from market/news events or valid geolocated geopolitical events; zero-coordinate
+  phantom risk markers are suppressed.
+- Heavy research windows are reused instead of duplicated; advanced charts are bounded to six distinct
+  live windows to prevent runaway Tk canvas/timer load.
+
+Career / casino audit
+- Career balances refresh at a modest live cadence. Boss objectives display their rewards explicitly.
+- Boss rewards and Wendy's pay were sharply reduced; the five-positive-day bonus is now $100 + 10 XP.
+- Slots were rebalanced from a player-positive table to an approximately 87.9% modeled return before
+  any future rule changes. Slots, roulette and horse racing accept larger experimental bets.
+- Blackjack cut-card targets: 50% penetration single-deck, 60% double, 75% four-deck, 80% six-deck,
+  and 90% eight-deck.
+
+Offline policy remains unchanged: normal gameplay does not poll market-data services. Network access is
+reserved for new-account seeding and the explicit Experimental -> Refresh Market Snapshot action.

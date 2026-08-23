@@ -20,7 +20,7 @@ def _account_creation_seed_symbols():
         out += [r[5] for r in GLOBAL_INDEXES if len(r)>5]
         idx_map={'SPX':'^GSPC','NDX':'^NDX','DJI':'^DJI','RUT':'^RUT'}
         out += [idx_map.get(r[0],r[0]) for r in INDEXES]
-        out += ['^VIX','ES=F','NQ=F','YM=F','RTY=F','BTC-USD','ETH-USD','SOL-USD','XRP-USD',
+        out += ['^VIX','ES=F','NQ=F','YM=F','RTY=F','BTC-USD','ETH-USD','SOL-USD','XRP-USD','DOGE-USD','ADA-USD','AVAX-USD','LINK-USD','DOT-USD','LTC-USD','BCH-USD','XLM-USD','SUI-USD','TRX-USD','HBAR-USD',
                 'EURUSD=X','USDJPY=X','GBPUSD=X','AUDUSD=X','USDCAD=X','USDCHF=X']
         return list(dict.fromkeys(str(x) for x in out if x))
     except Exception:return ['SPY','^GSPC','^NDX','^DJI','^RUT','^VIX']
@@ -32,62 +32,79 @@ def main_menu(root,accounts):
     style=ttk.Style(w);style.configure('Login.Treeview',rowheight=29,font=('Segoe UI',9),background='#071623',fieldbackground='#071623',foreground='#dceaf2');style.configure('Login.Treeview.Heading',font=('Segoe UI',9,'bold'),background='#102b3c',foreground='#b8dff1');style.map('Login.Treeview',background=[('selected','#174e6d')],foreground=[('selected','#ffffff')])
     canvas=tk.Canvas(w,bg='#02070c',highlightthickness=0);canvas.place(relx=0,rely=0,relwidth=1,relheight=1)
     anim={'phase':0.0,'job':None};preview={'AAPL':210.0,'NVDA':180.0,'MSFT':520.0,'SPY':640.0,'TSLA':340.0,'BTC':118000.0,'FTSE':9100.0,'NIKKEI':43000.0,'GOLD':3400.0,'OIL':65.0};preview_prev=dict(preview)
-    # Stylized continents and real-ish port anchor positions. This is intentionally a
-    # lightweight hologram so the login screen remains responsive.
-    land=[ [(-.88,-.30),(-.72,-.46),(-.50,-.37),(-.43,-.12),(-.55,.02),(-.68,.02),(-.82,-.10)],
-           [(-.58,.10),(-.48,.18),(-.43,.40),(-.50,.62),(-.62,.45),(-.66,.22)],
-           [(-.14,-.36),(.05,-.42),(.22,-.28),(.18,-.02),(.02,.05),(-.10,-.04)],
-           [(.02,.08),(.22,.05),(.32,.22),(.26,.55),(.08,.62),(-.02,.38)],
-           [(.18,-.34),(.48,-.43),(.78,-.28),(.90,-.05),(.71,.12),(.46,.07),(.27,-.06)],
-           [(.62,.28),(.84,.24),(.90,.48),(.70,.58),(.55,.45)] ]
-    ports=[('LA',-.82,-.10),('NY',-.43,-.12),('RTM',-.14,-.36),('DXB',.27,-.06),('SG',.46,.07),('SHA',.78,-.28),('TYO',.90,-.05),('SYD',.84,.24)]
-    lanes=[(0,6),(6,5),(5,4),(4,2),(2,1),(1,0),(3,4),(7,4)]
+    # Production portal uses the same flat real-coastline geometry as the Global Map.
+    # Keep the animation deliberately slow/lightweight: this screen is a launcher, not a second market engine.
+    try:
+        from world_land import LAND_POLYGONS as _PORTAL_LAND, COUNTRY_BORDERS as _PORTAL_BORDERS
+    except Exception:
+        _PORTAL_LAND=[];_PORTAL_BORDERS=[]
+    portal_ex=[('NY',40.71,-74.01),('LDN',51.51,-.13),('FRA',50.11,8.68),('TYO',35.68,139.77),('HK',22.32,114.17),('SHA',31.23,121.47),('SYD',-33.87,151.21),('TOR',43.65,-79.38),('SP',-23.55,-46.63)]
+    portal_ports=[('LA',33.74,-118.27),('NY',40.67,-74.04),('RTM',51.95,4.14),('SG',1.26,103.84),('SHA',31.35,121.50),('TYO',35.45,139.64),('SAN',-23.96,-46.30),('SYD',-33.96,151.21)]
+    portal_routes=[(0,5),(5,4),(4,3),(3,2),(2,1),(1,0),(6,4),(7,3)]
     def draw_bg():
         if not w.winfo_exists():return
-        c=canvas;c.delete('all');ww=max(1080,c.winfo_width());hh=max(700,c.winfo_height());phase=anim['phase'];anim['phase']+=.016;cx,cy=ww*.255,hh*.45;rx=min(285,ww*.205);ry=min(220,hh*.29)
-        rng=random.Random(91313)
-        for _ in range(95):
-            x=rng.randrange(0,ww);y=rng.randrange(0,hh);c.create_oval(x,y,x+1,y+1,fill='#0a2a3c',outline='')
-        # Holographic world grid.
-        c.create_oval(cx-rx-8,cy-ry-8,cx+rx+8,cy+ry+8,outline='#0c5f7c',width=2)
-        c.create_oval(cx-rx,cy-ry,cx+rx,cy+ry,fill='#031824',outline='#59d8f4',width=2)
-        for lat in (-.66,-.33,0,.33,.66):
-            y=cy+lat*ry;c.create_oval(cx-rx*(1-abs(lat)*.25),y-10,cx+rx*(1-abs(lat)*.25),y+10,outline='#0b4359')
-        for frac in (-.66,-.33,0,.33,.66):c.create_arc(cx-rx,cy-ry,cx+rx,cy+ry,start=90+frac*50,extent=180,style='arc',outline='#0b4359')
-        # Land masses.
-        for poly in land:
+        c=canvas;c.delete('all');ww=max(1080,c.winfo_width());hh=max(700,c.winfo_height());phase=anim['phase'];anim['phase']=(phase+.004)%100000
+        map_w=ww*.545;mx0,my0=18,55;mw=max(620,map_w-36);mh=max(470,hh-170)
+        def xy(lat,lon):return mx0+(lon+180)/360*mw,my0+(90-lat)/180*mh
+        c.create_rectangle(0,0,map_w,hh,fill='#02090f',outline='')
+        c.create_rectangle(mx0,my0,mx0+mw,my0+mh,fill='#04131f',outline='#175069',width=2)
+        # Geographic grid.
+        for lon in range(-150,181,30):x,_=xy(0,lon);c.create_line(x,my0,x,my0+mh,fill='#0d2936')
+        for lat in range(-60,61,30):_,y=xy(lat,0);c.create_line(mx0,y,mx0+mw,y,fill='#0d2936')
+        # Authentic bundled coastline/country geometry, same data source used by the workstation map.
+        for typ,poly in _PORTAL_LAND:
+            if typ not in (1,5):continue
             pts=[]
-            for x,y in poly:pts.extend([cx+x*rx,cy+y*ry])
-            c.create_polygon(*pts,fill='#174f38',outline='#63b887',width=1)
-        # Sea routes.
+            for lon,lat in poly:pts.extend(xy(lat,lon))
+            if len(pts)>=6:c.create_polygon(*pts,fill='#113a2d',outline='#316d59',width=1)
+        for typ,poly in _PORTAL_LAND:
+            if typ!=2:continue
+            pts=[]
+            for lon,lat in poly:pts.extend(xy(lat,lon))
+            if len(pts)>=6:c.create_polygon(*pts,fill='#04131f',outline='#143645')
+        for seg in _PORTAL_BORDERS:
+            pts=[];last=None
+            for lon,lat in seg:
+                x,y=xy(lat,lon)
+                if last is not None and abs(x-last)>mw*.55:
+                    if len(pts)>=4:c.create_line(*pts,fill='#1b4b40',width=1)
+                    pts=[]
+                pts.extend((x,y));last=x
+            if len(pts)>=4:c.create_line(*pts,fill='#1b4b40',width=1)
         pxy=[]
-        for name,x,y in ports:
-            px,py=cx+x*rx,cy+y*ry;pxy.append((px,py));c.create_oval(px-5,py-5,px+5,py+5,fill='#f3c85f',outline='#fff0ae');c.create_text(px,py-13,text=name,fill='#8ddcf0',font=('Segoe UI',7,'bold'))
-        for a,b in lanes:
-            x1,y1=pxy[a];x2,y2=pxy[b];c.create_line(x1,y1,x2,y2,fill='#0d7795',width=2,dash=(5,5),arrow='last',arrowshape=(7,8,3))
-        # Boats travel strictly port-to-port. A $ pulse appears only when a boat lands.
-        for j,(a,b) in enumerate(lanes[:6]):
-            t=(phase*.095+j*.19)%1.0;x1,y1=pxy[a];x2,y2=pxy[b];ease=t*t*(3-2*t);x=x1+(x2-x1)*ease;y=y1+(y2-y1)*ease
-            c.create_polygon(x-9,y+4,x+9,y+4,x+5,y-4,x-5,y-4,fill='#7de7ff',outline='#e4fbff');c.create_line(x-2,y-5,x-2,y-12,fill='#dffaff',width=2);c.create_polygon(x-1,y-12,x+8,y-8,x-1,y-5,fill='#66cce7',outline='')
-            if t>.92:
-                pulse=(t-.92)/.08;c.create_text(x2,y2-18-16*pulse,text='$',fill='#f6d66e',font=('Georgia',14+int(8*pulse),'bold'))
-        # Cargo aircraft connect the same real port nodes, visually distinct from vessels.
-        for j,(a,b) in enumerate(lanes[2:6]):
-            t=(phase*.135+j*.23+.35)%1.0;x1,y1=pxy[a];x2,y2=pxy[b];x=x1+(x2-x1)*t;y=y1+(y2-y1)*t
-            c.create_polygon(x,y-8,x+3,y-2,x+10,y+2,x+3,y+3,x+1,y+8,x-2,y+8,x-3,y+3,x-10,y+2,x-3,y-2,fill='#bdadff',outline='#e9e5ff')
-        c.create_text(cx,cy+ry+38,text='GLOBAL COMMERCE NETWORK',fill='#5dcde8',font=('Segoe UI',11,'bold'));c.create_text(cx,cy+ry+60,text='Ports • Freight • Markets • Risk',fill='#2e738a',font=('Segoe UI',9))
-        # Three live preview tapes. USA receives the strongest visual emphasis.
-        if int(phase*10)%3==0:
+        for name,lat,lon in portal_ports:
+            x,y=xy(lat,lon);pxy.append((x,y));c.create_rectangle(x-4,y-4,x+4,y+4,fill='#d5b85d',outline='#fff0b0');c.create_text(x,y-9,text=name,fill='#8ddcf0',font=('Segoe UI',6,'bold'))
+        for a,b in portal_routes:
+            x1,y1=pxy[a];x2,y2=pxy[b];c.create_line(x1,y1,x2,y2,fill='#12657e',width=1,dash=(4,5))
+        # Slow launcher-only freight motion.
+        for j,(a,b) in enumerate(portal_routes[:6]):
+            t=(phase*.012+j*.17)%1.0;x1,y1=pxy[a];x2,y2=pxy[b];x=x1+(x2-x1)*t;y=y1+(y2-y1)*t
+            ang=math.atan2(y2-y1,x2-x1);cs,sn=math.cos(ang),math.sin(ang)
+            shape=[(-9,0),(-4,-4),(7,-3),(11,0),(7,3),(-4,4)]
+            pts=[]
+            for px,py in shape:pts.extend((x+px*cs-py*sn,y+px*sn+py*cs))
+            c.create_polygon(*pts,fill='#6fd8ef',outline='#dffaff')
+        for j,(a,b) in enumerate(portal_routes[2:6]):
+            t=(phase*.018+j*.23+.27)%1.0;x1,y1=pxy[a];x2,y2=pxy[b];x=x1+(x2-x1)*t;y=y1+(y2-y1)*t;ang=math.atan2(y2-y1,x2-x1);cs,sn=math.cos(ang),math.sin(ang)
+            shape=[(11,0),(2,-2),(-2,-8),(-5,-8),(-3,-2),(-10,-1),(-10,1),(-3,2),(-5,8),(-2,8),(2,2)]
+            pts=[]
+            for px,py in shape:pts.extend((x+px*cs-py*sn,y+px*sn+py*cs))
+            c.create_polygon(*pts,fill='#bdb3f5',outline='#eeeaff')
+        for name,lat,lon in portal_ex:
+            x,y=xy(lat,lon);c.create_oval(x-4,y-4,x+4,y+4,fill='#4bd5a1',outline='#dff7ee');c.create_text(x+6,y-6,text=name,anchor='w',fill='#96c7d7',font=('Consolas',6,'bold'))
+        c.create_text(mx0+10,my0+10,anchor='nw',text='GLOBAL MARKET / FREIGHT NETWORK',fill='#dfeef4',font=('Segoe UI',10,'bold'))
+        c.create_text(mx0+10,my0+29,anchor='nw',text='Real coastlines • exchange nodes • ocean + air logistics',fill='#6798aa',font=('Segoe UI',7))
+        # Three launcher-preview tapes; they are local animation only and never touch account data/network.
+        if int(phase*20)%5==0:
             preview_prev.update(preview)
-            for k,v in list(preview.items()):preview[k]=max(.01,v*(1+random.gauss(0,.0007 if k not in ('BTC',) else .0015)))
+            for k,v in list(preview.items()):preview[k]=max(.01,v*(1+random.gauss(0,.00045 if k!='BTC' else .0009)))
         def qt(k,dec=2):
-            arrow='▲' if preview[k]>=preview_prev.get(k,preview[k]) else '▼'
-            return f'{k} {arrow} {preview[k]:,.{dec}f}'
+            arrow='▲' if preview[k]>=preview_prev.get(k,preview[k]) else '▼';return f'{k} {arrow} {preview[k]:,.{dec}f}'
         us='NYSE/NASDAQ   '+ '   '.join(qt(k,2) for k in ('AAPL','NVDA','MSFT','SPY','TSLA'))
         glob='GLOBAL       '+ '   '.join((qt('FTSE',1),qt('NIKKEI',1),qt('GOLD',1),qt('OIL',2)))
-        alt='24/7         '+qt('BTC',0)+'   •  animated portal preview — simulator starts after login'
-        tape_w=ww*.54;c.create_rectangle(0,hh-86,tape_w,hh,fill='#020b12',outline='#0e3142');c.create_text(ww*.015,hh-70,text=us,anchor='w',fill='#65e5ff',font=('Consolas',8,'bold'));c.create_text(ww*.015,hh-46,text=glob,anchor='w',fill='#5fa9c1',font=('Consolas',8,'bold'));c.create_text(ww*.015,hh-23,text=alt,anchor='w',fill='#5d7180',font=('Consolas',7))
-        anim['job']=w.after(50,draw_bg)
+        alt='24/7         '+qt('BTC',0)+'   •  local launcher preview'
+        c.create_rectangle(0,hh-86,map_w,hh,fill='#020b12',outline='#0e3142');c.create_text(ww*.015,hh-70,text=us,anchor='w',fill='#65e5ff',font=('Consolas',8,'bold'));c.create_text(ww*.015,hh-46,text=glob,anchor='w',fill='#5fa9c1',font=('Consolas',8,'bold'));c.create_text(ww*.015,hh-23,text=alt,anchor='w',fill='#5d7180',font=('Consolas',7))
+        anim['job']=w.after(250,draw_bg)
     draw_bg()
 
     panel=tk.Frame(w,bg='#07131e',highlightbackground='#1e617e',highlightthickness=1);panel.place(relx=.555,rely=.035,relwidth=.42,relheight=.93)
@@ -97,8 +114,15 @@ def main_menu(root,accounts):
     tk.Label(header,text='Select a saved account, review the profile, then enter the workstation.',bg='#07131e',fg='#8fa9b8',font=('Segoe UI',10),wraplength=440,justify='left').pack(anchor='w',pady=(8,0))
     table_wrap=tk.Frame(panel,bg='#07131e');table_wrap.pack(fill='both',expand=True,padx=20,pady=(4,6))
     tv=ttk.Treeview(table_wrap,style='Login.Treeview',columns=('account','mode','cash','credit','xp','last'),show='headings',selectmode='browse',height=10)
-    specs=[('account','TRADER',105),('mode','MODE',58),('cash','CASH',82),('credit','CREDIT',58),('xp','XP',52),('last','LAST SESSION',102)]
-    for col,title,width in specs:tv.heading(col,text=title);tv.column(col,width=width,minwidth=48,anchor='w' if col in ('account','last') else 'center',stretch=(col in ('account','last')))
+    specs=[('account','TRADER',118),('mode','MODE',62),('cash','CASH',132),('credit','CREDIT',62),('xp','XP',62),('last','LAST SESSION',116)]
+    for col,title,width in specs:tv.heading(col,text=title);tv.column(col,width=width,minwidth=52,anchor='w' if col in ('account','cash','last') else 'center',stretch=True)
+    def resize_account_columns(event=None):
+        try:
+            width=max(520,table_wrap.winfo_width()-22);cash_chars=max([len(f"${float(r.get('cash',0)):,.0f}") for r in accounts.accounts.values()] or [10]);cash_w=min(int(width*.34),max(112,cash_chars*9+24))
+            fixed={'mode':max(60,int(width*.10)),'credit':max(62,int(width*.10)),'xp':max(60,int(width*.09))};remaining=max(220,width-cash_w-sum(fixed.values()));account_w=max(105,int(remaining*.47));last_w=max(115,remaining-account_w)
+            for c,wid in [('account',account_w),('mode',fixed['mode']),('cash',cash_w),('credit',fixed['credit']),('xp',fixed['xp']),('last',last_w)]:tv.column(c,width=wid,minwidth=52,stretch=True)
+        except Exception:pass
+    table_wrap.bind('<Configure>',resize_account_columns)
     sb=ttk.Scrollbar(table_wrap,orient='vertical',command=tv.yview);tv.configure(yscrollcommand=sb.set);tv.pack(side='left',fill='both',expand=True);sb.pack(side='right',fill='y')
     status=tk.Label(panel,text='Ready.',bg='#07131e',fg='#8fa9b8',font=('Segoe UI',9));status.pack(fill='x',padx=28,pady=(0,7))
     create_box=tk.Frame(panel,bg='#0a1d2b',highlightbackground='#143b50',highlightthickness=1);create_box.pack(fill='x',padx=28,pady=(0,10))
@@ -112,6 +136,7 @@ def main_menu(root,accounts):
         tv.delete(*tv.get_children());import datetime
         for name,rec in sorted(accounts.accounts.items()):
             stats=rec.get('stats',{});last=rec.get('last_login') or rec.get('created');lasttxt=datetime.datetime.fromtimestamp(last).strftime('%b %d  %H:%M') if last else '—';tv.insert('','end',iid=name,values=(name,rec.get('mode','MEDIUM'),f"${float(rec.get('cash',0)):,.0f}",int(rec.get('credit_score',700)),int(rec.get('xp',0)),lasttxt))
+        resize_account_columns()
         if select and select in tv.get_children():tv.selection_set(select);tv.focus(select);tv.see(select)
     def login():
         name=selected_name()
@@ -185,6 +210,14 @@ def main():
             try:market.errors.append(f'autosave: {e}')
             except Exception:pass
     market.autosave_callback=autosave
+    # Crash-resilience checkpoint: end-of-day/exit saves remain authoritative, with a modest
+    # real-time checkpoint so an unexpected GUI/driver crash loses at most about one minute.
+    def periodic_autosave():
+        try:
+            if market.running and app.account_username:autosave('periodic safety checkpoint')
+        finally:
+            if market.running:root.after(60000,periodic_autosave)
+    root.after(60000,periodic_autosave)
     sim=threading.Thread(target=simulation,args=(market,),daemon=True,name='MarketSimulation');sim.start();market.start_background_loaders()
     def stop():
         market.running=False

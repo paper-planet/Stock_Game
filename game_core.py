@@ -1664,3 +1664,143 @@ def _sgp25prod_restore_trade_history(self,username,portfolio,market):
     except Exception:portfolio.trade_history=[]
     return ok
 AccountManager.restore_game_state=_sgp25prod_restore_trade_history
+
+# ===== Stock Game Pro 2.5 production system-polish universe + portfolio attribution =====
+# Add home-market sessions used by the expanded global research universe. These remain fully
+# simulated/offline during gameplay; the account-creation snapshot is the only automatic online seed.
+from datetime import time as _sgp25_clock_time
+try:
+    _extra_sessions={
+        'EURONEXT':Session('EURONEXT','Euronext Paris','Europe/Paris',_sgp25_clock_time(9,0),_sgp25_clock_time(17,30)),
+        'SIX':Session('SIX','SIX Swiss Exchange','Europe/Zurich',_sgp25_clock_time(9,0),_sgp25_clock_time(17,30)),
+        'KRX':Session('KRX','Korea Exchange','Asia/Seoul',_sgp25_clock_time(9,0),_sgp25_clock_time(15,30)),
+        'NSE':Session('NSE','National Stock Exchange India','Asia/Kolkata',_sgp25_clock_time(9,15),_sgp25_clock_time(15,30)),
+        'SGX':Session('SGX','Singapore Exchange','Asia/Singapore',_sgp25_clock_time(9,0),_sgp25_clock_time(17,0)),
+        'B3':Session('B3','B3 Brasil','America/Sao_Paulo',_sgp25_clock_time(10,0),_sgp25_clock_time(17,0)),
+        'TSX':Session('TSX','Toronto Stock Exchange','America/Toronto',_sgp25_clock_time(9,30),_sgp25_clock_time(16,0)),
+        'JSE':Session('JSE','Johannesburg Stock Exchange','Africa/Johannesburg',_sgp25_clock_time(9,0),_sgp25_clock_time(17,0)),
+    }
+    SESSIONS.update({k:v for k,v in _extra_sessions.items() if k not in SESSIONS})
+except Exception:pass
+
+# Broader physical futures/commodity research set.
+_SGP25_MORE_COMMODITIES=[
+    ('OJ=F','Orange Juice','Agriculture',.0048),('GF=F','Feeder Cattle','Agriculture',.0027),
+    ('ZO=F','Oats','Agriculture',.0032),('ZR=F','Rough Rice','Agriculture',.0030),
+    ('KE=F','KC HRW Wheat','Agriculture',.0028),('MGC=F','Micro Gold','Metals',.0017),
+    ('MCL=F','Micro WTI Crude','Energy',.0034),('SIL=F','Micro Silver','Metals',.0028),
+]
+_have_com={r[0] for r in COMMODITIES}
+for _row in _SGP25_MORE_COMMODITIES:
+    if _row[0] not in _have_com:COMMODITIES.append(_row);_have_com.add(_row[0])
+
+# Expanded worldwide single-stock universe. Exact/full bundled constituent sets continue to be used
+# for SPX, NDX, DJI, RUT/IWM proxy, FTSE, DAX and HSI; these rows deepen the remaining world indexes.
+_SGP25_WORLD_ROWS=[
+    # France / Euronext
+    ('MC.PA','LVMH',650,.0019,'France Equity','MC.PA','EURONEXT','EUR'),('OR.PA',"L'Oreal",390,.0016,'France Equity','OR.PA','EURONEXT','EUR'),
+    ('SAN.PA','Sanofi',93,.0015,'France Equity','SAN.PA','EURONEXT','EUR'),('AIR.PA','Airbus',185,.0019,'France Equity','AIR.PA','EURONEXT','EUR'),
+    ('BNP.PA','BNP Paribas',78,.0018,'France Equity','BNP.PA','EURONEXT','EUR'),('SU.PA','Schneider Electric',235,.0018,'France Equity','SU.PA','EURONEXT','EUR'),
+    ('AI.PA','Air Liquide',180,.0014,'France Equity','AI.PA','EURONEXT','EUR'),('DG.PA','Vinci',130,.0015,'France Equity','DG.PA','EURONEXT','EUR'),
+    ('CS.PA','AXA',40,.0016,'France Equity','CS.PA','EURONEXT','EUR'),('ENGI.PA','Engie',19,.0016,'France Equity','ENGI.PA','EURONEXT','EUR'),
+    ('CAP.PA','Capgemini',150,.0020,'France Equity','CAP.PA','EURONEXT','EUR'),('KER.PA','Kering',235,.0023,'France Equity','KER.PA','EURONEXT','EUR'),
+    ('RMS.PA','Hermes International',2200,.0018,'France Equity','RMS.PA','EURONEXT','EUR'),('RI.PA','Pernod Ricard',105,.0017,'France Equity','RI.PA','EURONEXT','EUR'),
+    # Switzerland
+    ('NESN.SW','Nestle',75,.0012,'Swiss Equity','NESN.SW','SIX','CHF'),('NOVN.SW','Novartis',102,.0013,'Swiss Equity','NOVN.SW','SIX','CHF'),
+    ('ROG.SW','Roche Holding',285,.0014,'Swiss Equity','ROG.SW','SIX','CHF'),('UBSG.SW','UBS Group',31,.0018,'Swiss Equity','UBSG.SW','SIX','CHF'),
+    ('ZURN.SW','Zurich Insurance',550,.0014,'Swiss Equity','ZURN.SW','SIX','CHF'),('ABBN.SW','ABB',58,.0016,'Swiss Equity','ABBN.SW','SIX','CHF'),
+    # Japan / Nikkei expansion (official TSE listings; broader than the original ADR-only basket)
+    ('4151.T','Kyowa Kirin',2550,.0019,'Japan Equity','4151.T','TSE','JPY'),('4502.T','Takeda Pharmaceutical',4450,.0015,'Japan Equity','4502.T','TSE','JPY'),
+    ('4503.T','Astellas Pharma',1500,.0017,'Japan Equity','4503.T','TSE','JPY'),('4507.T','Shionogi',2700,.0018,'Japan Equity','4507.T','TSE','JPY'),
+    ('4519.T','Chugai Pharmaceutical',7300,.0018,'Japan Equity','4519.T','TSE','JPY'),('4523.T','Eisai',4700,.0020,'Japan Equity','4523.T','TSE','JPY'),
+    ('4568.T','Daiichi Sankyo',3500,.0020,'Japan Equity','4568.T','TSE','JPY'),('4578.T','Otsuka Holdings',7800,.0017,'Japan Equity','4578.T','TSE','JPY'),
+    ('6501.T','Hitachi',4200,.0019,'Japan Equity','6501.T','TSE','JPY'),('6503.T','Mitsubishi Electric',3100,.0018,'Japan Equity','6503.T','TSE','JPY'),
+    ('6504.T','Fuji Electric',8500,.0021,'Japan Equity','6504.T','TSE','JPY'),('6506.T','Yaskawa Electric',3700,.0022,'Japan Equity','6506.T','TSE','JPY'),
+    ('6701.T','NEC',3800,.0020,'Japan Equity','6701.T','TSE','JPY'),('6702.T','Fujitsu',3300,.0019,'Japan Equity','6702.T','TSE','JPY'),
+    ('6723.T','Renesas Electronics',1900,.0024,'Japan Equity','6723.T','TSE','JPY'),('6752.T','Panasonic Holdings',1550,.0019,'Japan Equity','6752.T','TSE','JPY'),
+    ('6758.T','Sony Group TSE',3900,.0020,'Japan Equity','6758.T','TSE','JPY'),('6762.T','TDK',1900,.0022,'Japan Equity','6762.T','TSE','JPY'),
+    ('6857.T','Advantest',11500,.0030,'Japan Equity','6857.T','TSE','JPY'),('6861.T','Keyence',58000,.0021,'Japan Equity','6861.T','TSE','JPY'),
+    ('6902.T','Denso',2050,.0019,'Japan Equity','6902.T','TSE','JPY'),('6920.T','Lasertec',15800,.0035,'Japan Equity','6920.T','TSE','JPY'),
+    ('6954.T','Fanuc',4100,.0019,'Japan Equity','6954.T','TSE','JPY'),('6971.T','Kyocera',1750,.0018,'Japan Equity','6971.T','TSE','JPY'),
+    ('6981.T','Murata Manufacturing',2250,.0020,'Japan Equity','6981.T','TSE','JPY'),('7201.T','Nissan Motor',355,.0025,'Japan Equity','7201.T','TSE','JPY'),
+    ('7203.T','Toyota Motor TSE',2900,.0017,'Japan Equity','7203.T','TSE','JPY'),('7267.T','Honda Motor TSE',1550,.0018,'Japan Equity','7267.T','TSE','JPY'),
+    ('7269.T','Suzuki Motor',1850,.0020,'Japan Equity','7269.T','TSE','JPY'),('7270.T','Subaru',2900,.0021,'Japan Equity','7270.T','TSE','JPY'),
+    ('7735.T','SCREEN Holdings',11500,.0027,'Japan Equity','7735.T','TSE','JPY'),('7751.T','Canon',4300,.0016,'Japan Equity','7751.T','TSE','JPY'),
+    ('8035.T','Tokyo Electron',26000,.0028,'Japan Equity','8035.T','TSE','JPY'),('9984.T','SoftBank Group',14500,.0030,'Japan Equity','9984.T','TSE','JPY'),
+    ('9432.T','NTT',155,.0012,'Japan Equity','9432.T','TSE','JPY'),('9433.T','KDDI',2450,.0014,'Japan Equity','9433.T','TSE','JPY'),
+    ('8306.T','Mitsubishi UFJ Financial',2050,.0019,'Japan Equity','8306.T','TSE','JPY'),('8316.T','Sumitomo Mitsui Financial',3900,.0019,'Japan Equity','8316.T','TSE','JPY'),
+    # Korea
+    ('005930.KS','Samsung Electronics',79000,.0021,'Korea Equity','005930.KS','KRX','KRW'),('000660.KS','SK Hynix',270000,.0030,'Korea Equity','000660.KS','KRX','KRW'),
+    ('005380.KS','Hyundai Motor',220000,.0022,'Korea Equity','005380.KS','KRX','KRW'),('000270.KS','Kia',105000,.0022,'Korea Equity','000270.KS','KRX','KRW'),
+    ('035420.KS','NAVER',225000,.0025,'Korea Equity','035420.KS','KRX','KRW'),('035720.KS','Kakao',55000,.0027,'Korea Equity','035720.KS','KRX','KRW'),
+    ('051910.KS','LG Chem',310000,.0025,'Korea Equity','051910.KS','KRX','KRW'),('006400.KS','Samsung SDI',230000,.0028,'Korea Equity','006400.KS','KRX','KRW'),
+    ('105560.KS','KB Financial',105000,.0020,'Korea Equity','105560.KS','KRX','KRW'),('055550.KS','Shinhan Financial',62000,.0020,'Korea Equity','055550.KS','KRX','KRW'),
+    # India
+    ('RELIANCE.NS','Reliance Industries',1450,.0020,'India Equity','RELIANCE.NS','NSE','INR'),('TCS.NS','Tata Consultancy Services',3200,.0018,'India Equity','TCS.NS','NSE','INR'),
+    ('HDFCBANK.NS','HDFC Bank India',2000,.0018,'India Equity','HDFCBANK.NS','NSE','INR'),('ICICIBANK.NS','ICICI Bank India',1420,.0019,'India Equity','ICICIBANK.NS','NSE','INR'),
+    ('INFY.NS','Infosys India',1520,.0020,'India Equity','INFY.NS','NSE','INR'),('BHARTIARTL.NS','Bharti Airtel',1900,.0018,'India Equity','BHARTIARTL.NS','NSE','INR'),
+    ('SBIN.NS','State Bank of India',820,.0021,'India Equity','SBIN.NS','NSE','INR'),('LT.NS','Larsen & Toubro',3600,.0019,'India Equity','LT.NS','NSE','INR'),
+    ('ITC.NS','ITC',410,.0015,'India Equity','ITC.NS','NSE','INR'),('HINDUNILVR.NS','Hindustan Unilever',2500,.0015,'India Equity','HINDUNILVR.NS','NSE','INR'),
+    # Australia
+    ('CBA.AX','Commonwealth Bank',175,.0017,'Australia Equity','CBA.AX','ASX','AUD'),('BHP.AX','BHP Group ASX',43,.0020,'Australia Equity','BHP.AX','ASX','AUD'),
+    ('CSL.AX','CSL',205,.0018,'Australia Equity','CSL.AX','ASX','AUD'),('NAB.AX','National Australia Bank',42,.0017,'Australia Equity','NAB.AX','ASX','AUD'),
+    ('WBC.AX','Westpac',36,.0018,'Australia Equity','WBC.AX','ASX','AUD'),('ANZ.AX','ANZ Group',34,.0018,'Australia Equity','ANZ.AX','ASX','AUD'),
+    ('WES.AX','Wesfarmers',88,.0017,'Australia Equity','WES.AX','ASX','AUD'),('MQG.AX','Macquarie Group',205,.0020,'Australia Equity','MQG.AX','ASX','AUD'),
+    ('WOW.AX','Woolworths Group',29,.0015,'Australia Equity','WOW.AX','ASX','AUD'),('RIO.AX','Rio Tinto ASX',118,.0020,'Australia Equity','RIO.AX','ASX','AUD'),
+    # Canada
+    ('RY.TO','Royal Bank of Canada',210,.0016,'Canada Equity','RY.TO','TSX','CAD'),('TD.TO','Toronto-Dominion Bank',112,.0017,'Canada Equity','TD.TO','TSX','CAD'),
+    ('ENB.TO','Enbridge',64,.0014,'Canada Equity','ENB.TO','TSX','CAD'),('CNR.TO','Canadian National Railway',145,.0015,'Canada Equity','CNR.TO','TSX','CAD'),
+    ('CNQ.TO','Canadian Natural Resources',50,.0019,'Canada Equity','CNQ.TO','TSX','CAD'),('BNS.TO','Bank of Nova Scotia',88,.0017,'Canada Equity','BNS.TO','TSX','CAD'),
+    ('BMO.TO','Bank of Montreal',165,.0017,'Canada Equity','BMO.TO','TSX','CAD'),('CP.TO','Canadian Pacific Kansas City',110,.0016,'Canada Equity','CP.TO','TSX','CAD'),
+    ('CSU.TO','Constellation Software',5200,.0019,'Canada Equity','CSU.TO','TSX','CAD'),('SHOP.TO','Shopify Canada',195,.0028,'Canada Equity','SHOP.TO','TSX','CAD'),
+    # Brazil
+    ('PETR4.SA','Petrobras PN',31,.0025,'Brazil Equity','PETR4.SA','B3','BRL'),('VALE3.SA','Vale ON',55,.0024,'Brazil Equity','VALE3.SA','B3','BRL'),
+    ('ITUB4.SA','Itau Unibanco PN',38,.0020,'Brazil Equity','ITUB4.SA','B3','BRL'),('BBDC4.SA','Banco Bradesco PN',16,.0022,'Brazil Equity','BBDC4.SA','B3','BRL'),
+    ('ABEV3.SA','Ambev',14,.0018,'Brazil Equity','ABEV3.SA','B3','BRL'),('WEGE3.SA','WEG',45,.0021,'Brazil Equity','WEGE3.SA','B3','BRL'),
+    ('B3SA3.SA','B3 SA',15,.0021,'Brazil Equity','B3SA3.SA','B3','BRL'),('SUZB3.SA','Suzano',53,.0022,'Brazil Equity','SUZB3.SA','B3','BRL'),
+    ('PRIO3.SA','PRIO',46,.0028,'Brazil Equity','PRIO3.SA','B3','BRL'),('RENT3.SA','Localiza',48,.0025,'Brazil Equity','RENT3.SA','B3','BRL'),
+    # Singapore / South Africa
+    ('D05.SI','DBS Group',52,.0016,'Singapore Equity','D05.SI','SGX','SGD'),('O39.SI','OCBC Bank',17,.0016,'Singapore Equity','O39.SI','SGX','SGD'),
+    ('U11.SI','United Overseas Bank',36,.0016,'Singapore Equity','U11.SI','SGX','SGD'),('C6L.SI','Singapore Airlines',7,.0020,'Singapore Equity','C6L.SI','SGX','SGD'),
+    ('NPN.JO','Naspers',5200,.0024,'South Africa Equity','NPN.JO','JSE','ZAR'),('FSR.JO','FirstRand',8500,.0020,'South Africa Equity','FSR.JO','JSE','ZAR'),
+]
+_have_global={r[0] for r in GLOBAL_STOCKS}
+for _row in _SGP25_WORLD_ROWS:
+    if _row[0] not in _have_global:GLOBAL_STOCKS.append(_row);_have_global.add(_row[0])
+
+# Expand the still-representative world-index baskets without pretending an incomplete public list is exact.
+_SGP25_DEEP_COMPONENTS={
+ 'CAC':['MC.PA','OR.PA','SAN.PA','AIR.PA','BNP.PA','SU.PA','AI.PA','DG.PA','CS.PA','ENGI.PA','CAP.PA','KER.PA','RMS.PA','RI.PA','TTE','SNY'],
+ 'NIKKEI':['4151.T','4502.T','4503.T','4507.T','4519.T','4523.T','4568.T','4578.T','6501.T','6503.T','6504.T','6506.T','6701.T','6702.T','6723.T','6752.T','6758.T','6762.T','6857.T','6861.T','6902.T','6920.T','6954.T','6971.T','6981.T','7201.T','7203.T','7267.T','7269.T','7270.T','7735.T','7751.T','8035.T','9984.T','9432.T','9433.T','8306.T','8316.T','TM','SONY','HMC','MUFG','SMFG'],
+ 'STOXX50':['SAP.DE','SIE.DE','AIR.DE','ALV.DE','BAS.DE','BAYN.DE','DTE.DE','IFX.DE','MBG.DE','MUV2.DE','RWE.DE','VOW3.DE','MC.PA','OR.PA','SAN.PA','AIR.PA','BNP.PA','SU.PA','AI.PA','DG.PA','CS.PA','RMS.PA','NESN.SW','NOVN.SW','ROG.SW','UBSG.SW','ZURN.SW','ABBN.SW'],
+ 'ASX200':['CBA.AX','BHP.AX','CSL.AX','NAB.AX','WBC.AX','ANZ.AX','WES.AX','MQG.AX','WOW.AX','RIO.AX','BHP'],
+ 'TSX':['RY.TO','TD.TO','ENB.TO','CNR.TO','CNQ.TO','BNS.TO','BMO.TO','CP.TO','CSU.TO','SHOP.TO','SHOP'],
+ 'BOVESPA':['PETR4.SA','VALE3.SA','ITUB4.SA','BBDC4.SA','ABEV3.SA','WEGE3.SA','B3SA3.SA','SUZB3.SA','PRIO3.SA','RENT3.SA','VALE','PBR','NU'],
+}
+_ng=[]
+for _row in GLOBAL_INDEXES:
+    _sym,_name,_price,_components,_vol,_ds,_session=_row
+    _session={'CAC':'EURONEXT','TSX':'TSX','BOVESPA':'B3'}.get(_sym,_session)
+    _ng.append((_sym,_name,_price,list(_SGP25_DEEP_COMPONENTS.get(_sym,_components)),_vol,_ds,_session))
+GLOBAL_INDEXES[:]=_ng
+
+# Portfolio chart attribution now snapshots every security class, not just the equity dictionary.
+def _sgp25_system_record_equity(self,force=False):
+    now=_sgp23_now(self);stamp=now.replace(second=0,microsecond=0)
+    if not force and getattr(self,'_equity_last_stamp',None)==stamp:return
+    eq=self.regulatory_equity();hold=[];m=getattr(self,'market',None)
+    if m:
+        for sym,q in self.positions.items():
+            a=m.get_asset(sym)
+            if a is not None and q:
+                value=float(q)*float(a.price);hold.append((sym,int(q),float(a.price),value,str(getattr(a,'category','Security'))))
+        for st in list(getattr(self,'options',[])):
+            try:
+                if not st.legs:continue
+                under=st.legs[0].contract.underlying.symbol;qty=max(1,sum(abs(int(l.quantity)) for l in st.legs));value=float(st.current_value());hold.append((self.strategy_ref(st),qty,value/max(1,qty),value,f'Option • {under}'))
+            except Exception:pass
+        hold=sorted(hold,key=lambda x:abs(float(x[3])),reverse=True)[:40]
+    rec={'time':_sgp_dt_iso_v20(now),'equity':eq,'cash':float(self.cash),'realized':float(self.realized),'holdings':hold}
+    self.equity_history.append(rec);self.equity_history=self.equity_history[-20000:];self._equity_last_stamp=stamp
+    day=now.date().isoformat();self._daily_equity_open.setdefault(day,eq)
+Portfolio.record_equity_snapshot=_sgp25_system_record_equity

@@ -6820,3 +6820,670 @@ def _sgp25prod_chart_data_long(self):
     render_cap=max(260,min(1400,int(max(500,self.winfo_width())*1.45)));bars=_sgp25prod_compact_bars(bars,render_cap)
     zoom=max(.25,float(getattr(self,'zoom',1.0)));visible=max(40,min(len(bars),int(len(bars)/zoom) if zoom>=1 else len(bars)));maxoff=max(0,len(bars)-visible);self.view_offset=max(0,min(int(getattr(self,'view_offset',0)),maxoff));end=len(bars)-self.view_offset;start=max(0,end-visible);out=bars[start:end];self._last_render_data25=out;return out
 Chart.data=_sgp25prod_chart_data_long
+
+# ============================================================================
+# Stock Game Pro 2.5 Production — system polish / stability consolidation
+# ============================================================================
+# This final layer intentionally replaces several legacy presentation loops instead of stacking
+# more high-frequency callbacks on top of them. Gameplay remains offline except for the explicit
+# account snapshot paths implemented in the production data layer.
+
+# ---------- chart data: immutable historical backfill, never generate future candles ----------
+def _sgp25sys_period_seconds(p):
+    return {'1 Tick':0,'30 Sec':30,'1 Min':60,'3 Min':180,'5 Min':300,'10 Min':600,'15 Min':900,'30 Min':1800,'1 Hour':3600,'1 Day':86400,'1 Week':604800}.get(p,300)
+
+def _sgp25sys_backfill(chart,daily,mins,max_points=1200):
+    """Deterministic display-only history, strictly older than the live simulator clock.
+
+    Previous builds generated all 24 hours of the newest daily candle, including timestamps later
+    than the game clock. That produced a fake wave extending to the right of the live candle and
+    made several Auto/intraday candles appear to move at once. This backfill is immutable, uses a
+    Brownian-bridge-like path instead of a sine wave, and never creates future timestamps.
+    """
+    if not daily or mins<=0 or mins>=1440:return []
+    now=getattr(getattr(chart.app,'market',None),'clock',None);now=getattr(now,'current',None) or _sgp22_dt.now()
+    code=_sgp_asset_session_code(chart.asset)
+    completed=[]
+    for d in sorted(daily,key=lambda x:x.timestamp):
+        if d.timestamp.date()>=now.date():continue
+        wd=d.timestamp.weekday()
+        if code=='CRYPTO' or (code=='CME' and wd!=5) or (code not in ('CRYPTO','CME') and wd<5):completed.append(d)
+    if not completed:return []
+    def session_window(dc):
+        # Synthetic display history represents the regular trading session only. Genuine simulator
+        # prints can still populate pre/post market. This prevents invented overnight/future waves.
+        if code in ('CRYPTO','FX','CME'):
+            return dc.timestamp.replace(hour=0,minute=0,second=0,microsecond=0),1440.0
+        if code=='US' or code not in SESSIONS:
+            return dc.timestamp.replace(hour=9,minute=30,second=0,microsecond=0),390.0
+        try:
+            sess=SESSIONS[code];day=dc.timestamp.date();st=_sgp22_dt.combine(day,sess.open_time).replace(tzinfo=_sgp22_ZoneInfo(sess.tz));en=_sgp22_dt.combine(day,sess.close_time).replace(tzinfo=_sgp22_ZoneInfo(sess.tz))
+            if en<=st:en+=_sgp23_ui_td(days=1)
+            et=_sgp22_ZoneInfo('America/New_York');base=st.astimezone(et).replace(tzinfo=None);dur=max(30.0,min(1440.0,(en-st).total_seconds()/60.0));return base,dur
+        except Exception:return dc.timestamp.replace(hour=9,minute=30,second=0,microsecond=0),390.0
+    durations=[session_window(d)[1] for d in completed];days=len(completed);avg_minutes=sum(durations)/max(1,len(durations));native_per_day=max(1,int(round(avg_minutes/max(.5,mins))));per_day=max(8,min(native_per_day,max(8,int(max_points/max(1,days)))))
+    last=completed[-1]
+    key=(getattr(chart.asset,'symbol',''),round(float(mins),4),days,per_day,last.timestamp,round(float(last.close),8),'sys')
+    cache=getattr(chart,'_sys25_backfill_cache',None)
+    if cache and cache[0]==key:return cache[1]
+    import random as _r
+    out=[];sym=str(getattr(chart.asset,'symbol',''))
+    for di,dc in enumerate(completed):
+        base,session_minutes=session_window(dc);step=session_minutes/per_day;o=float(dc.open);cl=float(dc.close);hi=max(o,cl,float(dc.high));lo=max(.000001,min(o,cl,float(dc.low)))
+        seed=sum((i+1)*ord(ch) for i,ch in enumerate(sym))+base.toordinal()*131+int(mins*100)
+        rng=_r.Random(seed);n=per_day
+        # Random bridge from open to close. Noise is strongest mid-session and vanishes at ends.
+        raw=[0.0];acc=0.0
+        for _ in range(1,n):acc+=rng.gauss(0,1);raw.append(acc)
+        end=raw[-1] if raw else 0.0
+        bridge=[raw[i]-(i/max(1,n-1))*end for i in range(n)]
+        mx=max([abs(x) for x in bridge] or [1.0]) or 1.0;span=max(hi-lo,abs(o)*.004,1e-6)
+        vals=[]
+        for i in range(n):
+            t=i/max(1,n-1);trend=o+(cl-o)*t;noise=(bridge[i]/mx)*span*.20*math.sin(math.pi*t);vals.append(max(lo,min(hi,trend+noise)))
+        # Force the known daily extremes into two deterministic interior slots.
+        if n>=6:
+            ih=1+(seed%(n-2));il=1+((seed//17)%(n-2))
+            if ih==il:il=1+(il+max(1,n//3))%(n-2)
+            vals[ih]=hi;vals[il]=lo
+        vals[0]=o;vals[-1]=cl
+        prev=o
+        dayvol=max(1,int(getattr(dc,'volume',0) or 1));basevol=max(1,dayvol//n)
+        for j,v in enumerate(vals):
+            ts=base+_sgp23_ui_td(minutes=j*step)
+            if ts>=now:break
+            op=prev;cp=float(v);wig=max(abs(cp-op)*.25,span*.003*rng.random());bh=min(hi,max(op,cp)+wig);bl=max(lo,min(op,cp)-wig)
+            out.append(Candle(ts,op,bh,bl,cp,max(1,int(basevol*rng.uniform(.55,1.45)))));prev=cp
+    chart._sys25_backfill_cache=(key,out);return out
+_sgp25prod_backfill=_sgp25sys_backfill
+
+_Chart_data_sys25_parent=Chart.data
+def _sgp25sys_chart_data(self):
+    if self.asset is None:return []
+    if getattr(self,'fit_inception',False):
+        out=list(_Chart_data_sys25_parent(self));now=getattr(self.app.market.clock,'current',None)
+        return [c for c in out if now is None or c.timestamp<=now]
+    p,mins=_sgp25prod_period_spec(self);now=getattr(self.app.market.clock,'current',_sgp22_dt.now());native=sorted(_sgp25prod_native_bars(self,p),key=lambda c:c.timestamp)
+    native=[c for c in native if c.timestamp<=now]
+    combined=list(native)
+    if 0<mins<1440:
+        daily=sorted(list(self.asset.chart_candles('1d')),key=lambda c:c.timestamp);code=_sgp_asset_session_code(self.asset)
+        if code!='CRYPTO':
+            daily=[dc for dc in daily if (dc.timestamp.weekday()!=5 if code=='CME' else dc.timestamp.weekday()<5)]
+        nd=_sgp25prod_tf_days(self.timeframe,len(daily));daily=daily[-nd:] if daily else []
+        expected=min(1200,max(60,int(max(1,nd)*1440/max(.5,mins))))
+        if daily and len(native)<max(20,int(expected*.72)):
+            hist=_sgp25sys_backfill(self,daily,mins,1200)
+            # Synthetic timestamps are strictly historical. Native candles always have authority.
+            first_native=native[0].timestamp if native else now
+            hist=[c for c in hist if c.timestamp<first_native and c.timestamp<=now]
+            combined=hist+native
+    elif p=='1 Week' and len(combined)<8:
+        combined=[c for c in _sgp25prod_native_bars(self,'1 Week') if c.timestamp<=now]
+    if not combined:
+        px=float(self.asset.price);combined=[Candle(now,px,px,px,px,max(0,int(getattr(self.asset,'volume',0))))]
+    # Deduplicate exact bar timestamps and guarantee monotonic time.
+    merged={c.timestamp:c for c in combined if c.timestamp<=now};combined=[merged[k] for k in sorted(merged)]
+    if p=='1 Tick' and combined:
+        last=combined[-1];v=max(0,int(getattr(last,'volume',0) or 0))
+        if v>0:self._last_tick_volume25=v
+        elif getattr(self,'_last_tick_volume25',0)>0:combined[-1]=Candle(last.timestamp,float(last.open),float(last.high),float(last.low),float(last.close),int(self._last_tick_volume25))
+    render_cap=max(300,min(1500,int(max(500,self.winfo_width())*1.55)));combined=_sgp25prod_compact_bars(combined,render_cap)
+    zoom=max(.25,float(getattr(self,'zoom',1.0)));visible=max(min(60,len(combined)),min(len(combined),int(len(combined)/zoom) if zoom>=1 else len(combined)))
+    maxoff=max(0,len(combined)-visible);self.view_offset=max(0,min(int(getattr(self,'view_offset',0)),maxoff));end=len(combined)-self.view_offset;start=max(0,end-visible);out=combined[start:end]
+    self._last_render_data25=out;return out
+Chart.data=_sgp25sys_chart_data
+
+# ---------- chart camera / vertical scaling / true Fit Y ----------
+def _sgp25sys_bounds(self,d,live,plot_height=300):
+    scale=max(.05,min(50.0,float(getattr(self,'vertical_scale',1.0))))
+    if not d:return (0.0,1.0)
+    manual=getattr(self,'_manual_fit_bounds26',None)
+    if manual:
+        sig=(getattr(self.asset,'symbol',None),self.timeframe,getattr(self,'candle_period','Auto'),int(getattr(self,'view_offset',0)))
+        if manual[0]==sig:return manual[1]
+        self._manual_fit_bounds26=None
+    if getattr(self,'fit_inception',False):
+        sig=('max',getattr(self.asset,'symbol',None),len(d),round(scale,4),getattr(self.asset,'last_real_timestamp',None));cached=getattr(self,'_max_bounds25',None)
+        if cached and cached[0]==sig:return cached[1]
+        lo=min(float(c.low) for c in d);hi=max(float(c.high) for c in d);span=max(hi-lo,abs((hi+lo)/2)*.005,1e-9);pad=span*.045;b=(lo-pad,hi+pad);self._max_bounds25=(sig,b);return b
+    if not live:
+        lo=min(float(c.low) for c in d);hi=max(float(c.high) for c in d);mid=(lo+hi)/2+float(getattr(self,'_manual_y_shift',0.0));rng=max(hi-lo,abs(mid)*.001,1e-8)/scale;return mid-rng*.55,mid+rng*.55
+    p=float(self.asset.price);sig=(getattr(self.asset,'symbol',None),self.timeframe,getattr(self,'candle_period','Auto'),round(scale,4),int(getattr(self,'view_offset',0)))
+    state=getattr(self,'_stable_bounds25',None)
+    if not state or state.get('sig')!=sig:
+        recent=d[-min(180,len(d)):];sample=recent[:-1] if len(recent)>2 else recent;vals=[]
+        for c in sample:vals.extend((float(c.low),float(c.high)))
+        if vals:
+            sv=sorted(vals);qlo=sv[max(0,int(len(sv)*.04)-1)];qhi=sv[min(len(sv)-1,int(len(sv)*.96))]
+        else:qlo=qhi=p
+        half=max((qhi-qlo)*.72,abs(p)*.004,0.01 if abs(p)>=1 else abs(p)*.025,1e-8)/scale;center=(qhi+qlo)/2 if qhi>qlo else p
+        if p>center+half:center=p-half*.72
+        elif p<center-half:center=p+half*.72
+        state={'sig':sig,'center':center,'half':half};self._stable_bounds25=state
+    center=float(state['center']);half=max(1e-10,float(state['half']));lo=center-half;hi=center+half;span=hi-lo;cur=d[-1];wick_hi=max(float(cur.high),p);wick_lo=min(float(cur.low),p)
+    # Hold scale and location until the candle ACTUALLY leaves the visible region.
+    if wick_hi-wick_lo>span*.94:
+        half=max(half,(wick_hi-wick_lo)/.90/2);center=(wick_hi+wick_lo)/2
+    else:
+        edge=span*.025
+        if wick_hi>hi:center+=wick_hi-hi+edge
+        lo=center-half;hi=center+half
+        if wick_lo<lo:center-=lo-wick_lo+edge
+    state['center']=center;state['half']=half;return center-half,center+half
+_sgp22_bounds=_sgp25sys_bounds
+
+_Chart_set_vertical_sys_parent=Chart.set_vertical_scale
+def _sgp25sys_set_vertical(self,value):
+    try:v=max(.05,min(50.0,float(value)))
+    except Exception:v=1.0
+    self.vertical_scale=v;self._manual_fit_bounds26=None;self._stable_bounds25=None;self._max_bounds25=None;self._key=None
+    try:self.request_draw(force=True)
+    except Exception:pass
+    return v
+Chart.set_vertical_scale=_sgp25sys_set_vertical
+
+def _sgp25sys_fit_main_vertical(self):
+    if not getattr(self,'charts',None):return
+    c=self.charts[self.active_chart];d=list(c.data())
+    if not d:return
+    lo=min(float(x.low) for x in d);hi=max(float(x.high) for x in d)
+    if int(getattr(c,'view_offset',0))==0 and getattr(c,'follow_latest',True):
+        p=float(c.asset.price);lo=min(lo,p);hi=max(hi,p)
+    span=max(hi-lo,abs((hi+lo)/2)*.0005,1e-9);pad=span*.055;sig=(getattr(c.asset,'symbol',None),c.timeframe,getattr(c,'candle_period','Auto'),int(getattr(c,'view_offset',0)))
+    c._manual_fit_bounds26=(sig,(lo-pad,hi+pad));c._stable_bounds25=None
+    try:self.v24_label.config(text='FIT')
+    except Exception:pass
+    c.request_draw(force=True)
+App.fit_main_vertical=_sgp25sys_fit_main_vertical
+
+# ---------- career economics: transparent low rewards, no hidden windfalls ----------
+_SGP25_OBJECTIVE_REWARDS={
+    'first_trade':(10,20,'Complete first trade'),
+    'first_working_order':(12,25,'Place a working limit/stop'),
+    'first_options':(20,40,'Open an options strategy'),
+    'diversified':(25,60,'Hold three distinct positions'),
+    'positive_book':(20,75,'Grow net worth by 2%'),
+}
+def _sgp_career_bonus(self,key,xp,cash,message):
+    p=self.portfolio
+    if p.tutorials.get(key):return False
+    rxp,rcash,label=_SGP25_OBJECTIVE_REWARDS.get(key,(max(1,int(xp)//5),min(100,float(cash)*.02),message));p.tutorials[key]=True;p.xp=int(getattr(p,'xp',0))+int(rxp);p.cash+=float(rcash);p.career['boss_bonuses']=int(p.career.get('boss_bonuses',0))+1;p.career['level']=p.level;p.career['last_reward']=f'{label}: +{rxp} XP / +${rcash:,.0f}'
+    self.status_flash(f'BOSS OBJECTIVE • +{rxp} XP • +${rcash:,.0f} • {label}')
+    try:
+        cb=getattr(self.market,'autosave_callback',None)
+        if callable(cb):cb('career objective reward')
+    except Exception:pass
+    return True
+
+def _sgp_apply_daily_credit_v15(self,day):
+    p=self.portfolio;last=getattr(p,'_credit_day',None)
+    if last==day:return
+    p._credit_day=day
+    if p.loan_balance>0 and p.loan_apr>0:
+        p.loan_balance*=1.0+p.loan_apr/365.0;paid=str(getattr(p,'last_loan_payment','') or '')[:7]==day.strftime('%Y-%m')
+        if day.day==1 and not paid:p.xp-=25;p.credit_score=max(300,int(p.credit_score)-12);p.loan_balance+=max(5.0,p.loan_balance*.004);self.status_flash('CREDIT ALERT • missed simulated loan statement • -25 XP • credit score reduced')
+    nw=p.cached_net_worth(self.market.all_assets(),0)
+    if nw>getattr(self,'starting_cash',nw)*1.01:
+        p.career['positive_days']=int(p.career.get('positive_days',0))+1;streak=p.career['positive_days']
+        if streak and streak%5==0:
+            p.xp+=10;p.cash+=100;p.career['boss_bonuses']=int(p.career.get('boss_bonuses',0))+1;p.career['level']=p.level;p.career['last_reward']=f'{streak}-day consistency: +10 XP / +$100';self.status_flash(f'PERFORMANCE BONUS • {streak} positive days • +10 XP • +$100')
+    else:p.career['positive_days']=0
+
+_Career_refresh_sys_parent=CareerFinanceWindow.refresh_view
+def _sgp25sys_career_refresh(self):
+    p=self.p;apr,limit=self.quote(False);self.stats.config(text=f'LEVEL {p.level}    XP {p.xp:+,}    CREDIT {p.credit_score}\nCASH ${p.cash:,.2f}    LOAN ${p.loan_balance:,.2f}    APR {p.loan_apr*100:.2f}%')
+    self.terms.config(text=('Standard credit unavailable' if apr is None else f'Estimated new-loan terms: up to ${limit:,.0f} at {apr*100:.1f}% APR')+' • Emergency bailout: 35% APR • balances refresh live.')
+    self.task_text.delete('1.0','end')
+    for key in ('first_trade','first_working_order','first_options','diversified','positive_book'):
+        xp,cash,label=_SGP25_OBJECTIVE_REWARDS[key];self.task_text.insert('end',f'{"✓" if p.tutorials.get(key) else "○"} {label:<30}  REWARD +{xp} XP / +${cash:,.0f}\n')
+    self.task_text.insert('end',f'\nBoss objectives paid: {p.career.get("boss_bonuses",0)}\nWendy\'s lifetime earnings: ${p.career.get("work_earnings",0):,.2f}\nPositive-day streak: {p.career.get("positive_days",0)}\nLast reward: {p.career.get("last_reward","—")}')
+CareerFinanceWindow.refresh_view=_sgp25sys_career_refresh
+
+_Career_init_sys_parent=CareerFinanceWindow.__init__
+def _sgp25sys_career_init(self,parent,app):
+    _Career_init_sys_parent(self,parent,app)
+    def pulse():
+        try:
+            if not self.winfo_exists():return
+            self.refresh_view();self.after(800,pulse)
+        except tk.TclError:pass
+    self.after(800,pulse)
+CareerFinanceWindow.__init__=_sgp25sys_career_init
+
+# Wendy's is emergency micro-income, not an invisible account-growth engine.
+def _sgp25sys_work_click(self,e):
+    hit=None
+    for i,(x1,y1,x2,y2) in enumerate(self.boxes()):
+        if x1<=e.x<=x2 and y1<=e.y<=y2:hit=i;break
+    if hit==self.active:
+        pay=random.randint(3,9);self.p.cash+=pay;self.score+=pay;self.p.career['work_earnings']=float(self.p.career.get('work_earnings',0))+pay;self.info.config(text=f'Order completed: +${pay}',foreground=GREEN);self.active=None
+    else:
+        loss=random.randint(2,7);self.p.cash-=loss;self.score-=loss;self.info.config(text=f'Mis-click / wrong order: -${loss}',foreground=RED)
+    self.draw()
+WorkShiftWindow.click=_sgp25sys_work_click
+_Work_close_sys_parent=WorkShiftWindow.close
+def _sgp25sys_work_close(self):
+    try:
+        cb=getattr(self.app.market,'autosave_callback',None)
+        if callable(cb):cb("Wendy's shift")
+    except Exception:pass
+    return _Work_close_sys_parent(self)
+WorkShiftWindow.close=_sgp25sys_work_close
+
+# ---------- casino risk / bet sizing ----------
+_Slot_init_sys_parent=SlotMachineWindow.__init__
+def _sgp25sys_slot_init(self,parent,portfolio,market):
+    _Slot_init_sys_parent(self,parent,portfolio,market)
+    try:
+        for w in self.winfo_children():
+            for ch in w.winfo_children():
+                if isinstance(ch,ttk.Combobox) and str(ch.cget('textvariable'))==str(self.bet):ch.config(values=[25,100,500,1000,5000,10000,25000,100000,250000,500000,1000000],width=11)
+    except Exception:pass
+SlotMachineWindow.__init__=_sgp25sys_slot_init
+SlotMachineWindow.PAY={'7':12,'BAR':7,'★':5,'♛':4,'♦':3,'🍒':2}
+def _sgp25sys_slot_step(self):
+    weights=[1,3,6,9,14,22];self.reels=random.choices(self.SYMBOLS,weights=weights,k=3);self.draw();self._anim+=1
+    if self._anim<16:return self.after(36+self._anim*4,self._step)
+    b=int(self.bet.get());payout=0
+    if len(set(self.reels))==1:payout=int(b*self.PAY[self.reels[0]])
+    elif len(set(self.reels))==2:payout=int(b*1.25)
+    self.portfolio.cash+=payout;self.msg.config(text=f'{"WIN" if payout>=b else "RETURN" if payout else "NO WIN"} • ${payout:,.0f}');self.spinning=False;self.draw()
+SlotMachineWindow._step=_sgp25sys_slot_step
+
+_Blackjack_newshoe_sys_parent=BlackjackWindow.new_shoe
+def _sgp25sys_blackjack_new_shoe(self):
+    suits=['♠','♥','♦','♣'];decks=max(1,int(self.deck_count.get()));self.shoe=[(r,s) for _ in range(decks) for s in suits for r in range(1,14)];random.shuffle(self.shoe);self.running=0;self.hands=[];self.dealer=[];self.bet_amounts=[];self.hand_done=[];self.active=False;self.active_hand=0;self.split_used=set();self.shuffle_pending=False
+    penetration={1:.50,2:.60,4:.75,6:.80,8:.90}.get(decks,.75);self.cut_card=max(1,int(round(len(self.shoe)*(1.0-penetration))));self.draw_table()
+BlackjackWindow.new_shoe=_sgp25sys_blackjack_new_shoe
+
+_Roulette_init_sys_parent=RouletteWindow.__init__
+def _sgp25sys_roulette_init(self,parent,portfolio,market):
+    _Roulette_init_sys_parent(self,parent,portfolio,market);self.chips=[25,100,500,1000,5000,10000,25000,100000,250000,500000,1000000];self.draw()
+RouletteWindow.__init__=_sgp25sys_roulette_init
+
+_Horse_init_sys_parent=HorseRaceWindow.__init__
+def _sgp25sys_horse_init(self,parent,portfolio,market):
+    _Horse_init_sys_parent(self,parent,portfolio,market)
+    try:
+        for w in self.winfo_children():
+            for ch in w.winfo_children():
+                if isinstance(ch,ttk.Combobox) and str(ch.cget('textvariable'))==str(self.bet):ch.config(values=[25,100,500,1000,5000,10000,25000,100000,250000,500000,1000000],width=11)
+    except Exception:pass
+HorseRaceWindow.__init__=_sgp25sys_horse_init
+
+# ---------- portfolio account tab: analytics first; aggregate model for every held security ----------
+def _sgp25sys_portfolio_model(app):
+    exposures={}
+    try:
+        for sym,q in app.portfolio.positions.items():
+            a=app.market.get_asset(sym)
+            if a is not None and q:exposures[a]=exposures.get(a,0.0)+abs(float(q)*float(a.price))
+        for st in list(app.portfolio.options):
+            try:
+                if not st.legs:continue
+                a=st.legs[0].contract.underlying;exposures[a]=exposures.get(a,0.0)+abs(float(st.current_value()))
+            except Exception:pass
+    except Exception:pass
+    if not exposures:return 'PORTFOLIO MODEL • no open securities'
+    ranked=sorted(exposures.items(),key=lambda kv:kv[1],reverse=True);sample=ranked[:24];tot=sum(v for _,v in sample) or 1.0;bull=bear=neutral=mom=vol=0.0
+    for a,v in sample:
+        pr=app.market.predict(a);w=v/tot;label=pr.get('label','NEUTRAL');bull+=w if label=='BULLISH' else 0;bear+=w if label=='BEARISH' else 0;neutral+=w if label not in ('BULLISH','BEARISH') else 0;mom+=w*float(pr.get('momentum',0));vol+=w*float(pr.get('volatility',0))
+    top=' • '.join(f'{a.symbol} {v/tot*100:.0f}%' for a,v in sample[:5]);bias='BULLISH' if bull>max(bear,neutral) else 'BEARISH' if bear>max(bull,neutral) else 'MIXED'
+    return f'PORTFOLIO MODEL • {len(exposures)} securities • {bias}\nBull {bull*100:.0f}%  Bear {bear*100:.0f}%  Neutral {neutral*100:.0f}%  •  Momentum {mom*100:+.2f}%  •  Model vol {vol*100:.2f}%\nLargest exposures: {top}'
+
+_App_refresh_sys_parent=App.refresh
+def _sgp25sys_app_refresh(self):
+    out=_App_refresh_sys_parent(self)
+    try:self.pred.config(text=_sgp25sys_portfolio_model(self),font=('Consolas',8),foreground=MUTED)
+    except Exception:pass
+    return out
+App.refresh=_sgp25sys_app_refresh
+
+# ---------- Market Map: all assets are browseable in optimized pages ----------
+class MarketMapWindow(ToolWindow):
+    PAGE=120
+    def __init__(self,parent,market):
+        super().__init__(parent);self.market=market;self.style_window('STOCK GAME PRO • MARKET MAP / INDEX IMPACT','1540x880');self.resizable(True,True);self.page=0;self.tiles=[];self.search=tk.StringVar();self.sector=tk.StringVar(value='ALL');self.kind=tk.StringVar(value='ALL');self.index=tk.StringVar(value='SPX');self.sort=tk.StringVar(value='Market Cap')
+        top=ttk.Frame(self);top.pack(fill='x',padx=8,pady=5);ttk.Label(top,text='MARKET MAP',font=('Segoe UI',11,'bold')).pack(side='left');ttk.Label(top,text='Search').pack(side='left',padx=(12,2));e=ttk.Entry(top,textvariable=self.search,width=15);e.pack(side='left');ttk.Label(top,text='Universe').pack(side='left',padx=(9,2));ttk.Combobox(top,textvariable=self.kind,values=['ALL','STOCK','INTERNATIONAL','CRYPTO','COMMODITY','INDEX','FUTURES','FOREX'],state='readonly',width=14).pack(side='left');ttk.Label(top,text='Sector').pack(side='left',padx=(9,2));self.sec_cb=ttk.Combobox(top,textvariable=self.sector,values=['ALL']+market.sectors,state='readonly',width=16);self.sec_cb.pack(side='left');ttk.Label(top,text='Sort').pack(side='left',padx=(9,2));ttk.Combobox(top,textvariable=self.sort,values=['Market Cap','Change %','Symbol'],state='readonly',width=11).pack(side='left');self.page_label=ttk.Label(top,text='');self.page_label.pack(side='right');ttk.Button(top,text='NEXT ›',command=lambda:self.move_page(1)).pack(side='right',padx=2);ttk.Button(top,text='‹ PREV',command=lambda:self.move_page(-1)).pack(side='right')
+        for v in (self.search,self.kind,self.sector,self.sort):v.trace_add('write',lambda *_:self.reset_page())
+        pw=ttk.PanedWindow(self,orient='horizontal');pw.pack(fill='both',expand=True,padx=7,pady=4);left=ttk.Frame(pw);mid=ttk.Frame(pw);right=ttk.Frame(pw);pw.add(left,weight=2);pw.add(mid,weight=6);pw.add(right,weight=3)
+        ttk.Label(left,text='SECTOR BREADTH',font=('Segoe UI',9,'bold')).pack(anchor='w');self.sectors=ttk.Treeview(left,columns=('sector','chg','adv','dec'),show='headings',height=20);[(self.sectors.heading(c,text=t),self.sectors.column(c,width=w,anchor='center')) for c,t,w in [('sector','Sector',105),('chg','Avg %',58),('adv','Adv',45),('dec','Dec',45)]];self.sectors.pack(fill='both',expand=True)
+        self.cv=tk.Canvas(mid,bg='#071019',highlightthickness=0);self.cv.pack(fill='both',expand=True);self.cv.bind('<Double-1>',self.tile_open);self.cv.bind('<Button-3>',self.context)
+        rr=ttk.Frame(right);rr.pack(fill='x');ttk.Label(rr,text='INDEX IMPACT',font=('Segoe UI',9,'bold')).pack(side='left');ic=ttk.Combobox(rr,textvariable=self.index,values=[i.symbol for i in market.indexes],state='readonly',width=11);ic.pack(side='right');ic.bind('<<ComboboxSelected>>',lambda e:self.refresh(force=True));self.const=ttk.Treeview(right,columns=('symbol','weight','chg','impact'),show='headings');[(self.const.heading(c,text=t),self.const.column(c,width=w,anchor='center')) for c,t,w in [('symbol','Symbol',78),('weight','Weight',65),('chg','Chg %',65),('impact','Impact',72)]];self.const.pack(fill='both',expand=True);self.const.bind('<Double-1>',self.row_open);self.const.bind('<Button-3>',self.row_context)
+        self.detail=ttk.Label(self,text='Right-click any tile/constituent to trade • double-click for Advanced Chart',foreground=MUTED);self.detail.pack(fill='x',padx=9,pady=(0,5));self._job=None;self.refresh(force=True)
+    def reset_page(self):self.page=0;self.refresh(force=True)
+    def move_page(self,d):self.page=max(0,self.page+d);self.refresh(force=True)
+    def universe(self):
+        mapping={'STOCK':self.market.stocks,'INTERNATIONAL':self.market.international,'CRYPTO':self.market.crypto,'COMMODITY':self.market.commodities,'INDEX':self.market.indexes,'FUTURES':self.market.futures,'FOREX':self.market.forex};arr=list(self.market.all_assets() if self.kind.get()=='ALL' else mapping.get(self.kind.get(),[]));q=self.search.get().strip().upper();sec=self.sector.get()
+        if sec!='ALL':arr=[a for a in arr if getattr(a,'category','')==sec]
+        if q:arr=[a for a in arr if q in a.symbol.upper() or q in a.name.upper()]
+        if self.sort.get()=='Change %':arr.sort(key=lambda a:a.change_percent(),reverse=True)
+        elif self.sort.get()=='Symbol':arr.sort(key=lambda a:a.symbol)
+        else:arr.sort(key=lambda a:float(getattr(a,'market_cap',1) or 1),reverse=True)
+        return arr
+    def refresh(self,force=False):
+        try:
+            if self._job:
+                try:self.after_cancel(self._job)
+                except Exception:pass
+            allarr=self.universe();pages=max(1,math.ceil(len(allarr)/self.PAGE));self.page=min(self.page,pages-1);arr=allarr[self.page*self.PAGE:(self.page+1)*self.PAGE];self.page_label.config(text=f'{len(allarr):,} assets • page {self.page+1}/{pages}')
+            # Sector breadth is based on every stock/international asset, not just this page.
+            self.sectors.delete(*self.sectors.get_children());groups={}
+            for a in self.market.stocks+self.market.international:groups.setdefault(a.category,[]).append(a)
+            for sec,vals in sorted(groups.items()):
+                ch=[a.change_percent() for a in vals];self.sectors.insert('','end',values=(sec,f'{sum(ch)/max(1,len(ch)):+.2f}',sum(x>0 for x in ch),sum(x<0 for x in ch)))
+            c=self.cv;c.delete('all');self.tiles=[];w=max(500,c.winfo_width());h=max(500,c.winfo_height());cols=max(5,int(math.sqrt(max(1,len(arr))*w/max(1,h))));rows=max(1,math.ceil(max(1,len(arr))/cols));cw=w/cols;ch=h/rows
+            for i,a in enumerate(arr):
+                row,col=divmod(i,cols);x1=col*cw;y1=row*ch;x2=x1+cw-2;y2=y1+ch-2;pc=a.change_percent();fill='#144531' if pc>=1 else '#173126' if pc>=0 else '#542331' if pc<=-1 else '#342028';c.create_rectangle(x1,y1,x2,y2,fill=fill,outline='#233c4c');fs=7 if cw<65 else 8;c.create_text((x1+x2)/2,(y1+y2)/2-7,text=a.symbol,fill=TEXT,font=('Segoe UI',fs,'bold'));c.create_text((x1+x2)/2,(y1+y2)/2+8,text=f'{pc:+.2f}%',fill=GREEN if pc>=0 else RED,font=('Segoe UI',6));self.tiles.append((x1,y1,x2,y2,a))
+            idx=self.market.get_asset(self.index.get());self.const.delete(*self.const.get_children())
+            if idx is not None:
+                comps=[self.market.get_asset(s) for s in getattr(idx,'components',[])];comps=[a for a in comps if a];caps=sum(max(1,float(getattr(a,'market_cap',1))) for a in comps) or 1;rows2=[]
+                for a in comps:wt=max(1,float(getattr(a,'market_cap',1)))/caps;rows2.append((abs(wt*a.change_percent()),a,wt))
+                for _,a,wt in sorted(rows2,key=lambda z:z[0],reverse=True)[:300]:self.const.insert('','end',iid=a.symbol,values=(a.symbol,f'{wt*100:.2f}%',f'{a.change_percent():+.2f}%',f'{wt*a.change_percent():+.3f}'))
+        except Exception:pass
+        self._job=self.after(900,self.refresh)
+    def _asset_at(self,e):
+        for x1,y1,x2,y2,a in reversed(self.tiles):
+            if x1<=e.x<=x2 and y1<=e.y<=y2:return a
+    def tile_open(self,e):
+        a=self._asset_at(e)
+        if a:self.market.ui_app.advanced_chart(a)
+    def row_open(self,e):
+        iid=self.const.identify_row(e.y);a=self.market.get_asset(iid) if iid else None
+        if a:self.market.ui_app.advanced_chart(a)
+    def _menu(self,a,e):
+        if a is None:return
+        m=tk.Menu(self,tearoff=0);m.add_command(label=f'BUY {a.symbol}',command=lambda:self.market.ui_app.order_window(a,'BUY','MARKET',None));m.add_command(label=f'SELL {a.symbol}',command=lambda:self.market.ui_app.order_window(a,'SELL','MARKET',None));m.add_command(label=f'SHORT {a.symbol}',command=lambda:self.market.ui_app.order_window(a,'SHORT','MARKET',None));m.add_separator();m.add_command(label='ADVANCED CHART',command=lambda:self.market.ui_app.advanced_chart(a));m.add_command(label='OPTIONS',command=lambda:self.market.ui_app.options_for(a));m.add_command(label='LEVEL 2 / 3',command=lambda:self.market.ui_app.depth_for(a));m.tk_popup(e.x_root,e.y_root)
+    def context(self,e):self._menu(self._asset_at(e),e)
+    def row_context(self,e):
+        iid=self.const.identify_row(e.y);self._menu(self.market.get_asset(iid) if iid else None,e)
+
+# ---------- Global Viewer: real map, static geometry cache, tradeable objects / risk-news linkage ----------
+class GlobalTradeWorkstation(ToolWindow):
+    EXCH=[('NYSE / NASDAQ','US',40.71,-74.01),('CME','CME',41.88,-87.63),('TSX','TSX',43.65,-79.38),('LSE','LSE',51.51,-.13),('Euronext Paris','EURONEXT',48.86,2.35),('Frankfurt / XETRA','XETRA',50.11,8.68),('SIX Zurich','SIX',47.38,8.54),('Tokyo / TSE','TSE',35.68,139.77),('KRX Seoul','KRX',37.57,126.98),('HKEX','HKEX',22.32,114.17),('Shanghai / SSE','SSE',31.23,121.47),('Singapore / SGX','SGX',1.35,103.82),('India / NSE','NSE',19.08,72.88),('ASX Sydney','ASX',-33.87,151.21),('B3 Sao Paulo','B3',-23.55,-46.63),('JSE Johannesburg','JSE',-26.20,28.05)]
+    PORTS=[
+        {'name':'Los Angeles','lat':33.74,'lon':-118.27,'symbols':['MATX','UPS','FDX']},{'name':'New York / NJ','lat':40.67,'lon':-74.04,'symbols':['UPS','FDX','ZIM']},
+        {'name':'Rotterdam','lat':51.95,'lon':4.14,'symbols':['AMKBY','SHEL','BP']},{'name':'Singapore','lat':1.26,'lon':103.84,'symbols':['D05.SI','O39.SI','ZIM','BHP']},
+        {'name':'Shanghai','lat':31.35,'lon':121.50,'symbols':['1199.HK','0144.HK','BABA']},{'name':'Tokyo / Yokohama','lat':35.45,'lon':139.64,'symbols':['7203.T','6758.T','TM','SONY']},
+        {'name':'Santos','lat':-23.96,'lon':-46.30,'symbols':['VALE3.SA','PETR4.SA','VALE','PBR']},{'name':'Sydney','lat':-33.96,'lon':151.21,'symbols':['BHP.AX','RIO.AX','BHP']},
+        {'name':'Dubai','lat':25.27,'lon':55.30,'symbols':['DPW.DU']},
+    ]
+    AIR=[
+        {'a':'JFK','b':'LHR','lat1':40.64,'lon1':-73.78,'lat2':51.47,'lon2':-.45,'hours':7.0,'symbols':['FDX','UPS']},
+        {'a':'LAX','b':'NRT','lat1':33.94,'lon1':-118.40,'lat2':35.77,'lon2':140.39,'hours':11.5,'symbols':['FDX','UPS','6758.T']},
+        {'a':'FRA','b':'SIN','lat1':50.04,'lon1':8.56,'lat2':1.36,'lon2':103.99,'hours':12.5,'symbols':['DHL.DE','C6L.SI']},
+        {'a':'DXB','b':'HKG','lat1':25.25,'lon1':55.36,'lat2':22.31,'lon2':113.91,'hours':7.5,'symbols':['CPA','DPW.DU']},
+        {'a':'ORD','b':'PVG','lat1':41.97,'lon1':-87.90,'lat2':31.14,'lon2':121.80,'hours':14.0,'symbols':['FDX','UPS']},
+    ]
+    def __init__(self,parent,market):
+        super().__init__(parent);self.market=market;self.style_window('GLOBAL MARKETS • WORLD MAP / FREIGHT / RISK','1600x900');self.resizable(True,True);self.zoom=1.;self.panx=self.pany=0.;self._pa=None;self._static_key=None;self.hits=[];self.selected_assets=[];self.selected_obj=None
+        top=ttk.Frame(self);top.pack(fill='x',padx=6,pady=4);ttk.Label(top,text='GLOBAL MARKETS',font=('Segoe UI',12,'bold')).pack(side='left');self.layer_ex=tk.BooleanVar(value=True);self.layer_freight=tk.BooleanVar(value=True);self.layer_air=tk.BooleanVar(value=True);self.layer_risk=tk.BooleanVar(value=True)
+        for txt,var in [('Exchanges',self.layer_ex),('Ocean freight',self.layer_freight),('Air freight',self.layer_air),('Risk/news',self.layer_risk)]:ttk.Checkbutton(top,text=txt,variable=var,command=self.invalidate_static).pack(side='left',padx=4)
+        self.search=tk.StringVar();ttk.Entry(top,textvariable=self.search,width=18).pack(side='right');ttk.Label(top,text='Find').pack(side='right',padx=3);self.search.trace_add('write',lambda *_:self.draw_dynamic())
+        self.pw=ttk.PanedWindow(self,orient='horizontal');self.pw.pack(fill='both',expand=True,padx=5,pady=3);left=ttk.Frame(self.pw);side=ttk.Frame(self.pw,width=320);self.pw.add(left,weight=8);self.pw.add(side,weight=2);self.canvas=tk.Canvas(left,bg='#04101b',highlightthickness=0);self.canvas.pack(fill='both',expand=True)
+        self.canvas.bind('<Configure>',lambda e:self.invalidate_static());self.canvas.bind('<MouseWheel>',self.wheel);self.canvas.bind('<Button-1>',self.click);self.canvas.bind('<Button-3>',self.context);self.canvas.bind('<ButtonPress-2>',self.pan_start);self.canvas.bind('<B2-Motion>',self.pan_drag)
+        ttk.Label(side,text='OBJECT / RISK INSPECTOR',font=('Segoe UI',9,'bold')).pack(anchor='w',padx=6,pady=(6,2));self.info=tk.Text(side,height=9,bg='#08121b',fg=TEXT,relief='flat',wrap='word');self.info.pack(fill='x',padx=6,pady=2)
+        self.assoc=ttk.Treeview(side,columns=('symbol','name','role'),show='headings',height=7);[(self.assoc.heading(c,text=t),self.assoc.column(c,width=w,anchor='w')) for c,t,w in [('symbol','Symbol',72),('name','Company',125),('role','Role',80)]];self.assoc.pack(fill='x',padx=6,pady=3);self.assoc.bind('<Double-1>',lambda e:self.trade_action('CHART'));self.assoc.bind('<Button-3>',self.assoc_context);self.assoc.bind('<<TreeviewSelect>>',lambda e:self._sync_selected_asset())
+        actions=ttk.Frame(side);actions.pack(fill='x',padx=6,pady=2)
+        for txt in ('BUY','SELL','SHORT','CHART','OPTIONS'):ttk.Button(actions,text=txt,command=lambda t=txt:self.trade_action(t)).pack(side='left',expand=True,fill='x',padx=1)
+        tabs=ttk.Notebook(side);tabs.pack(fill='both',expand=True,padx=6,pady=4);st=ttk.Frame(tabs);ft=ttk.Frame(tabs);rt=ttk.Frame(tabs);mt=ttk.Frame(tabs);tabs.add(st,text='Sessions');tabs.add(ft,text='Freight');tabs.add(rt,text='Risks / News');tabs.add(mt,text='Macro')
+        self.ex_tv=ttk.Treeview(st,columns=('venue','state','local'),show='headings');[(self.ex_tv.heading(c,text=t),self.ex_tv.column(c,width=w,anchor='w' if c=='venue' else 'center',stretch=True)) for c,t,w in [('venue','Venue',128),('state','State',58),('local','Local',64)]];self.ex_tv.pack(fill='both',expand=True)
+        self.flow_tv=ttk.Treeview(ft,columns=('route','carrier','cargo','status'),show='headings');[(self.flow_tv.heading(c,text=t),self.flow_tv.column(c,width=w,anchor='w',stretch=True)) for c,t,w in [('route','Route',115),('carrier','Carrier',68),('cargo','Cargo owner',76),('status','Status',90)]];self.flow_tv.pack(fill='both',expand=True);self.flow_tv.bind('<<TreeviewSelect>>',self.flow_select)
+        self.risk_tv=ttk.Treeview(rt,columns=('symbol','headline'),show='headings');self.risk_tv.heading('symbol',text='Asset');self.risk_tv.heading('headline',text='Risk / news');self.risk_tv.column('symbol',width=65);self.risk_tv.column('headline',width=245);self.risk_tv.pack(fill='both',expand=True);self.risk_tv.bind('<<TreeviewSelect>>',self.risk_select)
+        self.macro=tk.Text(mt,bg='#08121b',fg=TEXT,relief='flat');self.macro.pack(fill='both',expand=True)
+        self.after(120,lambda:self._set_sash());self.refresh();self.invalidate_static();self.animate()
+    def _set_sash(self):
+        try:self.update_idletasks();self.pw.sashpos(0,int(max(900,self.pw.winfo_width())*.80))
+        except Exception:pass
+    def proj(self,lat,lon):
+        w=max(700,self.canvas.winfo_width());h=max(450,self.canvas.winfo_height());x=(lon+180)/360*w;y=(90-lat)/180*h;cx=w/2;cy=h/2;return cx+(x-cx)*self.zoom+self.panx,cy+(y-cy)*self.zoom+self.pany
+    def invalidate_static(self):self._static_key=None;self.draw_static();self.draw_dynamic()
+    def draw_static(self):
+        c=self.canvas;w=max(700,c.winfo_width());h=max(450,c.winfo_height());key=(w,h,round(self.zoom,4),round(self.panx,1),round(self.pany,1),bool(self.layer_freight.get()),bool(self.layer_air.get()))
+        if key==self._static_key:return
+        self._static_key=key;c.delete('all');c.create_rectangle(0,0,w,h,fill='#04101b',outline='',tags='static26')
+        for lon in range(-180,181,30):x,_=self.proj(0,lon);c.create_line(x,0,x,h,fill='#102633',tags='static26')
+        for lat in range(-60,91,30):_,y=self.proj(lat,0);c.create_line(0,y,w,y,fill='#102633',tags='static26')
+        for typ,poly in _SGP24_LAND:
+            if typ not in (1,5):continue
+            pts=[]
+            for lon,lat in poly:pts.extend(self.proj(lat,lon))
+            if len(pts)>=6:c.create_polygon(*pts,fill='#102a25',outline='#2e6658',width=1,tags='static26')
+        for typ,poly in _SGP24_LAND:
+            if typ!=2:continue
+            pts=[]
+            for lon,lat in poly:pts.extend(self.proj(lat,lon))
+            if len(pts)>=6:c.create_polygon(*pts,fill='#071824',outline='#173747',tags='static26')
+        for seg in _SGP24_BORDERS:
+            pts=[];last=None
+            for lon,lat in seg:
+                x,y=self.proj(lat,lon)
+                if last is not None and abs(x-last)>w*.55:
+                    if len(pts)>=4:c.create_line(*pts,fill='#1d473f',width=1,tags='static26')
+                    pts=[]
+                pts.extend((x,y));last=x
+            if len(pts)>=4:c.create_line(*pts,fill='#1d473f',width=1,tags='static26')
+        if self.layer_freight.get():
+            for sh in getattr(self.market,'shipments',[]):_sgp24_map_path(c,self,list((sh.get('route') or {}).get('points',[])),'#17627b',1,(4,4))
+        if self.layer_air.get():
+            for r in self.AIR:_sgp24_map_path(c,self,[_sgp24_geo_interp(r['lat1'],r['lon1'],r['lat2'],r['lon2'],t/28,arc=9) for t in range(29)],'#51477a',1,(2,5))
+        c.tag_lower('static26')
+    def _rotpoly(self,x,y,angle,shape,fill,outline=''):
+        cs,sn=math.cos(angle),math.sin(angle);pts=[]
+        for px,py in shape:pts.extend((x+px*cs-py*sn,y+px*sn+py*cs))
+        return self.canvas.create_polygon(*pts,fill=fill,outline=outline,tags='dynamic26')
+    def _route_pos(self,pts,pr):
+        u=(pr%1.0)*max(1,len(pts)-1);i=min(len(pts)-2,int(u));t=u-i;la1,lo1=pts[i];la2,lo2=pts[i+1];la,lo=_sgp24_geo_interp(la1,lo1,la2,lo2,t);x,y=self.proj(la,lo);xn,yn=self.proj(la2,lo2);return x,y,math.atan2(yn-y,xn-x)
+    def _risk_records(self):
+        out=[];loc={code:(lat,lon) for _,code,lat,lon in self.EXCH}
+        # News-driven risk blips: location follows the affected security's home exchange.
+        for j,ev in enumerate(list(getattr(self.market,'news',[]))[-18:]):
+            sym=str(getattr(ev,'symbol','') or '')
+            if not sym:continue
+            a=self.market.get_asset(sym)
+            if a is None:continue
+            code=str(getattr(a,'session','US') or 'US');lat,lon=loc.get(code,loc.get('US',(40.71,-74.01)));off=((sum(ord(ch) for ch in sym)%11)-5)*.45;out.append({'symbol':sym,'headline':str(getattr(ev,'headline',ev)),'impact':float(getattr(ev,'impact',0) or 0),'lat':lat+off*.35,'lon':lon+off,'asset':a})
+        # Geopolitical events only render when they have genuine coordinates; no (0,0) phantom circle.
+        for ev in getattr(self.market,'geopolitical_events',[]):
+            try:lat=float(ev.get('lat'));lon=float(ev.get('lon'))
+            except Exception:continue
+            if ev.get('resolved') or (abs(lat)<.01 and abs(lon)<.01):continue
+            out.append({'symbol':str(ev.get('symbol','GLOBAL')),'headline':str(ev.get('headline') or ev.get('type') or 'Geopolitical risk'),'impact':float(ev.get('impact',0) or 0),'lat':lat,'lon':lon,'asset':self.market.get_asset(ev.get('symbol'))})
+        return out[-24:]
+    def draw_dynamic(self):
+        try:
+            self.draw_static();c=self.canvas;c.delete('dynamic26');self.hits=[];q=self.search.get().strip().upper();w=max(700,c.winfo_width());h=max(450,c.winfo_height())
+            if self.layer_ex.get():
+                for name,code,lat,lon in self.EXCH:
+                    x,y=self.proj(lat,lon)
+                    try:isopen=market_status(code,self.market.clock.current)
+                    except Exception:isopen=False
+                    hit=not q or q in name.upper();r=6 if hit else 4;c.create_oval(x-r,y-r,x+r,y+r,fill=GREEN if isopen else '#687583',outline='#e1edf2',tags='dynamic26');c.create_text(x+8,y-8,text=name,anchor='w',fill=YELLOW if q and hit else '#d8e4e9',font=('Consolas',7,'bold'),tags='dynamic26');self.hits.append((x,y,10,'exchange',{'name':name,'code':code,'lat':lat,'lon':lon}))
+            for port in self.PORTS:
+                x,y=self.proj(port['lat'],port['lon']);c.create_rectangle(x-4,y-4,x+4,y+4,fill='#dfbd61',outline='#fff0ae',tags='dynamic26');self.hits.append((x,y,9,'port',port))
+            if self.layer_freight.get():
+                for sh in getattr(self.market,'shipments',[]):
+                    pts=list((sh.get('route') or {}).get('points',[]))
+                    if len(pts)<2:continue
+                    x,y,ang=self._route_pos(pts,float(sh.get('progress',0)));self._rotpoly(x,y,ang,[(-10,0),(-5,-4),(7,-3),(11,0),(7,3),(-5,4)],CYAN,'#dffaff');self.hits.append((x,y,12,'ship',sh))
+            if self.layer_air.get():
+                base=(self.market.clock.current-_sgp22_dt(2000,1,1)).total_seconds()
+                for j,r in enumerate(self.AIR):
+                    dur=max(3600,float(r['hours'])*3600);t=((base+j*dur*.217)%dur)/dur;la,lo=_sgp24_geo_interp(r['lat1'],r['lon1'],r['lat2'],r['lon2'],t,arc=9);la2,lo2=_sgp24_geo_interp(r['lat1'],r['lon1'],r['lat2'],r['lon2'],min(.999,t+.004),arc=9);x,y=self.proj(la,lo);xn,yn=self.proj(la2,lo2);ang=math.atan2(yn-y,xn-x);self._rotpoly(x,y,ang,[(12,0),(2,-2),(-1,-8),(-4,-8),(-3,-2),(-10,-1),(-10,1),(-3,2),(-4,8),(-1,8),(2,2)],'#c9bfff','#f0ecff');self.hits.append((x,y,13,'air',r))
+            if self.layer_risk.get():
+                for rec in self._risk_records():
+                    x,y=self.proj(rec['lat'],rec['lon']);c.create_oval(x-7,y-7,x+7,y+7,outline=ORANGE if rec['impact']<=0 else YELLOW,width=2,tags='dynamic26');c.create_text(x+9,y,text='RISK',anchor='w',fill=ORANGE,font=('Consolas',6,'bold'),tags='dynamic26');self.hits.append((x,y,11,'risk',rec))
+            c.create_rectangle(6,6,330,48,fill='#06131d',outline='#294a5c',tags='dynamic26');c.create_text(14,13,anchor='nw',text='WORLD MARKETS / FREIGHT / RISK',fill='#e9f0f3',font=('Segoe UI',9,'bold'),tags='dynamic26');c.create_text(14,31,anchor='nw',text='Click objects for related tradable securities',fill='#7f9caa',font=('Segoe UI',7),tags='dynamic26');c.create_text(8,h-8,anchor='sw',text='Middle-drag pan • wheel zoom • right-click objects to trade',fill='#80919d',font=('Segoe UI',7),tags='dynamic26')
+        except Exception:pass
+    def wheel(self,e):self.zoom=max(.55,min(5.0,self.zoom*(1.12 if e.delta>0 else .89)));self._static_key=None;self.draw_dynamic()
+    def pan_start(self,e):self._pa=(e.x,e.y,self.panx,self.pany)
+    def pan_drag(self,e):
+        if not self._pa:return
+        x,y,px,py=self._pa;self.panx=px+e.x-x;self.pany=py+e.y-y;self._static_key=None;self.draw_dynamic()
+    def nearest(self,e):
+        best=None
+        for x,y,r,t,o in self.hits:
+            d=(x-e.x)**2+(y-e.y)**2
+            if d<=max(16,r+5)**2 and (best is None or d<best[0]):best=(d,t,o)
+        return best[1:] if best else None
+    def _assets(self,symbols,role='Associated'):
+        out=[];seen=set()
+        for s in symbols:
+            a=self.market.get_asset(str(s))
+            if a is not None and a.symbol not in seen:out.append((a,role));seen.add(a.symbol)
+        return out
+    def select_obj(self,typ,obj):
+        self.selected_obj=(typ,obj);pairs=[];lines=[]
+        if typ=='exchange':
+            name,code=obj['name'],obj['code'];pairs=[(a,'Venue') for a in self.market.all_assets() if str(getattr(a,'session','US'))==code][:60];lines=[f'{name}',f'Session: {code} • {"OPEN" if market_status(code,self.market.clock.current) else "CLOSED"}',f'{len(pairs)} nearby/venue securities shown']
+        elif typ=='port':pairs=self._assets(obj.get('symbols',[]),'Port / logistics');lines=[f'PORT • {obj["name"]}','Associated shipping, cargo and logistics securities']
+        elif typ=='ship':
+            sy=[obj.get('carrier'),obj.get('cargo_owner')];pairs=self._assets([x for x in sy if x], 'Carrier / cargo');lines=[f'VESSEL • {(obj.get("route") or {}).get("name","")}',f'Carrier: {obj.get("carrier","—")}',f'Cargo owner: {obj.get("cargo_owner","—")}',f'Progress: {float(obj.get("progress",0))*100:.1f}%  •  {obj.get("status","IN TRANSIT")}',f'Cargo value: ${float(obj.get("cargo_value",0)):,.0f}']
+        elif typ=='air':pairs=self._assets(obj.get('symbols',[]),'Air freight / endpoint');lines=[f'AIR FREIGHT • {obj["a"]} → {obj["b"]}',f'Estimated route time: {obj["hours"]:.1f} hours',f'Motion follows simulated clock; 1x is real-time seconds.']
+        elif typ=='risk':
+            a=obj.get('asset');pairs=[]
+            if a is not None:
+                pairs.append((a,'Direct'));pairs += [(x,'Same sector') for x in self.market.stocks+self.market.international if x is not a and x.category==a.category][:24]
+            lines=[f'RISK / NEWS • {obj.get("symbol","GLOBAL")}',obj.get('headline',''),f'Modeled impact: {obj.get("impact",0):+.3f}',f'Affected sector: {getattr(a,"category","Global") if a else "Global"}']
+        self.selected_assets=pairs;self.info.delete('1.0','end');self.info.insert('end','\n'.join(lines));self.assoc.delete(*self.assoc.get_children())
+        for a,role in pairs[:80]:self.assoc.insert('','end',iid=a.symbol,values=(a.symbol,a.name,role))
+        if pairs:self.assoc.selection_set(pairs[0][0].symbol)
+    def click(self,e):
+        hit=self.nearest(e)
+        if hit:self.select_obj(*hit)
+    def context(self,e):
+        hit=self.nearest(e)
+        if hit:self.select_obj(*hit);self._popup_trade(e)
+    def _sync_selected_asset(self):pass
+    def selected_asset(self):
+        sel=self.assoc.selection();return self.market.get_asset(sel[0]) if sel else (self.selected_assets[0][0] if self.selected_assets else None)
+    def _popup_trade(self,e):
+        a=self.selected_asset()
+        if a is None:return
+        m=tk.Menu(self,tearoff=0);m.add_command(label=f'BUY {a.symbol}',command=lambda:self.trade_action('BUY'));m.add_command(label=f'SELL {a.symbol}',command=lambda:self.trade_action('SELL'));m.add_command(label=f'SHORT {a.symbol}',command=lambda:self.trade_action('SHORT'));m.add_separator();m.add_command(label='ADVANCED CHART',command=lambda:self.trade_action('CHART'));m.add_command(label='OPTIONS',command=lambda:self.trade_action('OPTIONS'));m.tk_popup(e.x_root,e.y_root)
+    def assoc_context(self,e):
+        iid=self.assoc.identify_row(e.y)
+        if iid:self.assoc.selection_set(iid);self._popup_trade(e)
+    def trade_action(self,act):
+        a=self.selected_asset()
+        if a is None:return
+        app=self.market.ui_app
+        if act in ('BUY','SELL','SHORT'):app.order_window(a,act,'MARKET',None)
+        elif act=='CHART':app.advanced_chart(a)
+        elif act=='OPTIONS':app.options_for(a)
+    def flow_select(self,e=None):
+        sel=self.flow_tv.selection()
+        if not sel:return
+        try:i=int(sel[0].split(':')[-1]);sh=list(getattr(self.market,'shipments',[]))[i];self.select_obj('ship',sh)
+        except Exception:pass
+    def risk_select(self,e=None):
+        sel=self.risk_tv.selection()
+        if not sel:return
+        try:i=int(sel[0].split(':')[-1]);self.select_obj('risk',self._risk_records()[i])
+        except Exception:pass
+    def refresh(self):
+        try:
+            self.ex_tv.delete(*self.ex_tv.get_children())
+            for name,code,lat,lon in self.EXCH:
+                try:
+                    sess=SESSIONS.get(code);z=_sgp22_ZoneInfo(sess.tz if sess else 'UTC');local=self.market.clock.current.replace(tzinfo=_sgp22_ZoneInfo('America/New_York')).astimezone(z);state='OPEN' if market_status(code,self.market.clock.current) else 'CLOSED';lt=local.strftime('%H:%M:%S')
+                except Exception:state='—';lt='—'
+                self.ex_tv.insert('','end',values=(name,state,lt))
+            self.flow_tv.delete(*self.flow_tv.get_children())
+            for i,sh in enumerate(getattr(self.market,'shipments',[])[:80]):self.flow_tv.insert('','end',iid=f'F:{i}',values=((sh.get('route') or {}).get('name',''),sh.get('carrier','—'),sh.get('cargo_owner','—'),sh.get('status','IN TRANSIT')))
+            risks=self._risk_records();self.risk_tv.delete(*self.risk_tv.get_children())
+            for i,r in enumerate(risks):self.risk_tv.insert('','end',iid=f'R:{i}',values=(r.get('symbol',''),r.get('headline','')))
+            m=self.market.macro;self.macro.delete('1.0','end');self.macro.insert('end',f'GLOBAL MACRO\n\nInflation       {m.get("inflation",0):.2f}%\nPolicy rate     {m.get("policy_rate",0):.2f}%\nUnemployment    {m.get("unemployment",0):.2f}%\nGDP growth      {m.get("gdp_growth",0):.2f}%\n10Y yield       {m.get("ten_year",0):.2f}%\nDollar index    {m.get("dollar",0):.2f}\nSentiment       {m.get("sentiment",0):+.2f}\nLiquidity       {m.get("liquidity",1):.2f}x\n\nUniverse        {len(self.market.all_assets()):,} assets')
+        except Exception:pass
+        self.after(1200,self.refresh)
+    def animate(self):
+        if not self.winfo_exists():return
+        try:self.draw_dynamic();delay=650 if self.winfo_viewable() else 1600
+        except Exception:delay=1200
+        self.after(delay,self.animate)
+GlobeWindow=GlobalTradeWorkstation
+
+# ---------- app layout / singleton-heavy windows / advanced window cap ----------
+_App_init_sys25_parent=App.__init__
+def _sgp25sys_app_init(self,root,market,portfolio):
+    _App_init_sys25_parent(self,root,market,portfolio)
+    # More useful vertical range on regular charts.
+    try:self.v24_scale.config(from_=.05,to=50.0,length=96)
+    except Exception:pass
+    # Account analytics are literally first; summary follows; aggregate model moves to bottom.
+    try:
+        box=self.perf_canvas23.master;tab=self.summary.master;box.pack_forget();self.summary.pack_forget();self.pred.pack_forget();box.pack(fill='x',padx=6,pady=(3,2));self.summary.pack(fill='both',expand=True,padx=6,pady=4);self.pred.pack(fill='x',side='bottom',padx=8,pady=(3,7));self.perf_canvas23.config(height=150)
+    except Exception:pass
+    try:self.career_btn.config(text='CAREER',width=8,command=self.open_career26)
+    except Exception:pass
+    self._heavy26={};self._adv26=[]
+App.__init__=_sgp25sys_app_init
+
+def _sgp25sys_sync_controls(self):
+    try:
+        c=self.charts[self.active_chart];v=float(getattr(c,'vertical_scale',1.0));self.v24_var.set(v);self.v24_label.config(text=f'{v:.2f}x' if not getattr(c,'_manual_fit_bounds26',None) else 'FIT')
+    except Exception:pass
+App._sync_vertical26=_sgp25sys_sync_controls
+
+_App_sync_sys_parent=App.sync_chart_controls
+def _sgp25sys_sync_chart_controls(self):
+    out=_App_sync_sys_parent(self);self._sync_vertical26();return out
+App.sync_chart_controls=_sgp25sys_sync_chart_controls
+
+def _sgp25sys_open_single(self,key,cls,*args):
+    w=getattr(self,'_heavy26',{}).get(key)
+    try:
+        if w is not None and w.winfo_exists():w.deiconify();w.lift();w.focus_force();return w
+    except Exception:pass
+    w=cls(self.root,*args);self._heavy26[key]=w
+    try:w.bind('<Destroy>',lambda e,k=key,obj=w:self._heavy26.pop(k,None) if e.widget is obj else None,add='+')
+    except Exception:pass
+    return w
+App._open_single26=_sgp25sys_open_single
+
+def _sgp25sys_open_career(self):return self._open_single26('career',CareerFinanceWindow,self)
+def _sgp25sys_globe(self):return self._open_single26('global',GlobalTradeWorkstation,self.market)
+def _sgp25sys_market_map(self):return self._open_single26('marketmap',MarketMapWindow,self.market)
+App.open_career26=_sgp25sys_open_career;App.globe=_sgp25sys_globe;App.market_map=_sgp25sys_market_map
+
+_Adv_init_sys_parent=AdvancedChartWindow.__init__
+def _sgp25sys_adv_init(self,parent,app,asset):
+    _Adv_init_sys_parent(self,parent,app,asset)
+    try:
+        def walk(w):
+            for ch in w.winfo_children():
+                try:
+                    if isinstance(ch,ttk.Scale) and float(ch.cget('from')) in (.5,.25) and float(ch.cget('to')) in (5.0,8.0):ch.config(from_=.05,to=50.0)
+                except Exception:pass
+                walk(ch)
+        walk(self)
+    except Exception:pass
+AdvancedChartWindow.__init__=_sgp25sys_adv_init
+
+def _sgp25sys_advanced_chart(self,a):
+    # Reuse an existing advanced window for the same symbol. Bound the total to avoid a dozens-of-
+    # canvases failure mode; the oldest window is closed only after six distinct advanced charts.
+    alive=[]
+    for w in getattr(self,'_adv26',[]):
+        try:
+            if w.winfo_exists():alive.append(w)
+        except Exception:pass
+    self._adv26=alive
+    for w in alive:
+        try:
+            if getattr(getattr(w,'chart',None),'asset',None) is a:w.deiconify();w.lift();return w
+        except Exception:pass
+    if len(alive)>=6:
+        try:alive[0].destroy();alive=alive[1:]
+        except Exception:pass
+    w=AdvancedChartWindow(self.root,self,a);self._adv26=alive+[w];return w
+App.advanced_chart=_sgp25sys_advanced_chart
+
+# Version title remains production 2.5.
+_App_init_title25_parent=App.__init__
+def _sgp25sys_title_init(self,root,market,portfolio):
+    _App_init_title25_parent(self,root,market,portfolio)
+    try:self.root.title('Stock Game Pro 2.5 Production — Global Trading Simulator')
+    except Exception:pass
+App.__init__=_sgp25sys_title_init

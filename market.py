@@ -60,7 +60,7 @@ class Market:
         for s,n,p,com,v,data_symbol,session in GLOBAL_INDEXES:
             idx=Index(s,n,p,com,v);idx.data_symbol=data_symbol;idx.session=session;idx.category='Global Index';self.indexes.append(idx)
         self.futures=[Future('ES=F','E-mini S&P 500',6400,.001,'Futures','ES=F',50,.08,'CME'),Future('NQ=F','E-mini Nasdaq 100',23500,.002,'Futures','NQ=F',20,.08,'CME'),Future('YM=F','E-mini Dow',42000,.0012,'Futures','YM=F',5,.08,'CME'),Future('RTY=F','E-mini Russell 2000',2250,.0015,'Futures','RTY=F',50,.08,'CME')]
-        self.crypto=[Crypto('BTC-USD','Bitcoin',118000,.01),Crypto('ETH-USD','Ethereum',4200,.012),Crypto('SOL-USD','Solana',180,.016),Crypto('XRP-USD','XRP',2.8,.018)]
+        self.crypto=[Crypto('BTC-USD','Bitcoin',118000,.010),Crypto('ETH-USD','Ethereum',4200,.012),Crypto('SOL-USD','Solana',180,.016),Crypto('XRP-USD','XRP',2.8,.018),Crypto('DOGE-USD','Dogecoin',.22,.022),Crypto('ADA-USD','Cardano',.85,.019),Crypto('AVAX-USD','Avalanche',34,.021),Crypto('LINK-USD','Chainlink',24,.020),Crypto('DOT-USD','Polkadot',5.0,.020),Crypto('LTC-USD','Litecoin',125,.017),Crypto('BCH-USD','Bitcoin Cash',590,.018),Crypto('XLM-USD','Stellar',.42,.020),Crypto('SUI-USD','Sui',3.7,.024),Crypto('TRX-USD','TRON',.34,.016),Crypto('HBAR-USD','Hedera',.24,.021)]
         self.forex=[Forex('EURUSD=X','EUR/USD',1.17,.0015),Forex('USDJPY=X','USD/JPY',148,.0015),Forex('GBPUSD=X','GBP/USD',1.35,.0015),Forex('AUDUSD=X','AUD/USD',.66,.0015),Forex('USDCAD=X','USD/CAD',1.38,.0014),Forex('USDCHF=X','USD/CHF',.81,.0013)]
         existing={a.symbol:a for a in self.stocks};self.international=[]
         for s,n,p,v,c,ds,session,currency in GLOBAL_STOCKS:
