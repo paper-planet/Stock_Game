@@ -2138,14 +2138,14 @@ _SGP25FP_CRYPTO=[
 # Waypoints deliberately hug common ocean corridors instead of connecting ports with straight
 # chords through continents. They are a simulator representation of maritime lanes, not navigation.
 _SGP25FP_FREIGHT_ROUTES=[
- {'name':'Shanghai → Los Angeles','origin':'Shanghai','destination':'Los Angeles','days':14,'points':[(30.2,123.3),(25,140),(27,162),(32,178),(34,-162),(35,-140),(33.8,-121.0)],'products':['consumer electronics','semiconductors','machinery','apparel','auto parts'],'carriers':['ZIM','MATX','AMKBY'],'owners':['AAPL','NVDA','WMT','NKE','BABA','6758.T','7203.T']},
- {'name':'Singapore → Rotterdam • Cape lane','origin':'Singapore','destination':'Rotterdam','days':28,'points':[(-8.2,106.0),(-18,92),(-28,70),(-36,45),(-39,24),(-35,12),(-26,3),(-12,-7),(8,-16),(28,-20),(43,-14),(50,-6),(51.5,2.0)],'products':['refined fuels','electronics','industrial machinery','chemicals','containerized goods'],'carriers':['ZIM','AMKBY','DAC'],'owners':['SHEL','BP','SAP.DE','BHP','D05.SI']},
- {'name':'Rotterdam → New York / NJ','origin':'Rotterdam','destination':'New York / NJ','days':10,'points':[(51.4,2.0),(49,-8),(49,-22),(46,-40),(42,-58),(40.5,-72.5)],'products':['pharmaceuticals','industrial equipment','autos','chemicals','consumer goods'],'carriers':['AMKBY','ZIM','DAC'],'owners':['SNY','SAP.DE','MBG.DE','SHEL','NVS']},
- {'name':'Santos → Shanghai • Cape / Pacific lane','origin':'Santos','destination':'Shanghai','days':31,'points':[(-25.0,-44.0),(-34,-30),(-39,-8),(-39,18),(-34,42),(-25,68),(-15,92),(-10,108),(-8,125),(2,138),(16,134),(28,126),(30.4,123.0)],'products':['iron ore','soybeans','coffee','crude oil','pulp'],'carriers':['SBLK','FRO','STNG','AMKBY'],'owners':['VALE3.SA','VALE','PBR','SUZB3.SA']},
- {'name':'Sydney → Singapore • Indian Ocean lane','origin':'Sydney','destination':'Singapore','days':16,'points':[(-34.0,153.0),(-44,150),(-44,128),(-35,111),(-22,103),(-10,99),(-3,101),(0.2,103.0)],'products':['iron ore','LNG','coal','agricultural goods','industrial minerals'],'carriers':['SBLK','FRO','AMKBY'],'owners':['BHP.AX','RIO.AX','BHP']},
- {'name':'Yokohama → Los Angeles','origin':'Tokyo / Yokohama','destination':'Los Angeles','days':12,'points':[(35.0,141.5),(31,158),(34,178),(36,-164),(35,-142),(33.8,-121.0)],'products':['automobiles','robotics','electronics','precision machinery','auto parts'],'carriers':['MATX','ZIM','AMKBY'],'owners':['7203.T','7267.T','6758.T','6902.T','TM','SONY']},
- {'name':'Dubai / Jebel Ali → Rotterdam • Cape lane','origin':'Dubai / Jebel Ali','destination':'Rotterdam','days':24,'points':[(23.8,60.0),(12,66),(-6,60),(-25,44),(-37,24),(-34,10),(-20,-2),(0,-12),(22,-20),(42,-14),(50,-6),(51.5,2.0)],'products':['petrochemicals','aluminum','machinery','consumer goods','re-export containers'],'carriers':['AMKBY','ZIM','FRO'],'owners':['SHEL','BP','BHP','DPW.DU']},
- {'name':'Santos → Rotterdam','origin':'Santos','destination':'Rotterdam','days':15,'points':[(-25.0,-44.0),(-20,-35),(-8,-27),(8,-25),(25,-22),(39,-16),(49,-7),(51.5,2.0)],'products':['coffee','soybeans','iron ore','pulp','orange products'],'carriers':['SBLK','DAC','AMKBY'],'owners':['VALE3.SA','SUZB3.SA','VALE']},
+ {'name':'Shanghai / Yangshan → Los Angeles / Long Beach','origin':'Shanghai / Yangshan','destination':'Los Angeles / Long Beach','days':14,'points':[(30.62,122.06),(29.5,126.0),(25.5,140.0),(27.0,162.0),(32.0,178.0),(34.0,-162.0),(35.0,-140.0),(33.9,-123.0),(33.74,-118.25)],'products':['consumer electronics','semiconductors','machinery','apparel','auto parts'],'carriers':['ZIM','MATX','AMKBY'],'owners':['AAPL','NVDA','WMT','NKE','BABA','6758.T','7203.T']},
+ {'name':'Singapore → Rotterdam • Cape lane','origin':'Singapore','destination':'Rotterdam','days':28,'points':[(1.26,103.84),(-2.0,105.0),(-8.2,106.0),(-18.0,92.0),(-28.0,70.0),(-36.0,45.0),(-39.0,24.0),(-35.0,12.0),(-26.0,3.0),(-12.0,-7.0),(8.0,-16.0),(28.0,-20.0),(43.0,-14.0),(49.0,-6.0),(50.2,-2.0),(51.2,1.0),(51.95,4.14)],'products':['refined fuels','electronics','industrial machinery','chemicals','containerized goods'],'carriers':['ZIM','AMKBY','DAC'],'owners':['SHEL','BP','SAP.DE','BHP','D05.SI']},
+ {'name':'Rotterdam → New York / New Jersey','origin':'Rotterdam','destination':'New York / New Jersey','days':10,'points':[(51.95,4.14),(51.2,1.0),(49.5,-6.0),(49.0,-22.0),(46.0,-40.0),(42.0,-58.0),(40.3,-70.0),(40.67,-74.05)],'products':['pharmaceuticals','industrial equipment','autos','chemicals','consumer goods'],'carriers':['AMKBY','ZIM','DAC'],'owners':['SNY','SAP.DE','MBG.DE','SHEL','NVS']},
+ {'name':'Santos → Shanghai / Yangshan • Cape / Malacca lane','origin':'Santos','destination':'Shanghai / Yangshan','days':31,'points':[(-23.96,-46.30),(-25.0,-44.0),(-34.0,-30.0),(-39.0,-8.0),(-39.0,18.0),(-34.0,42.0),(-25.0,68.0),(-12.0,88.0),(-3.0,99.0),(1.0,104.0),(8.0,110.0),(18.0,116.0),(27.0,121.0),(30.62,122.06)],'products':['iron ore','soybeans','coffee','crude oil','pulp'],'carriers':['SBLK','FRO','STNG','AMKBY'],'owners':['VALE3.SA','VALE','PBR','SUZB3.SA']},
+ {'name':'Sydney / Port Botany → Singapore • Indian Ocean lane','origin':'Sydney / Port Botany','destination':'Singapore','days':16,'points':[(-33.96,151.21),(-36.0,153.0),(-44.0,150.0),(-44.0,128.0),(-35.0,111.0),(-22.0,103.0),(-10.0,99.0),(-3.0,101.0),(1.26,103.84)],'products':['iron ore','LNG','coal','agricultural goods','industrial minerals'],'carriers':['SBLK','FRO','AMKBY'],'owners':['BHP.AX','RIO.AX','BHP']},
+ {'name':'Tokyo / Yokohama → Los Angeles / Long Beach','origin':'Tokyo / Yokohama','destination':'Los Angeles / Long Beach','days':12,'points':[(35.45,139.66),(35.0,141.5),(31.0,158.0),(34.0,178.0),(36.0,-164.0),(35.0,-142.0),(33.9,-123.0),(33.74,-118.25)],'products':['automobiles','robotics','electronics','precision machinery','auto parts'],'carriers':['MATX','ZIM','AMKBY'],'owners':['7203.T','7267.T','6758.T','6902.T','TM','SONY']},
+ {'name':'Dubai / Jebel Ali → Rotterdam • Cape lane','origin':'Dubai / Jebel Ali','destination':'Rotterdam','days':24,'points':[(25.01,55.06),(23.8,60.0),(12.0,66.0),(-6.0,60.0),(-25.0,44.0),(-37.0,24.0),(-34.0,10.0),(-20.0,-2.0),(0.0,-12.0),(22.0,-20.0),(42.0,-14.0),(49.0,-6.0),(50.2,-2.0),(51.2,1.0),(51.95,4.14)],'products':['petrochemicals','aluminum','machinery','consumer goods','re-export containers'],'carriers':['AMKBY','ZIM','FRO'],'owners':['SHEL','BP','BHP','DPW.DU']},
+ {'name':'Santos → Rotterdam','origin':'Santos','destination':'Rotterdam','days':15,'points':[(-23.96,-46.30),(-25.0,-44.0),(-20.0,-35.0),(-8.0,-27.0),(8.0,-25.0),(25.0,-22.0),(39.0,-16.0),(49.0,-7.0),(50.2,-2.0),(51.2,1.0),(51.95,4.14)],'products':['coffee','soybeans','iron ore','pulp','orange products'],'carriers':['SBLK','DAC','AMKBY'],'owners':['VALE3.SA','SUZB3.SA','VALE']},
 ]
 
 _Market_new_shipment_sgp25fp_old=Market._new_shipment
@@ -2449,3 +2449,81 @@ async def _sgp25_indexnews_tick(self):
         except Exception as e:
             self.errors.append(f'index news monitor: {e}')
 Market.tick=_sgp25_indexnews_tick
+
+# ============================================================================
+# Stock Game Pro 2.5 Production — port-anchored transport routes
+# ============================================================================
+# Route progress is measured by geographic segment length instead of waypoint count.  This keeps
+# vessels moving at an even visual speed, handles the International Date Line, and guarantees that
+# progress 0/1 resolves to the actual origin/destination port coordinates.
+def _sgp25_transport_route_position(points,progress):
+    pts=[(float(a),float(b)) for a,b in (points or ())]
+    if not pts:return (0.0,0.0)
+    if len(pts)==1:return pts[0]
+    segs=[];total=0.0
+    for a,b in zip(pts,pts[1:]):
+        dl=b[1]-a[1]
+        if dl>180:dl-=360
+        elif dl<-180:dl+=360
+        scale=max(.18,math.cos(math.radians((a[0]+b[0])*.5)))
+        dist=max(1e-9,math.hypot(b[0]-a[0],dl*scale));segs.append((dist,a,b,dl));total+=dist
+    p=max(0.0,min(1.0,float(progress)))
+    if p<=0:return pts[0]
+    if p>=1:return pts[-1]
+    target=p*total;acc=0.0
+    for dist,a,b,dl in segs:
+        if acc+dist>=target:
+            t=(target-acc)/dist;lat=a[0]+(b[0]-a[0])*t;lon=((a[1]+dl*t+180)%360)-180;return lat,lon
+        acc+=dist
+    return pts[-1]
+
+def _sgp25_transport_ship_position(self,shipment):
+    return _sgp25_transport_route_position((shipment.get('route') or {}).get('points',()),shipment.get('progress',0.0))
+
+def _sgp25_transport_hazard_position(self,shipment):
+    return _sgp25_transport_route_position((shipment.get('route') or {}).get('points',()),shipment.get('hazard_progress',0.0))
+
+def _sgp25_transport_great_circle(lat1,lon1,lat2,lon2,t):
+    t=max(0.0,min(1.0,float(t)));p1=math.radians(float(lat1));l1=math.radians(float(lon1));p2=math.radians(float(lat2));l2=math.radians(float(lon2))
+    a=(math.cos(p1)*math.cos(l1),math.cos(p1)*math.sin(l1),math.sin(p1));b=(math.cos(p2)*math.cos(l2),math.cos(p2)*math.sin(l2),math.sin(p2));dot=max(-1.0,min(1.0,sum(x*y for x,y in zip(a,b))));omega=math.acos(dot)
+    if omega<1e-9:v=a
+    else:
+        den=math.sin(omega);u=math.sin((1.0-t)*omega)/den;v2=math.sin(t*omega)/den;v=tuple(u*a[i]+v2*b[i] for i in range(3))
+    n=max(1e-12,math.sqrt(sum(x*x for x in v)));x,y,z=(q/n for q in v);return math.degrees(math.atan2(z,math.hypot(x,y))),math.degrees(math.atan2(y,x))
+
+def _sgp25_transport_air_position(self,flight):
+    pts=list((flight.get('route') or {}).get('points',()))
+    if len(pts)<2:return pts[0] if pts else (0.0,0.0)
+    return _sgp25_transport_great_circle(*pts[0],*pts[-1],flight.get('progress',0.0))
+
+Market.shipment_position=_sgp25_transport_ship_position
+Market.shipment_hazard_position=_sgp25_transport_hazard_position
+Market.air_shipment_position=_sgp25_transport_air_position
+
+# A completed vessel keeps its identity and returns over the same real corridor.  The reverse leg
+# receives a fresh cargo/risk record, while its first/last coordinates remain the named ports.  This
+# removes the offshore turn-around/snap that was especially obvious on Los Angeles-bound routes.
+_Market_new_shipment_roundtrip25_base=Market._new_shipment
+def _sgp25_roundtrip_route(route):
+    out=dict(route or {});origin=str(out.get('origin','Origin'));destination=str(out.get('destination','Destination'));out['points']=list(reversed(list(out.get('points',()))));out['origin'],out['destination']=destination,origin;out['name']=f'{destination} → {origin}';out['return_leg']=not bool(out.get('return_leg',False));return out
+
+def _sgp25_roundtrip_new_shipment(self,i,carrier=None,owner=None):
+    iid=int(i);state=getattr(self,'_shipping_cycle25',None)
+    if state is None:self._shipping_cycle25={};state=self._shipping_cycle25
+    prev=state.get(iid);out=_Market_new_shipment_roundtrip25_base(self,iid,carrier,owner)
+    if prev is not None:
+        route=_sgp25_roundtrip_route(prev['route']);carriers=list(route.get('carriers') or ());owners=list(route.get('owners') or ());products=list(route.get('products') or ())
+        chosen_carrier=carrier if carrier in carriers else prev.get('carrier') if prev.get('carrier') in carriers else random.choice(carriers or [out.get('carrier','ZIM')])
+        chosen_owner=owner if owner in owners else random.choice(owners or [out.get('cargo_owner','AAPL')])
+        out.update(route=route,origin=route.get('origin','—'),destination=route.get('destination','—'),carrier=chosen_carrier,provider=chosen_carrier,cargo_owner=chosen_owner,product=random.choice(products or ['containerized goods']),progress=0.0,status='RETURN LEG')
+    state[iid]={'route':out.get('route') or {},'carrier':out.get('carrier'),'owner':out.get('cargo_owner')}
+    return out
+Market._new_shipment=_sgp25_roundtrip_new_shipment
+
+_Market_init_port_routes25_base=Market.__init__
+def _sgp25_port_routes_init(self,*args,**kwargs):
+    _Market_init_port_routes25_base(self,*args,**kwargs)
+    # Earlier compatibility initializers also create freight.  Reset once after the final market
+    # initializer so every live vessel starts on the corrected production route set.
+    self._shipping_cycle25={};self.freight_routes=[dict(r) for r in _SGP25FP_FREIGHT_ROUTES];self.shipments=[self._new_shipment(i) for i in range(18)]
+Market.__init__=_sgp25_port_routes_init

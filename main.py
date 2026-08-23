@@ -67,9 +67,9 @@ def main_menu(root,accounts):
     try:
         from world_land import LAND_POLYGONS as _PORTAL_LAND, COUNTRY_BORDERS as _PORTAL_BORDERS
     except Exception:_PORTAL_LAND=[];_PORTAL_BORDERS=[]
-    # Precompute water-only route runs once for the launcher.  This clips the schematic trade
-    # network against the same coastline geometry used to draw the Earth map, so neither lane
-    # strokes nor animated vessels appear over land when a coarse waypoint chord clips a coast.
+    # Precompute continuous route runs once for the launcher.  Production waypoints already follow
+    # ocean corridors and terminate at the named ports; keeping each run continuous prevents the
+    # old water-mask gaps from making a ship turn around before reaching the coast.
     _portal_land=[poly for typ,poly in _PORTAL_LAND if typ in (1,5) and len(poly)>=3]
     _portal_water_cache={}
     def _portal_point_in_poly(x,y,poly):
@@ -97,17 +97,24 @@ def main_menu(root,accounts):
             dist=max(abs(la2-la1),abs(lo2-lo1)*max(.25,math.cos(math.radians((la1+la2)*.5))));n=max(3,min(150,int(math.ceil(dist/.5))))
             for k in range(n+1):
                 t=k/n;la=la1+(la2-la1)*t;lo=((lo1+(lo2-lo1)*t+180)%360)-180
-                if not _portal_is_land(la,lo):
-                    if not run or abs(run[-1][0]-la)>1e-6 or abs(run[-1][1]-lo)>1e-6:run.append((la,lo))
-                elif run:
+                if run and abs(lo-run[-1][1])>180:
                     if len(run)>=2:runs.append(run)
                     run=[]
+                if not run or abs(run[-1][0]-la)>1e-6 or abs(run[-1][1]-lo)>1e-6:run.append((la,lo))
         if run and len(run)>=2:runs.append(run)
         _portal_water_cache[key]=runs;return runs
     try:
         from game_core import market_status as _portal_market_status, SESSIONS as _PORTAL_SESSIONS
     except Exception:_portal_market_status=None;_PORTAL_SESSIONS={}
     portal_ex=[('NYSE','US',40.71,-74.01),('CME','CME',41.88,-87.63),('LSE','LSE',51.51,-.13),('XETRA','XETRA',50.11,8.68),('TSE','TSE',35.68,139.77),('HKEX','HKEX',22.32,114.17),('SSE','SSE',31.23,121.47),('SGX','SGX',1.35,103.82),('ASX','ASX',-33.87,151.21),('B3','B3',-23.55,-46.63)]
+    portal_ports=[('LA/LB',33.74,-118.25),('NY/NJ',40.67,-74.05),('ROTTERDAM',51.95,4.14),('SINGAPORE',1.26,103.84),('SHANGHAI',30.62,122.06),('YOKOHAMA',35.45,139.66),('SANTOS',-23.96,-46.30),('SYDNEY',-33.96,151.21),('JEBEL ALI',25.01,55.06)]
+    portal_airs=[('JFK','LHR',40.64,-73.78,51.47,-.45,18.0),('LAX','NRT',33.94,-118.40,35.77,140.39,24.0),('FRA','SIN',50.04,8.56,1.36,103.99,26.0),('DXB','HKG',25.25,55.36,22.31,113.91,20.0),('ORD','PVG',41.97,-87.90,31.14,121.80,28.0)]
+    def _portal_great_circle(lat1,lon1,lat2,lon2,t):
+        t=max(0.0,min(1.0,float(t)));p1=math.radians(lat1);l1=math.radians(lon1);p2=math.radians(lat2);l2=math.radians(lon2);a=(math.cos(p1)*math.cos(l1),math.cos(p1)*math.sin(l1),math.sin(p1));b=(math.cos(p2)*math.cos(l2),math.cos(p2)*math.sin(l2),math.sin(p2));dot=max(-1.0,min(1.0,sum(x*y for x,y in zip(a,b))));omega=math.acos(dot)
+        if omega<1e-9:v=a
+        else:
+            den=math.sin(omega);u=math.sin((1-t)*omega)/den;v2=math.sin(t*omega)/den;v=tuple(u*a[i]+v2*b[i] for i in range(3))
+        n=max(1e-12,math.sqrt(sum(x*x for x in v)));x,y,z=(q/n for q in v);return math.degrees(math.atan2(z,math.hypot(x,y))),math.degrees(math.atan2(y,x))
     try:
         from market import _SGP25FP_FREIGHT_ROUTES as _PORTAL_SHARED_ROUTES
         portal_routes=[{'name':r.get('name','Trade lane'),'days':r.get('days',14),'points':list(r.get('points',()))} for r in _PORTAL_SHARED_ROUTES]
@@ -161,8 +168,25 @@ def main_menu(root,accounts):
                             seg=[]
                         seg.extend((x,y));lastx=x
                     if len(seg)>=4:c.create_line(*seg,fill='#12657e',width=1,dash=(4,5),tags='portal_static')
+            # Great-circle air corridors use airport endpoints and split cleanly at the map seam.
+            for acode,bcode,lat1,lon1,lat2,lon2,_dur in portal_airs:
+                path=[_portal_great_circle(lat1,lon1,lat2,lon2,t/48.0) for t in range(49)];seg=[];lastx=None
+                for lat,lon in path:
+                    x,y=xy(lat,lon)
+                    if lastx is not None and abs(x-lastx)>mw*.55:
+                        if len(seg)>=4:c.create_line(*seg,fill='#5e5490',width=1,dash=(2,5),tags='portal_static')
+                        seg=[]
+                    seg.extend((x,y));lastx=x
+                if len(seg)>=4:c.create_line(*seg,fill='#5e5490',width=1,dash=(2,5),tags='portal_static')
+            air_hubs={}
+            for acode,bcode,lat1,lon1,lat2,lon2,_dur in portal_airs:air_hubs[acode]=(lat1,lon1);air_hubs[bcode]=(lat2,lon2)
+            for code,(lat,lon) in air_hubs.items():
+                x,y=xy(lat,lon);c.create_oval(x-3,y-3,x+3,y+3,fill='#a99bea',outline='#eeeaff',tags='portal_static');c.create_text(x+5,y-5,text=code,anchor='sw',fill='#b9afe8',font=('Consolas',5,'bold'),tags='portal_static')
+            # Ports are distinct from exchange dots and remain visible even when a market is closed.
+            for code,lat,lon in portal_ports:
+                x,y=xy(lat,lon);c.create_rectangle(x-4,y-4,x+4,y+4,fill='#e0ba63',outline='#fff0ae',tags='portal_static');c.create_text(x+6,y+6,text=code,anchor='nw',fill='#efd997',font=('Consolas',6,'bold'),tags='portal_static')
             c.create_text(mx0+10,my0+8,anchor='nw',text='GLOBAL MARKET / TRADE NETWORK',fill='#dfeef4',font=('Segoe UI',10,'bold'),tags='portal_static')
-            c.create_text(mx0+10,my0+27,anchor='nw',text='Real coastlines • exchange sessions • ocean + air logistics',fill='#6798aa',font=('Segoe UI',7),tags='portal_static')
+            c.create_text(mx0+10,my0+27,anchor='nw',text='● exchange   ■ port   • airport   ┄ ocean lane   ··· great-circle flight path',fill='#6798aa',font=('Segoe UI',7),tags='portal_static')
         c.delete('portal_dynamic')
         # Exchange state uses the real wall clock while the player is at the login portal.
         try:
@@ -188,27 +212,24 @@ def main_menu(root,accounts):
             target=(t%1.0)*total;acc=0.0
             for dist,a,b,dl in segs:
                 if acc+dist>=target:
-                    f=(target-acc)/dist;la=a[0]+(b[0]-a[0])*f;lo=((a[1]+dl*f+180)%360)-180;x,y=xy(la,lo);f2=min(1.0,f+.03);la2=a[0]+(b[0]-a[0])*f2;lo2=((a[1]+dl*f2+180)%360)-180;xn,yn=xy(la2,lo2);return x,y,math.atan2(yn-y,xn-x)
+                    f=(target-acc)/dist;la=a[0]+(b[0]-a[0])*f;lo=((a[1]+dl*f+180)%360)-180;x,y=xy(la,lo);f2=min(1.0,f+.03);la2=a[0]+(b[0]-a[0])*f2;lo2=((a[1]+dl*f2+180)%360)-180;xn,yn=xy(la2,lo2)
+                    if abs(xn-x)>mw*.55:xn+=mw if xn<x else -mw
+                    return x,y,math.atan2(yn-y,xn-x)
                 acc+=dist
             x,y=xy(*segs[-1][2]);return x,y,0
-        # Faster launcher animation is purely visual and does not alter the simulator clock.
+        # Each demo vessel eases all the way into its destination port, then follows the same lane
+        # back.  Slowing at the endpoints makes the turn happen at the port instead of offshore.
         for j,route in enumerate(portal_routes):
-            t=(elapsed/(12.0+j*1.4)+j*.137)%1.0;x,y,ang=route_pos(route['points'],t);cs,sn=math.cos(ang),math.sin(ang);shape=[(-10,2),(-8,-2),(-3,-4),(8,-3),(12,0),(8,3),(-3,4)] ;pts=[]
+            cycle=(elapsed/(38.0+j*2.4)+j*.137)%1.0;t=.5-.5*math.cos(2*math.pi*cycle);x,y,ang=route_pos(route['points'],t)
+            if cycle>=.5:ang+=math.pi
+            cs,sn=math.cos(ang),math.sin(ang);shape=[(-10,2),(-8,-2),(-3,-4),(8,-3),(12,0),(8,3),(-3,4)] ;pts=[]
             for px,py in shape:pts.extend((x+px*cs-py*sn,y+px*sn+py*cs))
             c.create_polygon(*pts,fill='#6fd8ef',outline='#dffaff',tags='portal_dynamic')
-        # Air corridors are approximate great-circle-like arcs between logistics hubs.
-        airs=[((40.64,-73.78),(51.47,-.45),9.0),((33.94,-118.40),(35.77,140.39),14.0),((50.04,8.56),(1.36,103.99),16.0),((25.25,55.36),(22.31,113.91),11.0)]
-        for j,(a,b,dur) in enumerate(airs):
-            t=(elapsed/dur+j*.23)%1.0;la=a[0]+(b[0]-a[0])*t;dl=b[1]-a[1]
-            if dl>180:dl-=360
-            elif dl<-180:dl+=360
-            lo=a[1]+dl*t
-            while lo>180:lo-=360
-            while lo<-180:lo+=360
-            la+=math.sin(math.pi*t)*5.0;x,y=xy(la,lo);t2=min(.999,t+.008);la2=a[0]+(b[0]-a[0])*t2+math.sin(math.pi*t2)*5.0;lo2=a[1]+dl*t2
-            while lo2>180:lo2-=360
-            while lo2<-180:lo2+=360
-            xn,yn=xy(la2,lo2);ang=math.atan2(yn-y,xn-x);cs,sn=math.cos(ang),math.sin(ang);shape=[(10,0),(2,-2),(-1,-7),(-4,-7),(-3,-2),(-9,-1),(-9,1),(-3,2),(-4,7),(-1,7),(2,2)];pts=[]
+        # Aircraft follow true great-circle interpolation instead of an arbitrary latitude arch.
+        for j,(_acode,_bcode,lat1,lon1,lat2,lon2,dur) in enumerate(portal_airs):
+            cycle=(elapsed/dur+j*.23)%1.0;t=.5-.5*math.cos(2*math.pi*cycle);la,lo=_portal_great_circle(lat1,lon1,lat2,lon2,t);dt=.004 if cycle<.5 else -.004;la2,lo2=_portal_great_circle(lat1,lon1,lat2,lon2,max(0.0,min(1.0,t+dt)));x,y=xy(la,lo);xn,yn=xy(la2,lo2)
+            if abs(xn-x)>mw*.55:xn+=mw if xn<x else -mw
+            ang=math.atan2(yn-y,xn-x);cs,sn=math.cos(ang),math.sin(ang);shape=[(10,0),(2,-2),(-1,-7),(-4,-7),(-3,-2),(-9,-1),(-9,1),(-3,2),(-4,7),(-1,7),(2,2)];pts=[]
             for px,py in shape:pts.extend((x+px*cs-py*sn,y+px*sn+py*cs))
             c.create_polygon(*pts,fill='#bdb3f5',outline='#eeeaff',tags='portal_dynamic')
         # Slow natural risk breathing, never rapid strobing.
@@ -239,7 +260,7 @@ def main_menu(root,accounts):
                 for sym,px,prev,_stamp in _ticker_entries:
                     ch=(px/prev-1)*100 if prev else 0.0;arrow='▲' if ch>0.0001 else '▼' if ch<-0.0001 else '•'
                     text=f' {sym} {px:,.2f} {arrow}{abs(ch):.2f}%   ';wid=max(62,_tf.measure(text));pieces.append((text,wid,ch));total+=wid
-                total=max(total,1);offset=(elapsed*28.0)%total;x0=tape_left+118-offset
+                total=max(total,1);offset=(elapsed*11.0)%total;x0=tape_left+118-offset
                 # Draw two copies piece-by-piece; Canvas has no clip path, so skip any glyph run
                 # completely outside the snapshot rectangle instead of letting text run under login.
                 for rep in (0,1):
@@ -254,7 +275,7 @@ def main_menu(root,accounts):
                 c.create_text(tape_left+7,tape_y+18,anchor='nw',text='SNAPSHOT',fill='#6f8c99',font=('Segoe UI',6,'bold'),tags='portal_dynamic')
             except Exception:pass
         else:c.create_text(tape_left+12,tape_y+21,anchor='w',text='LOCAL MARKET SNAPSHOT UNAVAILABLE • CREATE OR REFRESH AN ACCOUNT TO CACHE CURRENT QUOTES',fill='#8ea0a9',font=('Consolas',8,'bold'),tags='portal_dynamic')
-        anim['job']=w.after(80,draw_bg)
+        anim['job']=w.after(100,draw_bg)
     canvas.bind('<Configure>',lambda e:anim.__setitem__('static_key',None))
     draw_bg()
 

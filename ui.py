@@ -7728,7 +7728,13 @@ class RouletteWindow(_Roulette_sgp25fp_base):
         try:super().draw(wheel_number,ball_phase,spinning)
         finally:self.chips=list(vals)
         c=self.cv;w=max(1000,c.winfo_width());h=max(650,c.winfo_height());cx=w*.18;cy=h*.27;wheel_r=min(h*.23,w*.135);bx,by,cw,ch,zero_w=self._table_geom(w,h)
-        left=12;right=max(left+360,min(bx-zero_w-12,560));top=cy+wheel_r+12;bottom=min(h-132,top+158)
+        # The inherited painter still leaves two text objects even with its chip list suppressed.
+        # Remove those exact captions, then reserve a clean gap below the wheel before our rack.
+        for item in c.find_all():
+            try:
+                if c.type(item)=='text' and str(c.itemcget(item,'text')).startswith(('AVAILABLE CHIPS','Cash $')):c.delete(item)
+            except Exception:pass
+        left=12;right=max(left+360,min(bx-zero_w-12,560));top=cy+wheel_r+36;bottom=min(h-132,top+158)
         # One compact two-row rack sits between the wheel and spin history.  This cleanup panel
         # also removes the inherited rack captions/background without covering recorded spins.
         c.create_rectangle(left,top,right,bottom,fill='#081018',outline='#3a5364',width=2);c.create_text((left+right)/2,top+14,text='AVAILABLE CHIPS • SELECT BET SIZE',fill='#dce7ec',font=('Segoe UI',8,'bold'));self._chip_hits=[];cols=6;usable=right-left-20;spacing=usable/max(1,cols);r=18
@@ -8188,6 +8194,7 @@ def _sgp25smooth_chart_refresh_pulse(self):
         # plain-Python interest path.  This makes the map visibly live without promoting hundreds
         # of hidden/tiny names into the high-frequency engine loop.
         hot.update(getattr(self.market,'_ui_market_map_hot25',()) or ())
+        hot.update(getattr(self.market,'_ui_options_hot25',()) or ())
         try:
             _sel=self.selected()
             if _sel:hot.add(_sel.symbol)
@@ -8206,7 +8213,8 @@ def _sgp25smooth_chart_refresh_pulse(self):
         except tk.TclError:pass
     self.extra_charts=extras;charts=list(getattr(self,'charts',()))+extras
     profile=str(getattr(self,'graphics_profile','Balanced'));budget_ms={'Efficiency':4.0,'Balanced':6.0,'Smooth':10.0,'Maximum':15.0}.get(profile,6.0)
-    max_draw={'Efficiency':1,'Balanced':2,'Smooth':4,'Maximum':8}.get(profile,2)
+    max_draw={'Efficiency':1,'Balanced':2,'Smooth':4,'Maximum':8}.get(profile,2);heavy_count=_sgp25_heavy_window_count(self.market)
+    if heavy_count>=3:budget_ms=max(3.5,budget_ms*.72);max_draw=1
     drawn=0
     if charts:
         rr=int(getattr(self,'_chart_rr',0))%len(charts)
@@ -8230,6 +8238,7 @@ def _sgp25smooth_chart_refresh_pulse(self):
     # Don't enqueue faster than Tk can paint. Under healthy load this remains an 8 ms service loop,
     # which is sufficient to honor 25 ms per-chart requests.
     delay=8 if spent<budget_ms*.85 else 12 if spent<budget_ms*1.4 else 20
+    if heavy_count>=3:delay=max(12,delay)
     self._chart_refresh_job=self.root.after(delay,self._chart_refresh_pulse)
 App._chart_refresh_pulse=_sgp25smooth_chart_refresh_pulse
 
@@ -8871,6 +8880,34 @@ GlobalTradeWorkstation.draw_static=_sgp25_refine_global_static
 def _sgp25_refine_route_pos(self,pts,pr):return _sgp25_water_route_pos(self,pts,pr)
 GlobalTradeWorkstation._route_pos=_sgp25_refine_route_pos
 
+# Coordinate the three CPU-heavy research windows.  Each window remains independently usable at
+# its selected cadence; when Global Markets, the heat map, and an options chain are all visible,
+# their paint loops receive staggered adaptive floors instead of competing on the Tk main thread.
+def _sgp25_visible_window(win):
+    try:return bool(win is not None and win.winfo_exists() and win.winfo_viewable())
+    except Exception:return False
+
+def _sgp25_heavy_window_count(market,current=None):
+    wins=[];app=getattr(market,'ui_app',None)
+    for obj in (getattr(app,'_heavy26',{}) or {}).values():
+        if _sgp25_visible_window(obj):wins.append(obj)
+    live_options=[]
+    for obj in list(getattr(market,'_ui_options_windows25',()) or ()):
+        try:
+            if obj.winfo_exists():live_options.append(obj)
+            if _sgp25_visible_window(obj):wins.append(obj)
+        except Exception:pass
+    market._ui_options_windows25=live_options
+    if _sgp25_visible_window(current):wins.append(current)
+    return len({id(x) for x in wins})
+
+def _sgp25_adaptive_window_ms(market,role,requested,current=None):
+    requested=max(100,int(requested));count=_sgp25_heavy_window_count(market,current)
+    if count>=3:floor={'map':650,'global':750,'options':850}.get(role,650)
+    elif count==2:floor={'map':425,'global':575,'options':650}.get(role,425)
+    else:floor=100
+    return max(requested,floor),count
+
 # --- Real market-heat-map style treemap. ---
 def _sgp25_heat_color(pct):
     x=max(-6.0,min(6.0,float(pct)));mag=abs(x)/6.0
@@ -8956,18 +8993,25 @@ class MarketMapWindow(_MarketMap_refine_base):
             if getattr(self,'_job',None):
                 try:self.after_cancel(self._job)
                 except Exception:pass
+            if not force and not _sgp25_visible_window(self):
+                self.market._ui_market_map_hot25=frozenset();self._job=self.after(1400,self.refresh);return
+            rate_var=getattr(self,'map_refresh_ms',None);requested_rate=max(100,min(2000,int(rate_var.get() if rate_var is not None else 250)));rate,heavy_count=_sgp25_adaptive_window_ms(self.market,'map',requested_rate,self)
             c=self.cv;w=max(520,c.winfo_width());h=max(420,c.winfo_height());plot_h=max(100,h-20);pad=2
             limit_var=getattr(self,'map_limit',None);allarr=self.universe();requested=max(80,int(limit_var.get() if limit_var is not None else 250))
             # Keep enough pixels per asset for a ticker.  Filters can still expose every small name,
             # while the unfiltered view prioritizes the economically largest readable tiles.
             readable_cap=max(80,int((w*plot_h)/1450.0));limit=min(requested,readable_cap)
             arr=allarr if len(allarr)<=limit else sorted(allarr,key=self._size_value25,reverse=True)[:limit]
-            profile=str(getattr(self.market,'graphics_profile','Balanced'));hot_count={'Efficiency':12,'Balanced':24,'Smooth':36,'Maximum':48}.get(profile,24);self.market._ui_market_map_hot25=frozenset(a.symbol for a in arr[:hot_count])
+            profile=str(getattr(self.market,'graphics_profile','Balanced'));hot_count={'Efficiency':12,'Balanced':24,'Smooth':36,'Maximum':48}.get(profile,24)
+            if heavy_count>=3:hot_count=min(hot_count,8)
+            elif heavy_count==2:hot_count=min(hot_count,14)
+            self.market._ui_market_map_hot25=frozenset(a.symbol for a in arr[:hot_count])
             self.page=0;tail=max(0,len(allarr)-len(arr));self.page_label.config(text=f'{len(allarr):,} matched • {len(arr):,} readable tiles'+(f' • {tail:,} available by filter/search' if tail else ''))
             # Tables need not be deleted/reinserted at the visual tile cadence.  Updating them once
             # per second keeps the 100/250 ms map options responsive without churning Treeviews.
             now=time.monotonic()
-            if force or now-getattr(self,'_table_refresh25',0.0)>=1.0:
+            table_rate=1.75 if heavy_count>=3 else 1.25 if heavy_count==2 else 1.0
+            if force or now-getattr(self,'_table_refresh25',0.0)>=table_rate:
                 self._table_refresh25=now;groups={}
                 for a in self.market.stocks+self.market.international:groups.setdefault(str(getattr(a,'category','Other')),[]).append(a)
                 rows=[]
@@ -8999,20 +9043,23 @@ class MarketMapWindow(_MarketMap_refine_base):
                 for x,y,rw,rh,a in rects:
                     if rw<.6 or rh<.6:continue
                     pc=float(a.change_percent());x2=x+rw-pad*.5;y2=y+rh-pad*.5;c.create_rectangle(x,y,x2,y2,fill=_sgp25_heat_color(pc),outline='#071019',width=1 if min(rw,rh)>4 else 0)
-                    # Corrected squarification plus a lower label threshold keeps tickers on nearly
-                    # every useful tile. Percent and direction are added where a second line fits.
+                    # Every readable ticker carries its percentage. Compact tiles use a condensed
+                    # two-line value instead of dropping the percentage as the older renderer did.
                     if rw>=22 and rh>=13:
                         fs=6 if min(rw,rh)<24 else 7 if min(rw,rh)<40 else 8;two_lines=rw>=40 and rh>=29
-                        c.create_text(x+rw/2,y+rh/2-(5 if two_lines else 0),text=a.symbol,fill='#f7fafb',font=('Segoe UI',fs,'bold'))
+                        if not two_lines:
+                            compact_pct=f'{pc:+.0f}%' if rw<30 or rh<17 else f'{pc:+.1f}%';c.create_text(x+rw/2,y+rh/2,text=f'{a.symbol}\n{compact_pct}',fill='#f7fafb',font=('Segoe UI',5 if min(rw,rh)<20 else 6,'bold'),justify='center')
+                        else:c.create_text(x+rw/2,y+rh/2-5,text=a.symbol,fill='#f7fafb',font=('Segoe UI',fs,'bold'))
                         if two_lines:
-                            arrow='▲' if pc>.005 else '▼' if pc<-.005 else '•';c.create_text(x+rw/2,y+rh/2+8,text=f'{arrow} {abs(pc):.2f}%',fill='#edf2f4',font=('Segoe UI',6,'bold'))
+                            arrow='▲' if pc>.005 else '▼' if pc<-.005 else '•';c.create_text(x+rw/2,y+rh/2+8,text=f'{arrow} {pc:+.2f}%',fill='#edf2f4',font=('Segoe UI',6,'bold'))
                     self.tiles.append((x,y,x2,y2,a))
-            rate_var=getattr(self,'map_refresh_ms',None);rate=max(100,min(2000,int(rate_var.get() if rate_var is not None else 250)));c.create_text(7,h-6,anchor='sw',text=f'AREA = MARKET CAP     COLOR = DAY CHANGE     REFRESH = {rate} ms',fill='#879aa5',font=('Segoe UI',7,'bold'))
+            adaptive=f' • ADAPTIVE {rate} ms' if rate>requested_rate else ''
+            c.create_text(7,h-6,anchor='sw',text=f'AREA = MARKET CAP     COLOR = DAY CHANGE     REFRESH = {requested_rate} ms{adaptive}',fill='#879aa5',font=('Segoe UI',7,'bold'))
         except Exception as e:
             try:self.detail.config(text=f'Heat map refresh: {e}')
             except Exception:pass
         try:
-            rate_var=getattr(self,'map_refresh_ms',None);rate=max(100,min(2000,int(rate_var.get() if rate_var is not None else 250)));self._job=self.after(rate,self.refresh)
+            rate_var=getattr(self,'map_refresh_ms',None);requested_rate=max(100,min(2000,int(rate_var.get() if rate_var is not None else 250)));rate,_=_sgp25_adaptive_window_ms(self.market,'map',requested_rate,self);self._job=self.after(rate,self.refresh)
         except tk.TclError:self._job=None
     def _heat_motion25(self,e):
         a=self._asset_at(e)
@@ -9118,3 +9165,195 @@ def _sgp25_requested_app_init(self,root,market,portfolio):
         except Exception:pass
     self.status_flash('3-chart startup • SPY 1D/1 Tick 50 ms • Gold MAX line • BTC 1D candles 50 ms')
 App.__init__=_sgp25_requested_app_init
+
+# ============================================================================
+# Stock Game Pro 2.5 Production — transport fidelity / multi-window load pass
+# ============================================================================
+# A spherical interpolation gives every air corridor a real great-circle ground track.  Existing
+# callers retain the old signature; ``arc`` is intentionally ignored because a geographic route
+# should not be bent by an arbitrary screen-space latitude offset.
+def _sgp25_great_circle_interp(lat1,lon1,lat2,lon2,t,arc=0.0):
+    t=max(0.0,min(1.0,float(t)));p1=math.radians(float(lat1));l1=math.radians(float(lon1));p2=math.radians(float(lat2));l2=math.radians(float(lon2));a=(math.cos(p1)*math.cos(l1),math.cos(p1)*math.sin(l1),math.sin(p1));b=(math.cos(p2)*math.cos(l2),math.cos(p2)*math.sin(l2),math.sin(p2));dot=max(-1.0,min(1.0,sum(x*y for x,y in zip(a,b))));omega=math.acos(dot)
+    if omega<1e-9:v=a
+    else:
+        den=math.sin(omega);u=math.sin((1.0-t)*omega)/den;v2=math.sin(t*omega)/den;v=tuple(u*a[i]+v2*b[i] for i in range(3))
+    n=max(1e-12,math.sqrt(sum(x*x for x in v)));x,y,z=(q/n for q in v);return math.degrees(math.atan2(z,math.hypot(x,y))),math.degrees(math.atan2(y,x))
+_sgp24_geo_interp=_sgp25_great_circle_interp
+
+_SGP25_CONTINUOUS_ROUTE_CACHE={}
+def _sgp25_continuous_route_runs(points):
+    key=tuple((round(float(a),4),round(float(b),4)) for a,b in (points or ()));got=_SGP25_CONTINUOUS_ROUTE_CACHE.get(key)
+    if got is not None:return got
+    runs=[];run=[]
+    for a,b in zip(key,key[1:]):
+        la1,lo1=a;la2,lo2=b;dl=lo2-lo1
+        if dl>180:dl-=360
+        elif dl<-180:dl+=360
+        dist=max(abs(la2-la1),abs(dl)*max(.20,math.cos(math.radians((la1+la2)*.5))));steps=max(3,min(220,int(math.ceil(dist/.45))))
+        for k in range(steps+1):
+            t=k/steps;la=la1+(la2-la1)*t;lo=((lo1+dl*t+180)%360)-180
+            if run and abs(lo-run[-1][1])>180:
+                if len(run)>=2:runs.append(run)
+                run=[]
+            if not run or abs(run[-1][0]-la)>1e-7 or abs(run[-1][1]-lo)>1e-7:run.append((la,lo))
+    if len(run)>=2:runs.append(run)
+    _SGP25_CONTINUOUS_ROUTE_CACHE[key]=runs;return runs
+
+def _sgp25_continuous_route_pos(view,points,progress):
+    pts=[(float(a),float(b)) for a,b in (points or ())]
+    if not pts:return (0.0,0.0,0.0)
+    if len(pts)==1:return view.proj(*pts[0])+(0.0,)
+    segs=[];total=0.0
+    for a,b in zip(pts,pts[1:]):
+        dl=b[1]-a[1]
+        if dl>180:dl-=360
+        elif dl<-180:dl+=360
+        scale=max(.18,math.cos(math.radians((a[0]+b[0])*.5)));dist=max(1e-9,math.hypot(b[0]-a[0],dl*scale));segs.append((dist,a,b,dl));total+=dist
+    target=max(0.0,min(.999999,float(progress)))*total;acc=0.0
+    for dist,a,b,dl in segs:
+        if acc+dist>=target:
+            t=(target-acc)/dist;la=a[0]+(b[0]-a[0])*t;lo=((a[1]+dl*t+180)%360)-180;x,y=view.proj(la,lo);xn,yn=view.proj(b[0],((a[1]+dl+180)%360)-180);world_w=max(700,view.canvas.winfo_width())*float(getattr(view,'zoom',1.0))
+            if abs(xn-x)>world_w*.55:xn+=world_w if xn<x else -world_w
+            return x,y,math.atan2(yn-y,xn-x)
+        acc+=dist
+    x,y=view.proj(*pts[-1]);return x,y,0.0
+
+# Port markers now use the same operational coordinates as the shared market route endpoints.
+GlobalTradeWorkstation.PORTS=[
+ {'name':'Los Angeles / Long Beach','lat':33.74,'lon':-118.25,'symbols':['MATX','UPS','FDX'],'products':['electronics','autos','apparel','machinery']},
+ {'name':'New York / New Jersey','lat':40.67,'lon':-74.05,'symbols':['UPS','FDX','ZIM'],'products':['consumer goods','pharmaceuticals','machinery']},
+ {'name':'Rotterdam','lat':51.95,'lon':4.14,'symbols':['AMKBY','SHEL','BP'],'products':['oil products','chemicals','machinery','containers']},
+ {'name':'Singapore','lat':1.26,'lon':103.84,'symbols':['D05.SI','O39.SI','ZIM','BHP'],'products':['electronics','refined fuels','machinery','transshipment containers']},
+ {'name':'Shanghai / Yangshan','lat':30.62,'lon':122.06,'symbols':['1199.HK','0144.HK','BABA'],'products':['electronics','machinery','apparel','auto parts']},
+ {'name':'Tokyo / Yokohama','lat':35.45,'lon':139.66,'symbols':['7203.T','6758.T','TM','SONY'],'products':['automobiles','electronics','robotics','precision machinery']},
+ {'name':'Santos','lat':-23.96,'lon':-46.30,'symbols':['VALE3.SA','PETR4.SA','VALE','PBR'],'products':['iron ore','soybeans','coffee','pulp']},
+ {'name':'Sydney / Port Botany','lat':-33.96,'lon':151.21,'symbols':['BHP.AX','RIO.AX','BHP'],'products':['iron ore','LNG','coal','agriculture']},
+ {'name':'Dubai / Jebel Ali','lat':25.01,'lon':55.06,'symbols':['DPW.DU'],'products':['petrochemicals','aluminum','re-export containers','machinery']},
+]
+
+# Draw each shipping corridor once (not once per vessel) and retain its port connectors.  This is
+# both more accurate and substantially cheaper when 18 ships share eight lanes.
+def _sgp25_port_route_static(self):
+    c=self.canvas;w=max(700,c.winfo_width());h=max(450,c.winfo_height());freight=bool(self.layer_freight.get());key=(w,h,round(self.zoom,4),round(self.panx,1),round(self.pany,1),freight,bool(self.layer_air.get()),'port-routes')
+    if key==getattr(self,'_port_route_static_key25',None):return
+    self._port_route_static_key25=key
+    try:self.layer_freight.set(False);self._static_key=None;_Global_draw_static_refine_base(self)
+    finally:
+        try:self.layer_freight.set(freight)
+        except Exception:pass
+    if freight:
+        seen=set()
+        routes=list(getattr(self.market,'freight_routes',()) or ()) or [sh.get('route') or {} for sh in getattr(self.market,'shipments',())]
+        for route in routes:
+            pts=list(route.get('points',()));rk=tuple((round(float(a),3),round(float(b),3)) for a,b in pts);canonical=min(rk,tuple(reversed(rk))) if rk else rk
+            if len(pts)<2 or canonical in seen:continue
+            seen.add(canonical)
+            for run in _sgp25_continuous_route_runs(pts):_sgp24_map_path(c,self,run,'#17627b',1,(4,4))
+    c.tag_lower('static26')
+GlobalTradeWorkstation.draw_static=_sgp25_port_route_static
+GlobalTradeWorkstation._route_pos=lambda self,pts,pr:_sgp25_continuous_route_pos(self,pts,pr)
+
+# Risk records are shared by markers, rings, and tables; compute them once per visual beat.
+_Global_risk_records_cache25_base=GlobalTradeWorkstation._risk_records
+def _sgp25_cached_risk_records(self):
+    now=time.monotonic();news=getattr(self.market,'news',());ships=getattr(self.market,'shipments',());sig=(len(news),tuple((s.get('id'),s.get('hazard'),s.get('hazard_resolved'),round(float(s.get('progress',0)),3)) for s in ships))
+    cached=getattr(self,'_risk_cache25',None)
+    if cached and cached[0]==sig and now-cached[1]<.80:return cached[2]
+    rows=_Global_risk_records_cache25_base(self);self._risk_cache25=(sig,now,rows);return rows
+GlobalTradeWorkstation._risk_records=_sgp25_cached_risk_records
+
+_Global_dynamic_port_labels25_base=GlobalTradeWorkstation.draw_dynamic
+def _sgp25_global_dynamic_labels(self):
+    _Global_dynamic_port_labels25_base(self)
+    try:
+        q=self.search.get().strip().upper();c=self.canvas
+        for p in self.PORTS:
+            x,y=self.proj(p['lat'],p['lon']);c.create_text(x+6,y+7,text=p['name'],anchor='nw',fill=YELLOW if q and q in p['name'].upper() else '#dfc985',font=('Consolas',6,'bold'),tags='dynamic26')
+    except Exception:pass
+GlobalTradeWorkstation.draw_dynamic=_sgp25_global_dynamic_labels
+
+def _sgp25_adaptive_global_animate(self):
+    if not self.winfo_exists():return
+    try:
+        requested=max(180,int(getattr(self.market,'global_anim_ms',600)));delay,count=_sgp25_adaptive_window_ms(self.market,'global',requested,self)
+        if self.winfo_viewable():self.draw_dynamic()
+        else:delay=1600
+    except Exception:delay=1200
+    self._global_anim_job25=self.after(delay,self.animate)
+GlobalTradeWorkstation.animate=_sgp25_adaptive_global_animate
+GlobeWindow=GlobalTradeWorkstation
+
+# Options chain: skip hidden-window work, calculate Greeks only when a visible/sorted column needs
+# them, batch owned-position lookup once, and avoid issuing identical Treeview item operations.
+def _sgp25_options_interest(market):
+    live=[];hot=set()
+    for win in list(getattr(market,'_ui_options_windows25',()) or ()):
+        try:
+            if not win.winfo_exists():continue
+            live.append(win)
+            if win.winfo_viewable():
+                a=win.asset()
+                if a:hot.add(a.symbol)
+        except Exception:pass
+    market._ui_options_windows25=live;market._ui_options_hot25=frozenset(hot)
+
+_Options_init_adaptive25_base=OptionsWindow.__init__
+def _sgp25_options_init(self,parent,market,portfolio,refresh):
+    _Options_init_adaptive25_base(self,parent,market,portfolio,refresh);wins=list(getattr(market,'_ui_options_windows25',()) or ());wins.append(self);market._ui_options_windows25=wins
+    def cleanup(e=None):
+        if e is not None and getattr(e,'widget',None) is not self:return
+        market._ui_options_windows25=[x for x in list(getattr(market,'_ui_options_windows25',()) or ()) if x is not self];_sgp25_options_interest(market)
+    self.bind('<Destroy>',cleanup,add='+');_sgp25_options_interest(market)
+OptionsWindow.__init__=_sgp25_options_init
+
+def _sgp25_options_update_chain(self,force=False):
+    if not self.winfo_exists():return
+    try:
+        if self._after_id:
+            try:self.after_cancel(self._after_id)
+            except Exception:pass
+            self._after_id=None
+        requested=max(100,int(self.rate_ms));effective,heavy_count=_sgp25_adaptive_window_ms(self.market,'options',requested,self)
+        if not force and not self.winfo_viewable():self._after_id=self.after(1400,lambda:self.update_chain(False));_sgp25_options_interest(self.market);return
+        a=self.asset();days=dict(EXPIRATIONS).get(self.expiry.get(),0);self.live_price.config(text=f'{a.symbol}  LIVE ${a.price:,.2f}');self.live.config(text=f'● LIVE • {effective}ms' if effective>requested else '● LIVE')
+        span={'ATM ±5 Strikes':5,'ATM ±10 Strikes':10,'ATM ±20 Strikes':20,'ATM ±50 Strikes':50}.get(self.span.get(),40);contracts=self._contracts(a,days,span)
+        while len(self._chain_cache)>12:self._chain_cache.pop(next(iter(self._chain_cache)))
+        calls={int(c.strike):c for c in contracts if c.option_type=='call'};puts={int(c.strike):c for c in contracts if c.option_type=='put'};center=round(a.price);ks=sorted(set(calls)&set(puts))
+        if self.span.get()!='All':ks=[k for k in ks if abs(k-center)<=span]
+        visible=[k for k in self.ALL_COLS if self.visible_cols.get(k)] or ['Bid'];greek_cols={'Delta','Gamma','Theta','Vega'};need_stats=bool(greek_cols.intersection(visible) or self.sort_metric in greek_cols)
+        stat_cache={}
+        def stats(c):
+            key=id(c)
+            if key not in stat_cache:stat_cache[key]=c.stats
+            return stat_cache[key]
+        if self.sort_metric!='Strike':
+            def metric(k):
+                c=calls[k];st=stats(c) if self.sort_metric in greek_cols else None
+                return {'Bid':c.bid,'Ask':c.ask,'Last':c.mid,'Vol':c.volume,'OI':c.open_interest,'IV':c.volatility,'Delta':abs(st['delta']) if st else 0,'Gamma':st['gamma'] if st else 0,'Theta':st['theta'] if st else 0,'Vega':st['vega'] if st else 0}.get(self.sort_metric,k)
+            ks=sorted(ks,key=metric,reverse=self.sort_reverse)
+        owned=set()
+        for strategy in self.portfolio.options:
+            for leg in strategy.legs:
+                c=leg.contract;owned.add((c.underlying.symbol,int(c.strike),c.option_type.lower(),int(c.days)))
+        wanted=tuple(str(k) for k in ks);trees=(self.tv_calls,self.tv_strike,self.tv_puts);existing=[set(tv.get_children()) for tv in trees]
+        for tv,have in zip(trees,existing):
+            for iid in have-set(wanted):tv.delete(iid)
+        row_cache=getattr(self,'_row_cache25',{});next_cache={}
+        for pos,k in enumerate(ks):
+            call,put=calls[k],puts[k];cs=stats(call) if need_stats else None;ps=stats(put) if need_stats else None;ctag='atm' if k==center else ('itm' if call.itm() else 'otm');ptag='atm' if k==center else ('itm' if put.itm() else 'otm')
+            if (a.symbol,k,'call',days) in owned:ctag='owned'
+            if (a.symbol,k,'put',days) in owned:ptag='owned'
+            cv={'Bid':f'{call.bid:.2f}','Ask':f'{call.ask:.2f}','Last':f'{call.mid:.2f}','Vol':f'{call.volume:,}','OI':f'{call.open_interest:,}','IV':f'{call.volatility*100:.1f}%'};pv={'Bid':f'{put.bid:.2f}','Ask':f'{put.ask:.2f}','Last':f'{put.mid:.2f}','Vol':f'{put.volume:,}','OI':f'{put.open_interest:,}','IV':f'{put.volatility*100:.1f}%'}
+            if need_stats:
+                cv.update(Delta=f'{cs["delta"]:+.2f}',Gamma=f'{cs["gamma"]:.4f}',Theta=f'{cs["theta"]:.3f}',Vega=f'{cs["vega"]:.3f}');pv.update(Delta=f'{ps["delta"]:+.2f}',Gamma=f'{ps["gamma"]:.4f}',Theta=f'{ps["theta"]:.3f}',Vega=f'{ps["vega"]:.3f}')
+            iid=str(k);record=(tuple(cv[x] for x in visible),(ctag,),tuple(pv[x] for x in visible),(ptag,),(f'{k:,}',),('atm' if k==center else ''));next_cache[iid]=record
+            if iid not in existing[0]:self.tv_calls.insert('',pos,iid=iid,values=record[0],tags=record[1]);self.tv_strike.insert('',pos,iid=iid,values=record[4],tags=(record[5],) if record[5] else ());self.tv_puts.insert('',pos,iid=iid,values=record[2],tags=record[3])
+            elif force or row_cache.get(iid)!=record:self.tv_calls.item(iid,values=record[0],tags=record[1]);self.tv_strike.item(iid,values=record[4],tags=(record[5],) if record[5] else ());self.tv_puts.item(iid,values=record[2],tags=record[3])
+        if wanted!=getattr(self,'_row_order25',None):
+            for tv in trees:
+                for pos,iid in enumerate(wanted):
+                    if iid in tv.get_children():tv.move(iid,'',pos)
+        self._row_order25=wanted;self._row_cache25=next_cache;self._last_key=(a.symbol,days,wanted,tuple(visible),self.sort_metric,self.sort_reverse);_sgp25_options_interest(self.market);self._after_id=self.after(effective,lambda:self.update_chain(False))
+    except Exception as e:
+        self.info_lbl.config(text=f'Option chain recovered: {type(e).__name__}: {e}');self._after_id=self.after(1200,lambda:self.update_chain(False))
+OptionsWindow.update_chain=_sgp25_options_update_chain
