@@ -62,3 +62,15 @@ PRODUCTION OFFLINE-DATA POLICY
 - Refreshing an established account never changes quantities or cost basis, but it can change
   marked P/L, option values, margin, and whether working limit/stop orders become executable.
 
+
+PRODUCTION POLISH — LIVE TABLES / TRADE HISTORY / CHART PERSISTENCE
+-------------------------------------------------------------------
+• Market-watch visible rows now stream price and CHG% at ~180 ms without repainting the full multi-thousand-asset Treeview.
+• The personal portfolio table has an independent fast mark stream: ~120 ms for ordinary portfolios, progressively throttled for very large portfolios to preserve whale-account stability.
+• Account → Trade History opens a live fill ledger for stocks and options. Actual partial-fill quantities/VWAPs are logged and the most recent 5,000 fills persist with the account.
+• Crypto receives a true UTC-midnight daily rollover, resetting its daily open/CHG% to 0.00% even though the asset class trades 24/7.
+• Fixed the daily candle bucket: 1-day bars now bucket at midnight instead of accidentally retaining the current hour.
+• Sparse intraday timeframes use immutable historical backfill plus persistent native simulator bars. Completed real simulator candles are never replaced by regenerated display bars when a new interval starts.
+• Long offline 6M/1Y/5Y views receive deterministic display history when only a short local daily cache exists; richer cached real history automatically takes precedence.
+• Long/tiny-interval combinations use OHLC-preserving level-of-detail aggregation instead of collapsing to only a handful of candles or creating tens of thousands of Canvas items.
+• All gameplay market data remains offline except account creation and the explicitly confirmed Experimental → Refresh Market Snapshot action.

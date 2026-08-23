@@ -1536,3 +1536,131 @@ def _sgp251_restore_game_state(self,username,portfolio,market):
     except Exception:pass
     return ok
 AccountManager.restore_game_state=_sgp251_restore_game_state
+
+# ===== Stock Game Pro 2.5 production polish: durable trade ledger + correct daily buckets =====
+# The consolidated core historically used the generic minute bucketer for 1-day candles.
+# A 1,440-minute bucket must start at midnight; leaving the hour intact created pseudo-daily
+# bars that rolled every hour and made completed candles appear to reset on some views.
+_Asset_bucket_prod25_base=Asset._bucket
+def _sgp25prod_bucket(self,ts,minutes):
+    minutes=max(1,int(minutes))
+    ts=ts.replace(tzinfo=None) if getattr(ts,'tzinfo',None) else ts
+    if minutes>=1440:
+        # All current daily bars use 1,440 minutes. Keep this explicit and stable.
+        return ts.replace(hour=0,minute=0,second=0,microsecond=0)
+    if minutes>=60:
+        total=ts.hour*60+ts.minute;slot=(total//minutes)*minutes
+        return ts.replace(hour=(slot//60)%24,minute=slot%60,second=0,microsecond=0)
+    return ts.replace(minute=(ts.minute//minutes)*minutes,second=0,microsecond=0)
+Asset._bucket=_sgp25prod_bucket
+
+# A compact, persistent trade ledger backs the new Trade History panel.  It records actual
+# filled quantities by comparing positions before/after the final execution functions, so
+# partial whale fills are represented correctly instead of logging the requested quantity.
+_Portfolio_init_trade25_base=Portfolio.__init__
+def _sgp25prod_portfolio_init(self,*args,**kwargs):
+    _Portfolio_init_trade25_base(self,*args,**kwargs)
+    if not hasattr(self,'trade_history'):self.trade_history=[]
+Portfolio.__init__=_sgp25prod_portfolio_init
+
+def _sgp25prod_trade_time(portfolio):
+    m=getattr(portfolio,'market',None);now=getattr(getattr(m,'clock',None),'current',None) or datetime.now()
+    try:return now.isoformat(timespec='seconds')
+    except Exception:return str(now)
+
+def _sgp25prod_append_trade(portfolio,side,symbol,qty,price,kind='STOCK',details='',realized=None):
+    try:qty=int(abs(qty))
+    except Exception:qty=0
+    if qty<=0:return
+    try:px=float(price)
+    except Exception:px=0.0
+    if not math.isfinite(px):px=0.0
+    try:notional=min(1.0e300,abs(float(qty)*px))
+    except Exception:notional=1.0e300
+    rec={'time':_sgp25prod_trade_time(portfolio),'side':str(side).upper(),'symbol':str(symbol),'qty':qty,
+         'price':px,'notional':notional,'kind':str(kind),'details':str(details)[:500],
+         'realized':float(portfolio.realized if realized is None else realized)}
+    hist=getattr(portfolio,'trade_history',None)
+    if hist is None:portfolio.trade_history=[];hist=portfolio.trade_history
+    hist.append(rec)
+    if len(hist)>5000:del hist[:-5000]
+Portfolio._append_trade_history=_sgp25prod_append_trade
+
+_buy_trade25_base=Portfolio.buy_asset
+_sell_trade25_base=Portfolio.sell_asset
+_short_trade25_base=Portfolio.short_asset
+_cover_trade25_base=Portfolio.cover_short
+
+def _sgp25prod_buy_trade(self,a,qty):
+    before=int(self.positions.get(a.symbol,0));ok,msg=_buy_trade25_base(self,a,qty);after=int(self.positions.get(a.symbol,0))
+    if ok:
+        filled=max(0,after-before);px=float(getattr(a,'last_execution_vwap',0) or getattr(a,'ask',a.price) or a.price)
+        self._append_trade_history('BUY',a.symbol,filled,px,'STOCK',msg)
+    return ok,msg
+
+def _sgp25prod_sell_trade(self,a,qty):
+    before=int(self.positions.get(a.symbol,0));ok,msg=_sell_trade25_base(self,a,qty);after=int(self.positions.get(a.symbol,0))
+    if ok:
+        filled=max(0,before-after);px=float(getattr(a,'last_execution_vwap',0) or getattr(a,'bid',a.price) or a.price)
+        self._append_trade_history('SELL',a.symbol,filled,px,'STOCK',msg)
+    return ok,msg
+
+def _sgp25prod_short_trade(self,a,qty,margin_rate=.5):
+    before=int(self.positions.get(a.symbol,0));ok,msg=_short_trade25_base(self,a,qty,margin_rate);after=int(self.positions.get(a.symbol,0))
+    if ok:
+        filled=max(0,before-after);px=float(getattr(a,'last_execution_vwap',0) or getattr(a,'bid',a.price) or a.price)
+        self._append_trade_history('SHORT',a.symbol,filled,px,'STOCK',msg)
+    return ok,msg
+
+def _sgp25prod_cover_trade(self,a,qty):
+    before=int(self.positions.get(a.symbol,0));ok,msg=_cover_trade25_base(self,a,qty);after=int(self.positions.get(a.symbol,0))
+    if ok:
+        filled=max(0,after-before);px=float(getattr(a,'last_execution_vwap',0) or getattr(a,'ask',a.price) or a.price)
+        self._append_trade_history('COVER',a.symbol,filled,px,'STOCK',msg)
+    return ok,msg
+Portfolio.buy_asset=_sgp25prod_buy_trade;Portfolio.sell_asset=_sgp25prod_sell_trade
+Portfolio.short_asset=_sgp25prod_short_trade;Portfolio.cover_short=_sgp25prod_cover_trade
+
+_exec_strategy_trade25_base=Portfolio.execute_strategy
+_liq_strategy_trade25_base=Portfolio.liquidate_strategy
+def _sgp25prod_exec_strategy_trade(self,s):
+    before=int(getattr(self,'trade_count',0));ok,msg=_exec_strategy_trade25_base(self,s)
+    if ok and int(getattr(self,'trade_count',0))>before and 'queued' not in str(msg).lower():
+        try:
+            under=s.legs[0].contract.underlying.symbol if s.legs else 'OPTION';contracts=max(1,sum(abs(int(l.quantity)) for l in s.legs));debit=float(getattr(s,'open_cost',s.opening_debit()))
+            px=abs(debit)/max(1,contracts*100);self._append_trade_history('OPEN',under,contracts,px,'OPTION',f'{getattr(s,"name","Strategy")} • {msg}')
+        except Exception:pass
+    return ok,msg
+
+def _sgp25prod_liq_strategy_trade(self,s):
+    before=int(getattr(self,'trade_count',0));under=s.legs[0].contract.underlying.symbol if getattr(s,'legs',None) else 'OPTION'
+    try:contracts=max(1,sum(abs(int(l.quantity)) for l in s.legs));pre=float(s.current_value())
+    except Exception:contracts=1;pre=0.0
+    ok,msg=_liq_strategy_trade25_base(self,s)
+    if ok and int(getattr(self,'trade_count',0))>before:
+        self._append_trade_history('CLOSE',under,contracts,abs(pre)/max(1,contracts*100),'OPTION',f'{getattr(s,"name","Strategy")} • {msg}')
+    return ok,msg
+Portfolio.execute_strategy=_sgp25prod_exec_strategy_trade;Portfolio.liquidate_strategy=_sgp25prod_liq_strategy_trade
+
+# Persist the ledger with the account. This wraps the final production save/restore chain.
+_save_trade25_base=AccountManager.save_game_state
+def _sgp25prod_save_trade_history(self,username,portfolio,market,reason='autosave'):
+    ok=_save_trade25_base(self,username,portfolio,market,reason)
+    if ok and username:
+        try:
+            rec=self.accounts.get(str(username).lower()) or self.accounts.get(username)
+            if rec is not None:
+                st=rec.setdefault('game_state',{});st['trade_history']=list(getattr(portfolio,'trade_history',[]))[-5000:];self._save()
+        except Exception:pass
+    return ok
+AccountManager.save_game_state=_sgp25prod_save_trade_history
+
+_restore_trade25_base=AccountManager.restore_game_state
+def _sgp25prod_restore_trade_history(self,username,portfolio,market):
+    ok=_restore_trade25_base(self,username,portfolio,market)
+    try:
+        rec=self.accounts.get(str(username).lower()) or self.accounts.get(username) or {};hist=(rec.get('game_state') or {}).get('trade_history') or []
+        portfolio.trade_history=list(hist)[-5000:]
+    except Exception:portfolio.trade_history=[]
+    return ok
+AccountManager.restore_game_state=_sgp25prod_restore_trade_history

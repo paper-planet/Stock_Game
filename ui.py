@@ -6543,3 +6543,280 @@ def _sgp25_app_init_production(self,root,market,portfolio):
     try:self.update_experiment_account_menu()
     except Exception:pass
 App.__init__=_sgp25_app_init_production
+
+# ===== Stock Game Pro 2.5 production polish: live tables, durable candles, trade history =====
+# Final display-data path.  Older compatibility layers could replace a sparse real intraday
+# stream with a freshly regenerated synthetic stream, which made a just-completed candle seem
+# to disappear/reset.  This path keeps synthetic history strictly as an older backfill and
+# always layers the simulator's persistent native bars on top.
+_Chart_data_prod25_base=Chart.data
+
+def _sgp25prod_period_spec(chart):
+    p=str(getattr(chart,'candle_period','Auto'))
+    if p=='Auto':
+        p={'1D':'5 Min','1W':'15 Min','1M':'1 Hour','3M':'1 Hour','6M':'1 Day','1Y':'1 Day','5Y':'1 Week','MAX':'1 Day'}.get(chart.timeframe,'5 Min')
+    mins={'1 Tick':0.0,'30 Sec':.5,'1 Min':1.0,'3 Min':3.0,'5 Min':5.0,'10 Min':10.0,'15 Min':15.0,'30 Min':30.0,'1 Hour':60.0,'1 Day':1440.0,'1 Week':10080.0}.get(p,5.0)
+    return p,mins
+
+def _sgp25prod_native_bars(chart,p):
+    a=chart.asset
+    if a is None:return []
+    if p=='1 Tick':return list(a.chart_candles('tick'))
+    if p=='30 Sec':return list(a.chart_candles('30s'))
+    if p=='1 Min':return list(a.chart_candles('1m'))
+    if p=='3 Min':return _sgp_aggregate_candles(a.chart_candles('1m'),3)
+    if p=='5 Min':return list(a.chart_candles('5m'))
+    if p=='10 Min':return _sgp_aggregate_candles(a.chart_candles('5m') or a.chart_candles('1m'),10)
+    if p=='15 Min':return list(a.chart_candles('15m'))
+    if p=='30 Min':return _sgp_aggregate_candles(a.chart_candles('15m') or a.chart_candles('5m'),30)
+    if p=='1 Hour':return list(a.chart_candles('1h'))
+    if p=='1 Day':return list(a.chart_candles('1d'))
+    if p=='1 Week':
+        daily=list(a.chart_candles('1d'));out=[];key=None;cur=None
+        for x in daily:
+            ts=x.timestamp.replace(tzinfo=None) if getattr(x.timestamp,'tzinfo',None) else x.timestamp
+            iso=ts.isocalendar();k=(iso.year,iso.week)
+            if k!=key:
+                cur=Candle(ts,float(x.open),float(x.high),float(x.low),float(x.close),int(x.volume));out.append(cur);key=k
+            else:
+                cur.high=max(cur.high,float(x.high));cur.low=min(cur.low,float(x.low));cur.close=float(x.close);cur.volume+=int(x.volume)
+        return out
+    return []
+
+def _sgp25prod_tf_days(tf,available):
+    return min(max(1,int(available)),{'1D':1,'1W':5,'1M':22,'3M':66,'6M':132,'1Y':252,'5Y':1260,'MAX':max(1,int(available))}.get(tf,22))
+
+def _sgp25prod_backfill(chart,daily,mins,max_points=1200):
+    if not daily or mins<=0 or mins>=1440:return []
+    days=len(daily);native=max(1,int(round(1440.0/max(.5,mins))));per_day=max(4,min(native,max(4,int(max_points/max(1,days)))))
+    step=1440.0/per_day;last=daily[-1]
+    cache_key=(getattr(chart.asset,'symbol',''),round(float(mins),4),days,per_day,getattr(last,'timestamp',None),round(float(last.close),8))
+    cache=getattr(chart,'_prod25_backfill_cache',None)
+    if cache and cache[0]==cache_key:return cache[1]
+    out=[];sym=str(getattr(chart.asset,'symbol',''))
+    for di,dc in enumerate(daily):
+        prev_close=float(daily[di-1].close if di else dc.open);o=float(dc.open);cl=float(dc.close);hi=float(dc.high);lo=float(dc.low);next_open=float(daily[di+1].open if di+1<len(daily) else cl)
+        base=dc.timestamp.replace(hour=0,minute=0,second=0,microsecond=0);seed=sum(ord(ch) for ch in sym)+int(dc.timestamp.toordinal());wiggle=((seed%19)-9)/9000.0
+        pre4=prev_close*(1+wiggle*.32);post20=cl*(1+wiggle*.22)
+        def px_at(mm):
+            if mm<240.0:
+                t=max(0.0,min(1.0,mm/240.0));return prev_close+(pre4-prev_close)*t
+            if mm<570.0:
+                t=(mm-240.0)/330.0;return pre4+(o-pre4)*t
+            if mm<960.0:
+                t=(mm-570.0)/390.0;p=o+(cl-o)*t+(hi-lo)*math.sin(t*math.pi*2)*.14;return max(lo,min(hi,p))
+            if mm<1200.0:
+                t=(mm-960.0)/240.0;return cl+(post20-cl)*t
+            if mm<1215.0:return post20
+            t=(mm-1215.0)/225.0;return post20+(next_open-post20)*t*.20
+        for j in range(per_day):
+            m=(j+.5)*step;mp=max(0.0,m-step);po=px_at(mp);pc=px_at(m);bh=max(po,pc);bl=min(po,pc)
+            if 570.0<=m<960.0:
+                rt=(m-570.0)/390.0
+                if abs(rt-.34)<step/390.0:bh=max(bh,hi)
+                if abs(rt-.68)<step/390.0:bl=min(bl,lo)
+            out.append(Candle(base+_sgp23_ui_td(minutes=j*step),po,bh,bl,pc,max(1,int(getattr(dc,'volume',0)/max(1,per_day)))))
+    chart._prod25_backfill_cache=(cache_key,out)
+    return out
+
+def _sgp25prod_compact_bars(bars,limit):
+    bars=list(bars);limit=max(30,int(limit))
+    if len(bars)<=limit:return bars
+    chunk=int(math.ceil(len(bars)/limit));out=[]
+    for i in range(0,len(bars),chunk):
+        g=bars[i:i+chunk]
+        if not g:continue
+        out.append(Candle(g[0].timestamp,float(g[0].open),max(float(x.high) for x in g),min(float(x.low) for x in g),float(g[-1].close),sum(max(0,int(x.volume)) for x in g)))
+    return out
+
+def _sgp25prod_chart_data(self):
+    if self.asset is None:return []
+    if getattr(self,'fit_inception',False):return list(_Chart_data_prod25_base(self))
+    p,mins=_sgp25prod_period_spec(self);native=_sgp25prod_native_bars(self,p)
+    try:native=sorted(native,key=lambda c:c.timestamp)
+    except Exception:pass
+    # Seed sparse intraday views from completed daily history, then merge persistent live bars.
+    combined=list(native)
+    if mins>0 and mins<1440:
+        daily=list(self.asset.chart_candles('1d'));nd=_sgp25prod_tf_days(self.timeframe,len(daily));daily=daily[-nd:] if daily else []
+        expected=min(1200,max(60,int(nd*1440/max(.5,mins))))
+        if daily and len(native)<max(20,int(expected*.60)):
+            hist=_sgp25prod_backfill(self,daily,mins,1200)
+            # Native simulator candles always win at matching timestamps/buckets. Historical
+            # backfill is immutable and therefore never causes a completed live candle to reset.
+            merged={c.timestamp:c for c in hist}
+            for c in native:merged[c.timestamp]=c
+            combined=sorted(merged.values(),key=lambda c:c.timestamp)
+    elif p=='1 Week' and len(combined)<8:
+        combined=_sgp25prod_native_bars(self,'1 Week')
+    # Guarantee a current print before the first engine bar exists, without mutating history.
+    if not combined:
+        now=getattr(getattr(self.app,'market',None),'clock',None);now=getattr(now,'current',None) or _sgp22_dt.now();px=float(self.asset.price)
+        combined=[Candle(now,px,px,px,px,max(0,int(getattr(self.asset,'volume',0))))]
+    # Tick volume is display-stable; zero-size quote updates do not erase the prior column.
+    if p=='1 Tick' and combined:
+        last=combined[-1];v=max(0,int(getattr(last,'volume',0) or 0))
+        if v>0:self._last_tick_volume25=v
+        elif getattr(self,'_last_tick_volume25',0)>0:
+            combined[-1]=Candle(last.timestamp,float(last.open),float(last.high),float(last.low),float(last.close),int(self._last_tick_volume25))
+    # LOD preserves OHLC when a long timeframe at a tiny candle period would otherwise create
+    # tens of thousands of Canvas items. It never drops to a handful of candles.
+    render_cap=max(260,min(1400,int(max(500,self.winfo_width())*1.45)))
+    combined=_sgp25prod_compact_bars(combined,render_cap)
+    zoom=max(.25,float(getattr(self,'zoom',1.0)));visible=max(40,min(len(combined),int(len(combined)/zoom) if zoom>=1 else len(combined)))
+    maxoff=max(0,len(combined)-visible);self.view_offset=max(0,min(int(getattr(self,'view_offset',0)),maxoff));end=len(combined)-self.view_offset;start=max(0,end-visible)
+    out=combined[start:end]
+    self._last_render_data25=out
+    return out
+Chart.data=_sgp25prod_chart_data
+
+# Faster watchlist streaming, still restricted to visible rows so the 2,000+ asset universe
+# does not recreate the 2.4 CPU regression.
+def _sgp25prod_fast_watch_stream(self):
+    try:
+        rows=getattr(self,'_watch_iids25',None)
+        if rows is None:rows=tuple(self.watch.get_children());self._watch_iids25=rows
+        n=len(rows)
+        if n:
+            try:f0,f1=self.watch.yview();start=max(0,int(f0*n)-6);end=min(n,max(start+22,int(f1*n)+7))
+            except Exception:start,end=0,min(n,48)
+            for iid in rows[start:end]:
+                try:
+                    vals=list(self.watch.item(iid,'values'));a=self.market.get_asset(vals[0]) if vals else None
+                    if a and len(vals)>=4:
+                        px=float(a.price);price=(f'${px:,.4f}' if abs(px)<1 else f'${px:,.2f}');chg=f'{a.change_percent():+.2f}%'
+                        if vals[2]!=price or vals[3]!=chg:vals[2]=price;vals[3]=chg;self.watch.item(iid,values=vals)
+                except Exception:pass
+    finally:self._watch_stream_job=self.root.after(180,self._fast_watch_stream)
+App._fast_watch_stream=_sgp25prod_fast_watch_stream
+
+# High-frequency portfolio mark stream: update only rows currently on screen. Structural changes
+# (new/closed positions, sorting) remain on the slower full refresh to keep whale accounts cheap.
+def _sgp25prod_portfolio_stream(self):
+    try:
+        if not self.root.winfo_exists():return
+        rows=tuple(self.pos.get_children());n=len(rows)
+        if n:
+            try:f0,f1=self.pos.yview();start=max(0,int(f0*n)-3);end=min(n,max(start+16,int(f1*n)+4))
+            except Exception:start,end=0,min(n,30)
+            for iid in rows[start:end]:
+                try:
+                    vals=list(self.pos.item(iid,'values'))
+                    if iid.startswith('OPT:'):
+                        st=self.portfolio.get_strategy(iid)
+                        if st is None:continue
+                        v=float(st.current_value());pnl=v-float(getattr(st,'open_cost',0.0));pct=pnl/max(1e-9,abs(float(getattr(st,'open_cost',0.0))));expiry,_=self.portfolio.option_time_remaining(iid,self.market.clock.current)
+                        if len(vals)>=9:vals[2]=f'${v:,.2f}';vals[3]=f'${v:,.2f}';vals[4]=f'${pnl:,.2f}';vals[5]=f'{pct:+.2%}';vals[8]=expiry
+                    else:
+                        a=self.market.get_asset(iid);q=int(self.portfolio.positions.get(iid,0))
+                        if a is None or q==0:continue
+                        basis=float(self.portfolio.cost_basis.get(iid,0.0));value=float(q)*float(a.price);pnl=(value-basis) if q>0 else (basis+value);pct=pnl/max(1e-9,abs(basis))
+                        if len(vals)>=6:vals[2]=f'${float(a.price):,.2f}';vals[3]=f'${value:,.2f}';vals[4]=f'${pnl:,.2f}';vals[5]=f'{pct:+.2%}'
+                    self.pos.item(iid,values=vals)
+                except Exception:pass
+        try:
+            self.dailypl23.config(text=f'DAILY P/L ${self.portfolio.daily_pl:+,.2f}');self.daytrade23.config(text=f'DAY TRADES {self.portfolio.day_trades_rolling}/3')
+        except Exception:pass
+        count=len(getattr(self.portfolio,'positions',{}))+len(getattr(self.portfolio,'options',[]));delay=120 if count<60 else 180 if count<250 else 300
+    except Exception:delay=220
+    self._portfolio_stream25_job=self.root.after(delay,self._portfolio_fast_stream25)
+App._portfolio_fast_stream25=_sgp25prod_portfolio_stream
+
+# Trade-history window in the top Account drop-down.
+class TradeHistoryWindow(ToolWindow):
+    def __init__(self,parent,portfolio):
+        super().__init__(parent);self.portfolio=portfolio;self.style_window('TRADE HISTORY • STOCK GAME PRO 2.5','1120x650');self.resizable(True,True)
+        top=ttk.Frame(self);top.pack(fill='x',padx=10,pady=8);ttk.Label(top,text='TRADE HISTORY',font=('Segoe UI',13,'bold')).pack(side='left')
+        self.filter=tk.StringVar(value='ALL');cb=ttk.Combobox(top,textvariable=self.filter,values=['ALL','STOCK','OPTION','BUY','SELL','SHORT','COVER','OPEN','CLOSE'],state='readonly',width=10);cb.pack(side='left',padx=10);cb.bind('<<ComboboxSelected>>',lambda e:self.refresh())
+        ttk.Button(top,text='REFRESH',command=self.refresh).pack(side='left');self.count=ttk.Label(top,text='');self.count.pack(side='right')
+        wrap=ttk.Frame(self);wrap.pack(fill='both',expand=True,padx=10,pady=(0,8));cols=('time','kind','side','symbol','qty','price','notional','realized','details');self.tv=ttk.Treeview(wrap,columns=cols,show='headings')
+        widths={'time':145,'kind':70,'side':72,'symbol':82,'qty':92,'price':100,'notional':120,'realized':120,'details':330}
+        for c in cols:self.tv.heading(c,text=c.upper());self.tv.column(c,width=widths[c],minwidth=55,stretch=(c=='details'),anchor='e' if c in ('qty','price','notional','realized') else 'w')
+        sy=ttk.Scrollbar(wrap,orient='vertical',command=self.tv.yview);sx=ttk.Scrollbar(wrap,orient='horizontal',command=self.tv.xview);self.tv.configure(yscrollcommand=sy.set,xscrollcommand=sx.set);self.tv.grid(row=0,column=0,sticky='nsew');sy.grid(row=0,column=1,sticky='ns');sx.grid(row=1,column=0,sticky='ew');wrap.rowconfigure(0,weight=1);wrap.columnconfigure(0,weight=1)
+        ttk.Label(self,text='Actual fills only. Partial whale fills are logged at the filled quantity/VWAP.',foreground=MUTED).pack(anchor='w',padx=12,pady=(0,8));self._sig=None;self.refresh();self.after(500,self._pulse)
+    def rows(self):
+        rows=list(getattr(self.portfolio,'trade_history',[]) or []);f=self.filter.get()
+        if f!='ALL':rows=[r for r in rows if str(r.get('kind','')).upper()==f or str(r.get('side','')).upper()==f]
+        return rows
+    def refresh(self):
+        rows=self.rows();self.tv.delete(*self.tv.get_children())
+        for i,r in enumerate(reversed(rows[-2000:])):
+            self.tv.insert('','end',iid=f'T{i}',values=(str(r.get('time','')).replace('T',' '),r.get('kind',''),r.get('side',''),r.get('symbol',''),f"{int(r.get('qty',0)):,}",f"${float(r.get('price',0)):,.4f}",f"${float(r.get('notional',0)):,.2f}",f"${float(r.get('realized',0)):,.2f}",r.get('details','')))
+        self.count.config(text=f'{len(rows):,} recorded fills');self._sig=(len(getattr(self.portfolio,'trade_history',[])),self.filter.get())
+    def _pulse(self):
+        try:
+            sig=(len(getattr(self.portfolio,'trade_history',[])),self.filter.get())
+            if sig!=self._sig:self.refresh()
+            self.after(500,self._pulse)
+        except tk.TclError:pass
+
+def _sgp25prod_trade_history_panel(self):TradeHistoryWindow(self.root,self.portfolio)
+App.trade_history_panel=_sgp25prod_trade_history_panel
+
+# Final App initialization: attach the faster portfolio stream and a Trade History command to
+# the existing Account menu without adding another permanent toolbar button.
+_App_init_prodpolish25_base=App.__init__
+def _sgp25prod_app_init(self,root,market,portfolio):
+    _App_init_prodpolish25_base(self,root,market,portfolio)
+    try:
+        mb=self.root.nametowidget(self.root.cget('menu'));end=mb.index('end')
+        for i in range(int(end)+1):
+            if str(mb.entrycget(i,'label')).strip().lower()=='account':
+                menu=self.root.nametowidget(mb.entrycget(i,'menu'));labels=[]
+                mend=menu.index('end')
+                if mend is not None:
+                    for j in range(int(mend)+1):
+                        try:labels.append(str(menu.entrycget(j,'label')))
+                        except Exception:pass
+                if 'Trade History…' not in labels:
+                    menu.add_separator();menu.add_command(label='Trade History…',command=self.trade_history_panel)
+                break
+    except Exception:pass
+    if not getattr(self,'_portfolio_stream25_job',None):self._portfolio_stream25_job=self.root.after(120,self._portfolio_fast_stream25)
+App.__init__=_sgp25prod_app_init
+
+# Long-range offline chart backfill.  If an account has only the bundled/local recent daily
+# cache, 6M/1Y/5Y should still be a useful simulator chart instead of 5-60 candles.  These
+# older bars are deterministic display history and disappear automatically when a richer local
+# real-history cache is available.
+def _sgp25prod_extend_daily(chart,daily,target):
+    daily=sorted(list(daily),key=lambda c:c.timestamp);target=max(1,int(target))
+    if len(daily)>=target:return daily[-target:]
+    if not daily:return daily
+    first=daily[0];need=target-len(daily);key=(getattr(chart.asset,'symbol',''),target,len(daily),first.timestamp,round(float(first.open),8))
+    cache=getattr(chart,'_prod25_daily_backfill',None)
+    if cache and cache[0]==key:return cache[1]+daily
+    # Build exactly `need` prior business-day bars, then normalize the path so it joins the
+    # first known local candle continuously. The random source is symbol/date seeded and stable.
+    import random as _r25
+    seed=sum((i+1)*ord(ch) for i,ch in enumerate(str(getattr(chart.asset,'symbol',''))))+first.timestamp.toordinal()*17+target
+    rng=_r25.Random(seed);dates=[];dt=first.timestamp.replace(hour=0,minute=0,second=0,microsecond=0)-_sgp23_ui_td(days=1)
+    while len(dates)<need:
+        if dt.weekday()<5:dates.append(dt)
+        dt-=_sgp23_ui_td(days=1)
+    dates.reverse();vol=max(.0007,min(.035,float(getattr(chart.asset,'volatility',.002))*3.2));raw=[1.0]
+    for _ in range(need):raw.append(max(.05,raw[-1]*math.exp(rng.gauss(.00015,vol))))
+    scale=float(first.open)/max(1e-9,raw[-1]);vals=[x*scale for x in raw]
+    out=[]
+    for i,ts in enumerate(dates):
+        o=vals[i];cl=vals[i+1];wig=abs(rng.gauss(0,vol*.55));hi=max(o,cl)*(1+wig);lo=max(.000001,min(o,cl)*(1-wig));v=max(1,int(max(1000,getattr(first,'volume',100000))*rng.uniform(.45,1.35)))
+        out.append(Candle(ts,o,hi,lo,cl,v))
+    chart._prod25_daily_backfill=(key,out);return out+daily
+
+_Chart_data_prod25_long_base=Chart.data
+def _sgp25prod_chart_data_long(self):
+    p,mins=_sgp25prod_period_spec(self)
+    if self.asset is None or getattr(self,'fit_inception',False) or p not in ('1 Day','1 Week') or self.timeframe not in ('6M','1Y','5Y'):
+        return list(_Chart_data_prod25_long_base(self))
+    target_daily={'6M':132,'1Y':252,'5Y':1260}[self.timeframe];daily=_sgp25prod_extend_daily(self,list(self.asset.chart_candles('1d')),target_daily)
+    if p=='1 Day':bars=daily
+    else:
+        bars=[];key=None;cur=None
+        for x in daily:
+            iso=x.timestamp.isocalendar();k=(iso.year,iso.week)
+            if k!=key:
+                cur=Candle(x.timestamp,float(x.open),float(x.high),float(x.low),float(x.close),int(x.volume));bars.append(cur);key=k
+            else:cur.high=max(cur.high,float(x.high));cur.low=min(cur.low,float(x.low));cur.close=float(x.close);cur.volume+=int(x.volume)
+    render_cap=max(260,min(1400,int(max(500,self.winfo_width())*1.45)));bars=_sgp25prod_compact_bars(bars,render_cap)
+    zoom=max(.25,float(getattr(self,'zoom',1.0)));visible=max(40,min(len(bars),int(len(bars)/zoom) if zoom>=1 else len(bars)));maxoff=max(0,len(bars)-visible);self.view_offset=max(0,min(int(getattr(self,'view_offset',0)),maxoff));end=len(bars)-self.view_offset;start=max(0,end-visible);out=bars[start:end];self._last_render_data25=out;return out
+Chart.data=_sgp25prod_chart_data_long

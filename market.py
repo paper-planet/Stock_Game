@@ -2094,3 +2094,39 @@ def _sgp25_apply_refreshed_market_snapshot(self,username=None):
         self.network_playback_enabled=False
         return 0
 Market.apply_refreshed_market_snapshot=_sgp25_apply_refreshed_market_snapshot
+
+# ===== Stock Game Pro 2.5 production polish: 24/7 daily-session rollover =====
+# Exchange-open edge detection never fires for crypto because CRYPTO is open 24/7. Give the
+# asset class a real UTC day boundary so CHG% / daily marks reset once per calendar day.
+_Market_init_crypto_day25_base=Market.__init__
+def _sgp25prod_market_init_crypto_day(self,*args,**kwargs):
+    _Market_init_crypto_day25_base(self,*args,**kwargs)
+    try:
+        et=self.clock.current.replace(tzinfo=ZoneInfo('America/New_York'));self._crypto_utc_day=et.astimezone(timezone.utc).date()
+    except Exception:self._crypto_utc_day=self.clock.current.date()
+Market.__init__=_sgp25prod_market_init_crypto_day
+
+def _sgp25prod_crypto_day_roll(self):
+    try:
+        et=self.clock.current.replace(tzinfo=ZoneInfo('America/New_York'));day=et.astimezone(timezone.utc).date()
+    except Exception:day=self.clock.current.date()
+    old=getattr(self,'_crypto_utc_day',day)
+    if day==old:return False
+    self._crypto_utc_day=day
+    for a in self.crypto:
+        try:
+            # Preserve the just-finished UTC close, then establish exactly 0.00% at the new day.
+            a.previous_close_price=float(a.price);a.regular_close_price=float(a.price);a.reset_day();a.day_open_timestamp=self.clock.current
+        except Exception as e:self.errors.append(f'crypto daily reset {getattr(a,"symbol","?")}: {e}')
+    self.visual_version+=1
+    return True
+Market._crypto_day_roll=_sgp25prod_crypto_day_roll
+
+_tick_crypto_day25_base=Market.tick
+async def _sgp25prod_tick_crypto_day(self):
+    await _tick_crypto_day25_base(self)
+    try:self._crypto_day_roll()
+    except Exception as e:
+        try:self.errors.append(f'crypto UTC day rollover: {e}')
+        except Exception:pass
+Market.tick=_sgp25prod_tick_crypto_day
