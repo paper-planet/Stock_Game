@@ -1804,3 +1804,25 @@ def _sgp25_system_record_equity(self,force=False):
     self.equity_history.append(rec);self.equity_history=self.equity_history[-20000:];self._equity_last_stamp=stamp
     day=now.date().isoformat();self._daily_equity_open.setdefault(day,eq)
 Portfolio.record_equity_snapshot=_sgp25_system_record_equity
+
+# ===== Stock Game Pro 2.5 final production polish: stable microstructure wicks =====
+# Quote-to-quote simulation can otherwise produce candles whose high/low are identical to the
+# body for long stretches. Expand each live aggregate bar by a small deterministic microstructure
+# wick. The seed is tied to symbol + bar timestamp, so a completed wick NEVER changes on redraw.
+_Asset_update_bar_sgp25fp_base=Asset._update_bar
+def _sgp25fp_update_bar(self,interval,minutes,ts,price,volume):
+    _Asset_update_bar_sgp25fp_base(self,interval,minutes,ts,price,volume)
+    try:
+        bars=self.live_bars.get(interval)
+        if not bars:return
+        c=bars[-1];ref=max(.000001,float(c.close));spread=max(.000001,float(getattr(self,'ask',ref)-getattr(self,'bid',ref)))
+        # Keep ordinary wicks subtle: roughly 1-8 bps on liquid securities, somewhat larger on
+        # high-volatility names. This is display/aggregation microstructure, not an extra price shock.
+        cap=min(.0016,max(.00008,float(getattr(self,'volatility',.002))*.22))
+        seed=sum((i+1)*ord(ch) for i,ch in enumerate(str(getattr(self,'symbol',''))))+int(c.timestamp.timestamp()//max(1,int(minutes)*60))*131
+        frac=((seed%997)/996.0);frac2=(((seed//17)%991)/990.0)
+        up=max(spread*.42,ref*cap*(.28+.72*frac));dn=max(spread*.42,ref*cap*(.28+.72*frac2))
+        c.high=max(float(c.high),float(c.open),float(c.close),max(float(c.open),float(c.close))+up)
+        c.low=max(.000001,min(float(c.low),float(c.open),float(c.close),min(float(c.open),float(c.close))-dn))
+    except Exception:pass
+Asset._update_bar=_sgp25fp_update_bar

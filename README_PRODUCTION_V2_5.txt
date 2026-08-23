@@ -127,3 +127,63 @@ Career / casino audit
 
 Offline policy remains unchanged: normal gameplay does not poll market-data services. Network access is
 reserved for new-account seeding and the explicit Experimental -> Refresh Market Snapshot action.
+
+=== BUTTER-SMOOTH PRODUCTION CONSOLIDATION ===
+
+This pass focuses on responsiveness, thread safety and predictable chart behavior rather than adding
+more continuously-running work. Redundant controls are intentionally consolidated where keeping both
+would create competing camera/scheduler state.
+
+Chart camera / multi-chart layout
+- Normal and Advanced charts now use AUTO Y by default. The camera includes every visible candle high/low
+  plus the live ticker, translates when possible, expands only when required and contracts slowly after a
+  stability hold. If the current range already fits, its exact bounds are retained to prevent sub-pixel shimmer.
+- The old normal-chart vertical zoom control is hidden in favor of AUTO Y. Manual time zoom/pan remains;
+  leaving LIVE freezes automatic follow and returning to LIVE restores it.
+- FIT MAX remains a separate reversible mode. Toggling it off restores the prior timeframe, candle period,
+  zoom, scroll offset, follow state and vertical-view state.
+- Eight-chart layouts use a responsive 2x4 arrangement when appropriate and the account pane is capped so
+  it cannot crush the center workspace or hide live ticker labels.
+- Timeframe semantics are normalized: timeframe selects the context window, candle period selects bar size,
+  and display-only historical fallback never creates timestamps later than the simulator clock.
+
+High-frequency engine / UI scheduling
+- Removed a cross-thread Tkinter call from the simulation loop. The market thread previously queried a
+  Treeview selection while determining hot symbols; Tk is not thread-safe and that call could block market
+  updates, causing apparent low tick rates and stalls. The UI now publishes a plain-Python hot-symbol snapshot
+  for the simulation thread to consume.
+- Hot symbols (charted, held, selected and working-order assets) receive a dedicated high-cadence update path;
+  the multi-thousand-security universe remains rotating/batched so high-frequency charts do not require every
+  security to reprice at the same cadence.
+- Graphics profiles are now workload profiles rather than cosmetic switches. Efficiency, Balanced, Smooth and
+  Maximum tune engine cadence, hot quotes, visible watchlist refresh, portfolio marks, global animation and
+  broad-universe batch size. A detailed dialog exposes safe custom ranges and persists custom values locally.
+- The practical chart-refresh floor is 16 ms (approximately a 60 Hz target). A requested interval is a scheduler
+  target rather than a promise of exact wall-clock timing on every Windows/Tk installation.
+
+Rendering / memory
+- Deterministic offline display backfill is cached per chart/view instead of being rebuilt every paint.
+- Volume is rendered as a compact polygon histogram rather than hundreds/thousands of independent Canvas
+  rectangles. Closed-bar volume no longer changes merely because the screen repainted.
+- Dense long-range charts use OHLC-preserving display compaction only at render time; native simulator bars remain
+  retained according to bounded history limits.
+- Heavy Global/Market Map/Advanced windows remain reused/bounded to avoid duplicate high-frequency timer trees.
+
+Saving / stability
+- Account safety checkpoints now run every 30 seconds, in addition to session-boundary and clean-exit saves.
+- Autosave work is serialized with a lock and background save paths no longer call Tkinter widgets directly;
+  UI status messages cross threads through plain data and are consumed by the Tk thread.
+- The Market Map pane initialization bug found during the multi-window smoke test was corrected.
+
+Validation performed for this consolidation
+- Python compilation across the production modules.
+- Reversible FIT MAX state restoration and AUTO-Y containment tests.
+- 1D/1W/1M/3M/6M/1Y/5Y timeframe matrices with no future display timestamps.
+- Eight-chart responsive-layout and account-pane guard tests.
+- Multi-window stress run with eight charts, very large positions, Global Viewer, Market Map, Career Desk and
+  Advanced Charts open together; no market-engine errors or non-finite portfolio values were observed.
+- A longer memory observation showed initial allocator growth settling rather than an obvious continuously
+  accelerating leak. This is a stress check, not a guarantee that no platform-specific leak can exist.
+
+Normal gameplay remains offline. New-account market seeding and the explicitly confirmed Experimental ->
+Refresh Market Snapshot action remain the only market-data network paths.

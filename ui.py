@@ -73,7 +73,7 @@ class Chart(tk.Canvas):
                 except Exception:pass
 
     def set_refresh_rate(self,ms):
-        try:ms=max(25,min(5000,int(ms)))
+        try:ms=max(16,min(5000,int(ms)))
         except Exception:ms=180
         self.refresh_ms=ms
         # Reset due time so changing a chart's rate takes effect immediately, then the shared
@@ -84,7 +84,7 @@ class Chart(tk.Canvas):
         return now_ms >= self._next_refresh_ms
 
     def mark_refreshed(self,now_ms):
-        interval=max(25,int(self.refresh_ms))
+        interval=max(16,int(self.refresh_ms))
         # Quantize to the common scheduler epoch. Charts with the same interval therefore
         # remain on the exact same phase instead of accumulating independent after() drift.
         self._next_refresh_ms=(int(now_ms//interval)+1)*interval
@@ -919,7 +919,7 @@ class WorkspaceControls(ToolWindow):
         for name,val,lo,hi in [('Time warp',float(app.time_warp.get()) if hasattr(app,'time_warp') else 1,1,100),('Active chart tick',app.charts[app.active_chart].refresh_ms/1000,.025,5.0),('Chart zoom',1,.5,3)]:
             row=ttk.Frame(self);row.pack(fill='x',padx=12,pady=7);ttk.Label(row,text=name,width=18).pack(side='left');v=tk.DoubleVar(value=val);self.vars[name]=v;tk.Scale(row,from_=lo,to=hi,resolution=.01 if hi<5 else 1,orient='horizontal',variable=v,length=350,bg=PANEL,fg=TEXT,highlightthickness=0,command=lambda x:self.apply()).pack(side='left',fill='x',expand=True);ttk.Label(row,textvariable=v,width=8).pack(side='right')
         ttk.Label(self,text='Main workspace charts',font=('Arial',9,'bold')).pack(anchor='w',padx=12,pady=(15,5));self.count=tk.IntVar(value=len(app.charts));ttk.Combobox(self,textvariable=self.count,values=[4,6,8],state='readonly',width=8).pack(anchor='w',padx=20);ttk.Button(self,text='APPLY CHART COUNT',command=app.set_chart_count).pack(anchor='w',padx=20,pady=5);ttk.Label(self,text='Indicators are removable/addable from the Chart Tools menu and chart variables panel.',wraplength=640).pack(anchor='w',padx=12,pady=15)
-    def apply(self):self.app.set_time_warp(float(self.vars['Time warp'].get()));self.app.charts[self.app.active_chart].set_refresh_rate(max(25,int(self.vars['Active chart tick'].get()*1000)))
+    def apply(self):self.app.set_time_warp(float(self.vars['Time warp'].get()));self.app.charts[self.app.active_chart].set_refresh_rate(max(16,int(self.vars['Active chart tick'].get()*1000)))
 
 class SmartOrderWindow(ToolWindow):
     def __init__(self,parent,app):
@@ -1068,7 +1068,7 @@ class App:
         self.grid=ttk.PanedWindow(center,orient='horizontal');self.grid.pack(fill='both',expand=True,padx=5,pady=5);self.charts=[];self.extra_charts=[]
         self._chart_refresh_job=None
         ttk.Label(top,text='Chart tick').pack(side='left',padx=(8,2))
-        self.chart_rate=ttk.Combobox(top,values=['25ms','50ms','100ms','180ms','250ms','500ms','1000ms','2000ms','5000ms'],state='readonly',width=9)
+        self.chart_rate=ttk.Combobox(top,values=['16ms','25ms','33ms','50ms','75ms','100ms','180ms','250ms','500ms','1000ms','2000ms','5000ms'],state='readonly',width=9)
         self.chart_rate.set('50ms');self.chart_rate.bind('<<ComboboxSelected>>',lambda e:self.set_chart_refresh_rate());self.chart_rate.pack(side='left',padx=2);ttk.Button(top,text='SYNC ALL',command=self.sync_all_chart_rates).pack(side='left',padx=(2,6))
         ttk.Label(right,text='PORTFOLIO / ACCOUNT',font=('Arial',12,'bold')).pack(anchor='w',padx=7,pady=5);tabs=ttk.Notebook(right);tabs.pack(fill='both',expand=True,padx=5,pady=3)
         pos_tab=ttk.Frame(tabs);acct_tab=ttk.Frame(tabs);ord_tab=ttk.Frame(tabs);tabs.add(pos_tab,text='Positions');tabs.add(acct_tab,text='Account');tabs.add(ord_tab,text='Orders')
@@ -2508,7 +2508,7 @@ class AdvancedChartWindow(_AdvancedChart_v11_base):
         bar=ttk.Frame(self)
         if body is not None:bar.pack(fill='x',padx=8,pady=(0,5),before=body)
         else:bar.pack(fill='x',padx=8,pady=5)
-        ttk.Label(bar,text='Chart tick').pack(side='left');self.adv_rate=tk.StringVar(value=f'{self.chart.refresh_ms}ms');rate=ttk.Combobox(bar,textvariable=self.adv_rate,values=['25ms','50ms','100ms','180ms','250ms','500ms','1000ms','2000ms','5000ms'],state='readonly',width=9);rate.pack(side='left',padx=4);rate.bind('<<ComboboxSelected>>',self._set_adv_rate)
+        ttk.Label(bar,text='Chart tick').pack(side='left');self.adv_rate=tk.StringVar(value=f'{self.chart.refresh_ms}ms');rate=ttk.Combobox(bar,textvariable=self.adv_rate,values=['16ms','25ms','33ms','50ms','75ms','100ms','180ms','250ms','500ms','1000ms','2000ms','5000ms'],state='readonly',width=9);rate.pack(side='left',padx=4);rate.bind('<<ComboboxSelected>>',self._set_adv_rate)
         self.history_btn=ttk.Button(bar,text='FREE SCROLL: OFF',command=self.toggle_free_scroll);self.history_btn.pack(side='left',padx=(12,4));ttk.Button(bar,text='◀ OLDER',command=lambda:self.chart.pan_bars(50)).pack(side='left',padx=2);ttk.Button(bar,text='NEWER ▶',command=lambda:self.chart.pan_bars(-50)).pack(side='left',padx=2);ttk.Button(bar,text='LIVE',command=self.go_live).pack(side='left',padx=4)
         self.history_status=ttk.Label(bar,text='Following latest market candle',foreground=MUTED);self.history_status.pack(side='left',padx=12)
         ttk.Label(bar,text='Tip: FREE SCROLL lets you drag horizontally; trend/horizontal drawings are anchored to price + time.',foreground=MUTED).pack(side='right')
@@ -3023,7 +3023,7 @@ def _sgp_chart_context_v13(self,e):
     m.add_command(label='Buy at Market',command=lambda:self.app.order_window(a,'BUY','MARKET',None));m.add_command(label='Set Stop',command=lambda:self.app.order_window(a,'SELL','STOP',p));m.add_command(label='Open Options',command=lambda:self.app.options_for(a));m.add_command(label='Level 2 / Level 3',command=lambda:self.app.depth_for(a));m.add_command(label='POP OUT ADVANCED CHART',command=lambda:self.app.advanced_chart(a));m.add_separator()
     rate=tk.Menu(m,tearoff=0);rv=tk.IntVar(value=int(getattr(self,'refresh_ms',100)))
     self._context_rate_var=rv
-    for ms in (25,50,100,180,250,500,1000,2000,5000):rate.add_radiobutton(label=f'{ms} ms',value=ms,variable=rv,command=lambda x=ms:_sgp_set_one_chart_rate(self,x))
+    for ms in (16,25,33,50,75,100,180,250,500,1000,2000,5000):rate.add_radiobutton(label=f'{ms} ms',value=ms,variable=rv,command=lambda x=ms:_sgp_set_one_chart_rate(self,x))
     m.add_cascade(label=f'CHART TICKRATE • {self.refresh_ms} ms',menu=rate)
     tfm=tk.Menu(m,tearoff=0)
     for tf in ('1D','1W','1M','3M','6M','1Y','5Y','MAX'):tfm.add_command(label=tf,command=lambda x=tf:self.set_tf(x))
@@ -3273,7 +3273,7 @@ def _sgp_chart_context_v14(self,e):
     for tf in ('1D','1W','1M','3M','6M','1Y','5Y','MAX'):tfm.add_radiobutton(label=tf,value=tf,variable=tk.StringVar(value=self.timeframe),command=lambda v=tf:self.set_tf(v))
     m.add_cascade(label=f'TIMEFRAME  •  {self.timeframe}',menu=tfm)
     rm=tk.Menu(m,tearoff=0)
-    for ms in (25,50,100,180,250,500,1000,2000,5000):rm.add_command(label=f'{ms} ms'+('  ✓' if self.refresh_ms==ms else ''),command=lambda v=ms:_sgp_set_one_chart_rate(self,v))
+    for ms in (16,25,33,50,75,100,180,250,500,1000,2000,5000):rm.add_command(label=f'{ms} ms'+('  ✓' if self.refresh_ms==ms else ''),command=lambda v=ms:_sgp_set_one_chart_rate(self,v))
     m.add_cascade(label=f'CHART TICKRATE  •  {self.refresh_ms} ms',menu=rm)
     m.add_command(label=f'REFRESH {self.timeframe} TICKER',command=self.manual_refresh,state='disabled' if self.timeframe in ('5Y','MAX') else 'normal')
     if not getattr(self,'selected_popup',False):m.add_separator();m.add_command(label='ADD CHART',command=self.app.add_chart);m.add_command(label='REMOVE THIS CHART',command=lambda:self.app.remove_chart(self.index))
@@ -7147,7 +7147,7 @@ class MarketMapWindow(ToolWindow):
         super().__init__(parent);self.market=market;self.style_window('STOCK GAME PRO • MARKET MAP / INDEX IMPACT','1540x880');self.resizable(True,True);self.page=0;self.tiles=[];self.search=tk.StringVar();self.sector=tk.StringVar(value='ALL');self.kind=tk.StringVar(value='ALL');self.index=tk.StringVar(value='SPX');self.sort=tk.StringVar(value='Market Cap')
         top=ttk.Frame(self);top.pack(fill='x',padx=8,pady=5);ttk.Label(top,text='MARKET MAP',font=('Segoe UI',11,'bold')).pack(side='left');ttk.Label(top,text='Search').pack(side='left',padx=(12,2));e=ttk.Entry(top,textvariable=self.search,width=15);e.pack(side='left');ttk.Label(top,text='Universe').pack(side='left',padx=(9,2));ttk.Combobox(top,textvariable=self.kind,values=['ALL','STOCK','INTERNATIONAL','CRYPTO','COMMODITY','INDEX','FUTURES','FOREX'],state='readonly',width=14).pack(side='left');ttk.Label(top,text='Sector').pack(side='left',padx=(9,2));self.sec_cb=ttk.Combobox(top,textvariable=self.sector,values=['ALL']+market.sectors,state='readonly',width=16);self.sec_cb.pack(side='left');ttk.Label(top,text='Sort').pack(side='left',padx=(9,2));ttk.Combobox(top,textvariable=self.sort,values=['Market Cap','Change %','Symbol'],state='readonly',width=11).pack(side='left');self.page_label=ttk.Label(top,text='');self.page_label.pack(side='right');ttk.Button(top,text='NEXT ›',command=lambda:self.move_page(1)).pack(side='right',padx=2);ttk.Button(top,text='‹ PREV',command=lambda:self.move_page(-1)).pack(side='right')
         for v in (self.search,self.kind,self.sector,self.sort):v.trace_add('write',lambda *_:self.reset_page())
-        pw=ttk.PanedWindow(self,orient='horizontal');pw.pack(fill='both',expand=True,padx=7,pady=4);left=ttk.Frame(pw);mid=ttk.Frame(pw);right=ttk.Frame(pw);pw.add(left,weight=2);pw.add(mid,weight=6);pw.add(right,weight=3)
+        self.pw=pw=ttk.PanedWindow(self,orient='horizontal');pw.pack(fill='both',expand=True,padx=7,pady=4);left=ttk.Frame(pw);mid=ttk.Frame(pw);right=ttk.Frame(pw);pw.add(left,weight=2);pw.add(mid,weight=6);pw.add(right,weight=3)
         ttk.Label(left,text='SECTOR BREADTH',font=('Segoe UI',9,'bold')).pack(anchor='w');self.sectors=ttk.Treeview(left,columns=('sector','chg','adv','dec'),show='headings',height=20);[(self.sectors.heading(c,text=t),self.sectors.column(c,width=w,anchor='center')) for c,t,w in [('sector','Sector',105),('chg','Avg %',58),('adv','Adv',45),('dec','Dec',45)]];self.sectors.pack(fill='both',expand=True)
         self.cv=tk.Canvas(mid,bg='#071019',highlightthickness=0);self.cv.pack(fill='both',expand=True);self.cv.bind('<Double-1>',self.tile_open);self.cv.bind('<Button-3>',self.context)
         rr=ttk.Frame(right);rr.pack(fill='x');ttk.Label(rr,text='INDEX IMPACT',font=('Segoe UI',9,'bold')).pack(side='left');ic=ttk.Combobox(rr,textvariable=self.index,values=[i.symbol for i in market.indexes],state='readonly',width=11);ic.pack(side='right');ic.bind('<<ComboboxSelected>>',lambda e:self.refresh(force=True));self.const=ttk.Treeview(right,columns=('symbol','weight','chg','impact'),show='headings');[(self.const.heading(c,text=t),self.const.column(c,width=w,anchor='center')) for c,t,w in [('symbol','Symbol',78),('weight','Weight',65),('chg','Chg %',65),('impact','Impact',72)]];self.const.pack(fill='both',expand=True);self.const.bind('<Double-1>',self.row_open);self.const.bind('<Button-3>',self.row_context)
@@ -7487,3 +7487,1081 @@ def _sgp25sys_title_init(self,root,market,portfolio):
     try:self.root.title('Stock Game Pro 2.5 Production — Global Trading Simulator')
     except Exception:pass
 App.__init__=_sgp25sys_title_init
+
+# ============================================================================
+# Stock Game Pro 2.5 FINAL PRODUCTION POLISH — stable intraday charts, resource
+# profiles, market-map research, global risk intelligence, casino presentation.
+# ============================================================================
+
+# ---------- stable timeframe construction / no moving synthetic future ----------
+def _sgp25fp_extended_backfill(chart,daily,mins,max_points=1400):
+    """Build immutable completed-session display history, including US pre/post market.
+
+    Nothing is generated for the current unfinished calendar day, and every pseudo-random
+    value is timestamp-seeded. That means historical candles never morph between frames.
+    """
+    if not daily or mins<=0 or mins>=1440:return []
+    now=getattr(chart.app.market.clock,'current',_sgp22_dt.now());code=_sgp_asset_session_code(chart.asset);done=[d for d in daily if d.timestamp.date()<now.date()]
+    if not done:return []
+    days=len(done);points_per=max(20,int(max_points/max(1,days)));out=[];sym=str(chart.asset.symbol)
+    import random as _rr
+    for di,dc in enumerate(done):
+        day=dc.timestamp.date();prev=float(done[di-1].close if di else dc.open);o=float(dc.open);cl=float(dc.close);hi=max(o,cl,float(dc.high));lo=max(.000001,min(o,cl,float(dc.low)));next_open=float(done[di+1].open if di+1<len(done) else cl)
+        if code=='US':segments=[(240,570,prev,o,.16,'PRE'),(570,960,o,cl,1.0,'REG'),(960,1200,cl,next_open,.13,'POST')]
+        elif code=='CRYPTO':segments=[(0,1440,o,cl,1.0,'REG')]
+        else:
+            # Non-US exchange history follows its actual regular session window.
+            try:
+                sess=SESSIONS[code];st=_sgp22_dt.combine(day,sess.open_time).replace(tzinfo=_sgp22_ZoneInfo(sess.tz));en=_sgp22_dt.combine(day,sess.close_time).replace(tzinfo=_sgp22_ZoneInfo(sess.tz));
+                if en<=st:en+=_sgp23_ui_td(days=1)
+                et=_sgp22_ZoneInfo('America/New_York');st_et=st.astimezone(et).replace(tzinfo=None);en_et=en.astimezone(et).replace(tzinfo=None);m0=(st_et-st_et.replace(hour=0,minute=0,second=0,microsecond=0)).total_seconds()/60;m1=m0+(en_et-st_et).total_seconds()/60;segments=[(m0,m1,o,cl,1.0,'REG')]
+            except Exception:segments=[(570,960,o,cl,1.0,'REG')]
+        total_minutes=sum(max(1,b-a) for a,b,*_ in segments);base_day=_sgp22_dt.combine(day,_sgp22_dt.min.time());seed0=sum((i+1)*ord(ch) for i,ch in enumerate(sym))+base_day.toordinal()*1009+int(mins*100)
+        for si,(m0,m1,startpx,endpx,amp,kind) in enumerate(segments):
+            dur=max(1.0,m1-m0);n=max(2,min(int(dur/max(.5,mins)),max(2,int(points_per*dur/total_minutes))));step=dur/n;rng=_rr.Random(seed0+si*7919);raw=[0.0];acc=0.0
+            for _ in range(1,n+1):acc+=rng.gauss(0,1);raw.append(acc)
+            rend=raw[-1];bridge=[raw[i]-(i/n)*rend for i in range(n+1)];mx=max([abs(v) for v in bridge] or [1.0]) or 1.0;span=max(hi-lo,abs(o)*.0025,1e-8);vals=[]
+            for j in range(n+1):
+                t=j/n;trend=startpx+(endpx-startpx)*t;noise=(bridge[j]/mx)*span*(.15 if kind=='REG' else .035)*math.sin(math.pi*t);p=max(.000001,trend+noise)
+                if kind=='REG':p=max(lo,min(hi,p))
+                vals.append(p)
+            if kind=='REG' and n>=8:
+                ih=2+(seed0%(n-3));il=2+((seed0//19)%(n-3));
+                if ih==il:il=min(n-1,il+2)
+                vals[ih]=hi;vals[il]=lo
+            dayvol=max(1,int(getattr(dc,'volume',0) or 1));basevol=max(1,int(dayvol*(dur/total_minutes)/n))
+            for j in range(n):
+                ts=base_day+_sgp23_ui_td(minutes=m0+j*step);op=float(vals[j]);cp=float(vals[j+1]);wig=max(abs(cp-op)*.18,span*(.0015 if kind=='REG' else .00045)*(0.5+rng.random()));bh=max(op,cp)+wig;bl=max(.000001,min(op,cp)-wig)
+                if kind=='REG':bh=min(max(hi,max(op,cp)),bh);bl=max(min(lo,min(op,cp)),bl)
+                out.append(Candle(ts,op,bh,bl,cp,max(1,int(basevol*rng.uniform(.65,1.35)))))
+    return out
+
+def _sgp25fp_compact_stable(bars,limit):
+    bars=list(bars);limit=max(80,int(limit))
+    if len(bars)<=limit:return bars
+    try:
+        first,last=bars[0].timestamp,bars[-1].timestamp;span=max(1.0,(last-first).total_seconds());bucket=max(1,int(math.ceil(span/limit)));groups=[];cur=[];lastk=None
+        for b in bars:
+            k=int(b.timestamp.timestamp())//bucket
+            if lastk is not None and k!=lastk:
+                groups.append(cur);cur=[]
+            cur.append(b);lastk=k
+        if cur:groups.append(cur)
+        out=[]
+        for g in groups:out.append(Candle(g[0].timestamp,float(g[0].open),max(float(x.high) for x in g),min(float(x.low) for x in g),float(g[-1].close),sum(max(0,int(x.volume)) for x in g)))
+        return out
+    except Exception:return _sgp25prod_compact_bars(bars,limit)
+
+def _sgp25fp_chart_target(chart,p):
+    # Default density is period-aware. Tick charts begin readable instead of as a compressed line,
+    # while Auto and long-range views show enough context to look like professional charts.
+    tf=chart.timeframe
+    if p=='1 Tick':return {'1D':260,'1W':340,'1M':420,'3M':480,'6M':520,'1Y':560,'5Y':620,'MAX':700}.get(tf,300)
+    return {'1D':170,'1W':230,'1M':300,'3M':360,'6M':340,'1Y':390,'5Y':430,'MAX':520}.get(tf,260)
+
+def _sgp25fp_chart_data(self):
+    if self.asset is None:return []
+    if getattr(self,'fit_inception',False):
+        out=list(_Chart_data_sys25_parent(self));now=getattr(self.app.market.clock,'current',None);return [c for c in out if now is None or c.timestamp<=now]
+    p,mins=_sgp25prod_period_spec(self);now=getattr(self.app.market.clock,'current',_sgp22_dt.now());native=sorted([c for c in _sgp25prod_native_bars(self,p) if c.timestamp<=now],key=lambda c:c.timestamp);combined=list(native)
+    if 0<mins<1440:
+        daily_all=sorted(list(self.asset.chart_candles('1d')),key=lambda c:c.timestamp);code=_sgp_asset_session_code(self.asset)
+        if code!='CRYPTO':daily_all=[dc for dc in daily_all if (dc.timestamp.weekday()!=5 if code=='CME' else dc.timestamp.weekday()<5)]
+        # IMPORTANT: remove the unfinished/current day BEFORE slicing to the timeframe. This was the
+        # cause of 1D Auto showing only ~11 native candles at startup.
+        completed=[dc for dc in daily_all if dc.timestamp.date()<now.date()];need_days=max(1,_sgp25prod_tf_days(self.timeframe,max(1,len(completed))));seed_days=completed[-need_days:]
+        target=_sgp25fp_chart_target(self,p);minimum=max(24,int(target*.72))
+        if seed_days and len(native)<minimum:
+            hist=_sgp25fp_extended_backfill(self,seed_days,mins,max(900,min(3200,target*max(3,need_days))))
+            # Native data is authoritative; use synthetic only before the first native timestamp and
+            # never for the current/future session.
+            first_native=native[0].timestamp if native else now;hist=[c for c in hist if c.timestamp<first_native and c.timestamp<=now];combined=hist+native
+    elif p=='1 Week' and len(combined)<8:combined=[c for c in _sgp25prod_native_bars(self,'1 Week') if c.timestamp<=now]
+    if not combined:
+        px=float(self.asset.price);combined=[Candle(now,px,px,px,px,max(0,int(getattr(self.asset,'volume',0))))]
+    merged={c.timestamp:c for c in combined if c.timestamp<=now};combined=[merged[k] for k in sorted(merged)]
+    # Keep completed tick-volume values immutable. Only the newest current tick may inherit the last
+    # non-zero print if a quote update reports zero size.
+    if p=='1 Tick' and combined:
+        last=combined[-1];v=max(0,int(getattr(last,'volume',0) or 0))
+        if v>0:self._last_tick_volume25=v
+        elif getattr(self,'_last_tick_volume25',0)>0:combined[-1]=Candle(last.timestamp,float(last.open),float(last.high),float(last.low),float(last.close),int(self._last_tick_volume25))
+    zoom=max(.25,min(20.0,float(getattr(self,'zoom',1.0))));base=_sgp25fp_chart_target(self,p);visible=min(len(combined),max(35,int(base/zoom)))
+    maxoff=max(0,len(combined)-visible);self.view_offset=max(0,min(int(getattr(self,'view_offset',0)),maxoff));end=len(combined)-self.view_offset;start=max(0,end-visible);window=combined[start:end]
+    # LOD is applied AFTER choosing the stable visible window and uses time-anchored buckets.
+    render_cap=max(360,min(1100,int(max(500,self.winfo_width())*1.25)));out=_sgp25fp_compact_stable(window,render_cap);self._last_render_data25=out;return out
+Chart.data=_sgp25fp_chart_data
+
+_Chart_set_candle_sgp25fp_base=Chart.set_candle_period
+def _sgp25fp_set_candle_period(self,value):
+    out=_Chart_set_candle_sgp25fp_base(self,value);p=str(getattr(self,'candle_period','Auto'));self.zoom=1.0;self.vertical_scale=1.0 if p!='1 Tick' else 1.35;self._stable_bounds25=None;self._manual_fit_bounds26=None;self._volume_scale25=None;self._volume_cache25={};self.request_draw(force=True);return out
+Chart.set_candle_period=_sgp25fp_set_candle_period
+
+# Stable volume renderer is reinstated after the final session-shading renderer. The older final
+# patch bypassed this layer, which let completed tick volume appear to bounce as the max rescaled.
+_Chart_draw_sgp25fp_base=Chart.draw
+def _sgp25fp_chart_draw(self):
+    volvar=getattr(self.app,'ind_vars',{}).get('Volume');showvol=bool(volvar and volvar.get())
+    if showvol:
+        try:volvar.set(False)
+        except Exception:showvol=False
+    try:_Chart_draw_sgp25fp_base(self)
+    finally:
+        if showvol:
+            try:volvar.set(True)
+            except Exception:pass
+    if not showvol or self.asset is None:return
+    try:
+        self.delete('sgp25fp_volume');d=list(getattr(self,'_last_render_data25',None) or self.data());w=max(300,self.winfo_width());h=max(190,self.winfo_height());show_rsi=bool(getattr(self.app,'ind_vars',{}).get('RSI') and self.app.ind_vars['RSI'].get());show_macd=bool(getattr(self.app,'ind_vars',{}).get('MACD') and self.app.ind_vars['MACD'].get());subcount=int(show_rsi)+int(show_macd);sub_h=68 if h>360 else 52;left,right,top=64,w-14,36;axis_y=h-25;bottom=max(top+70,axis_y-8-subcount*sub_h)
+        vc=getattr(self,'_volume_cache25',None) or {};self._volume_cache25=vc;vals=[]
+        current_ts=d[-1].timestamp if d else None
+        for c in d:
+            k=c.timestamp;v=max(0,int(getattr(c,'volume',0) or 0))
+            if v>0 or k==current_ts:vc[k]=max(v,int(vc.get(k,0)))
+            vals.append(int(vc.get(k,v)))
+        target=max(vals or [1]);scale=getattr(self,'_volume_scale25',None)
+        if scale is None or not math.isfinite(scale):scale=float(target)
+        elif target>scale:scale=float(target)
+        else:scale=max(float(target),float(scale)*.9995) # deliberately very slow decay
+        self._volume_scale25=max(1.0,scale);vh=max(12,(bottom-top)*.105);step=(right-left)/max(1,len(d))
+        # One histogram polygon replaces hundreds of individual Canvas rectangles. The visual is
+        # identical at chart scale but removes thousands of Tcl calls per second with 8 charts.
+        pts=[];half=max(.75,step*.25)
+        for i,v in enumerate(vals):
+            if v<=0:continue
+            x=left+(i+.5)*step;y=bottom-(v/self._volume_scale25)*vh;x1=x-half;x2=x+half
+            pts.extend((x1,bottom,x1,y,x2,y,x2,bottom))
+        if len(pts)>=8:self.create_polygon(*pts,fill='#34485a',outline='',tags=('sgp25fp_volume',))
+    except Exception:pass
+Chart.draw=_sgp25fp_chart_draw
+
+# ---------- 25 ms account-chart pulse without a 40 Hz full-application refresh ----------
+_sgp25fp_perf_points_base=_sgp23_perf_points
+def _sgp25fp_perf_points(p,label):
+    out=list(_sgp25fp_perf_points_base(p,label));m=getattr(p,'market',None);now=getattr(getattr(m,'clock',None),'current',None) or _sgp22_dt.now()
+    try:
+        eq=float(p.regulatory_equity());rec={'time':now.isoformat(),'equity':eq,'cash':float(p.cash),'holdings':[]}
+        if not out or abs((now-out[-1][0]).total_seconds())>.02:out.append((now,eq,rec))
+        else:out[-1]=(now,eq,rec)
+    except Exception:pass
+    return out
+_sgp23_perf_points=_sgp25fp_perf_points
+
+def _sgp25fp_portfolio_pulse(self):
+    try:
+        if not self.root.winfo_exists():return
+        if hasattr(self,'perf_canvas23') and self.perf_canvas23.winfo_viewable():
+            t0=time.perf_counter();eq=float(self.portfolio.regulatory_equity());sig=(round(eq,2),self.perf_range23.get(),self.perf_canvas23.winfo_width(),self.perf_canvas23.winfo_height())
+            if sig!=getattr(self,'_perf_sig_fp',None):
+                self._perf_sig_fp=sig;_sgp23_draw_perf(self.perf_canvas23,self.portfolio,self.perf_range23.get());self.dailypl23.config(text=f'DAILY P/L ${self.portfolio.daily_pl:+,.2f}')
+            spent=(time.perf_counter()-t0)*1000;delay=25 if spent<10 else 50 if spent<22 else 90
+        else:delay=100
+    except Exception:delay=100
+    self._perf_job_fp=self.root.after(delay,lambda:self._portfolio_pulse_fp())
+App._portfolio_pulse_fp=_sgp25fp_portfolio_pulse
+
+# ---------- resource / graphics profiles (Tk Canvas is CPU-rendered; no fake GPU allocator) ----------
+_SGP25FP_PROFILE_PATH=Path.home()/'.stock_game_pro_cache'/'performance_profile.json'
+_SGP25FP_PROFILES={
+ 'Efficiency':{'engine_ms':55,'batch':10,'chart_ms':220,'global_ms':900,'portfolio_ms':80,'desc':'Lowest CPU/RAM pressure; reduced animation density.'},
+ 'Balanced':{'engine_ms':35,'batch':16,'chart_ms':150,'global_ms':600,'portfolio_ms':40,'desc':'Recommended production balance for large universes.'},
+ 'Smooth':{'engine_ms':25,'batch':24,'chart_ms':95,'global_ms':350,'portfolio_ms':25,'desc':'More CPU/RAM for smoother visible quotes/charts.'},
+ 'Maximum':{'engine_ms':18,'batch':36,'chart_ms':65,'global_ms':220,'portfolio_ms':25,'desc':'Aggressive CPU/RAM use. Tkinter Canvas remains CPU rendered; GPU allocation is OS-managed.'},
+}
+def _sgp25fp_load_profile():
+    try:return json.loads(_SGP25FP_PROFILE_PATH.read_text()).get('profile','Balanced')
+    except Exception:return 'Balanced'
+def _sgp25fp_save_profile(name):
+    try:_SGP25FP_PROFILE_PATH.parent.mkdir(parents=True,exist_ok=True);_SGP25FP_PROFILE_PATH.write_text(json.dumps({'profile':name}))
+    except Exception:pass
+
+def _sgp25fp_apply_profile(self,name):
+    name=name if name in _SGP25FP_PROFILES else 'Balanced';cfg=_SGP25FP_PROFILES[name];self.graphics_profile=name;self.market.graphics_profile=name;self.market.speed=cfg['engine_ms']/1000.0;self.market._v20_batch=max(6,min(64,int(cfg['batch'])));self.market.global_anim_ms=int(cfg['global_ms']);self._portfolio_profile_ms=int(cfg['portfolio_ms'])
+    for c in getattr(self,'charts',[]):c.set_refresh_rate(int(cfg['chart_ms']))
+    _sgp25fp_save_profile(name);self.status_flash(f'Performance profile: {name} • engine {cfg["engine_ms"]} ms • chart {cfg["chart_ms"]} ms')
+App.apply_graphics_profile=_sgp25fp_apply_profile
+
+def _sgp25fp_graphics_options(self):
+    w=ToolWindow(self.root);w.style_window('GRAPHICS / PERFORMANCE','650x420');cur=tk.StringVar(value=getattr(self,'graphics_profile',_sgp25fp_load_profile()));ttk.Label(w,text='GRAPHICS / PERFORMANCE PROFILE',font=('Segoe UI',15,'bold')).pack(anchor='w',padx=16,pady=(15,5));ttk.Label(w,text='These settings change simulator/render work budgets. Tkinter Canvas is CPU-rendered, so the game cannot reserve a specific amount of GPU memory or bandwidth.',foreground=MUTED,wraplength=610).pack(anchor='w',padx=16,pady=(0,10));cb=ttk.Combobox(w,textvariable=cur,values=list(_SGP25FP_PROFILES),state='readonly',width=18);cb.pack(anchor='w',padx=16);desc=ttk.Label(w,text='',wraplength=610);desc.pack(anchor='w',padx=16,pady=10)
+    def upd(*_):cfg=_SGP25FP_PROFILES[cur.get()];desc.config(text=f'{cfg["desc"]}\nEngine cadence {cfg["engine_ms"]} ms • visible chart target {cfg["chart_ms"]} ms • broad asset batch {cfg["batch"]} • global animation target {cfg["global_ms"]} ms')
+    cb.bind('<<ComboboxSelected>>',upd);upd();bar=ttk.Frame(w);bar.pack(fill='x',side='bottom',padx=16,pady=16);ttk.Button(bar,text='APPLY',command=lambda:(self.apply_graphics_profile(cur.get()),w.destroy())).pack(side='left',expand=True,fill='x');ttk.Button(bar,text='CANCEL',command=w.destroy).pack(side='left',expand=True,fill='x',padx=(6,0))
+App.graphics_options=_sgp25fp_graphics_options
+
+_App_make_menu_sgp25fp_base=App.make_menu
+def _sgp25fp_make_menu(self):
+    _App_make_menu_sgp25fp_base(self)
+    try:
+        mb=self.root.nametowidget(self.root.cget('menu'));gm=tk.Menu(mb,tearoff=0);gm.add_command(label='Graphics / Performance…',command=self.graphics_options);gm.add_separator()
+        for name in _SGP25FP_PROFILES:gm.add_command(label=name,command=lambda n=name:self.apply_graphics_profile(n))
+        mb.add_cascade(label='Graphics',menu=gm)
+    except Exception:pass
+App.make_menu=_sgp25fp_make_menu
+
+_App_init_sgp25fp_base=App.__init__
+def _sgp25fp_app_init(self,root,market,portfolio):
+    _App_init_sgp25fp_base(self,root,market,portfolio);self._loading_profile25=True
+    try:self.apply_graphics_profile(_sgp25fp_load_profile())
+    finally:self._loading_profile25=False
+    self._perf_job_fp=self.root.after(25,lambda:self._portfolio_pulse_fp())
+App.__init__=_sgp25fp_app_init
+
+# ---------- tighter slots / redesigned roulette chips ----------
+# Pair is now a break-even return, not a profitable result. With the existing symbol weights and
+# triple pay table this is about a 74% modeled return-to-player instead of the prior ~88%.
+def _sgp25fp_slot_step(self):
+    weights=[1,3,6,9,14,22];self.reels=random.choices(self.SYMBOLS,weights=weights,k=3);self.draw();self._anim+=1
+    if self._anim<16:return self.after(36+self._anim*4,self._step)
+    b=int(self.bet.get());payout=0
+    if len(set(self.reels))==1:payout=int(b*self.PAY[self.reels[0]])
+    elif len(set(self.reels))==2:payout=b
+    self.portfolio.cash+=payout;self.msg.config(text=f'{"WIN" if payout>b else "PUSH" if payout==b else "NO WIN"} • ${payout:,.0f}');self.spinning=False;self.draw()
+SlotMachineWindow._step=_sgp25fp_slot_step
+_SGP_CHIP_COLORS.update({25000:'#d9792d',100000:'#b33e89',250000:'#257d87',500000:'#6b47a8',1000000:'#8b6b21'})
+_Roulette_sgp25fp_base=RouletteWindow
+class RouletteWindow(_Roulette_sgp25fp_base):
+    def draw(self,wheel_number=None,ball_phase=0,spinning=False):
+        super().draw(wheel_number,ball_phase,spinning);c=self.cv;w=max(1000,c.winfo_width());h=max(650,c.winfo_height());left=12;right=min(w*.405,560);top=max(430,h-174);bottom=h-12
+        # Cover every inherited selector rack (including legacy duplicates), then draw one rack.
+        c.create_rectangle(left,top,right,bottom,fill='#081018',outline='#3a5364',width=2);c.create_text((left+right)/2,top+14,text='AVAILABLE CHIPS • SELECT BET SIZE',fill='#dce7ec',font=('Segoe UI',8,'bold'));self._chip_hits=[];vals=list(dict.fromkeys([25,100,500,1000,5000,10000,25000,100000,250000,500000,1000000]));cols=6;usable=right-left-20;spacing=usable/max(1,cols);r=19
+        for i,val in enumerate(vals):
+            row,col=divmod(i,cols);x=left+10+spacing*(col+.5);y=top+52+row*51;fill=_SGP_CHIP_COLORS[val];sel=int(self.chip.get())==val
+            c.create_oval(x-r,y-r,x+r,y+r,fill=fill,outline='#ffffff' if sel else '#e5d9bc',width=3 if sel else 2)
+            c.create_oval(x-r+5,y-r+5,x+r-5,y+r-5,outline='#f4eee0',width=1)
+            for ang in range(0,360,60):
+                xx=x+math.cos(math.radians(ang))*(r-3);yy=y+math.sin(math.radians(ang))*(r-3);c.create_oval(xx-2,yy-2,xx+2,yy+2,fill='#f4eee0',outline='')
+            label=f'${val//1000}K' if 1000<=val<1000000 else '$1M' if val>=1000000 else f'${val}';c.create_text(x,y,text=label,fill='white',font=('Segoe UI',6,'bold'));self._chip_hits.append((x,y,val))
+        c.create_text((left+right)/2,bottom-12,text=f'Cash ${self.portfolio.cash:,.0f} • On table ${sum(self.bets.values()):,.0f}',fill='#9fb7c4',font=('Segoe UI',7,'bold'))
+GlobeWindow=GlobalTradeWorkstation
+
+# ---------- Market Map: sortable research tables + region/index drill-down + weighted heat map ----------
+_MarketMap_sgp25fp_base=MarketMapWindow
+class MarketMapWindow(_MarketMap_sgp25fp_base):
+    REGION_MAP={'US':'United States','CME':'United States','TSX':'Canada','LSE':'United Kingdom','EURONEXT':'Europe','XETRA':'Europe','SIX':'Europe','TSE':'Japan','KRX':'Korea','HKEX':'Hong Kong','SSE':'China','SGX':'Singapore','NSE':'India','ASX':'Australia','B3':'Brazil','JSE':'South Africa','FX':'Global','CRYPTO':'Global'}
+    def __init__(self,parent,market):
+        self._fp_boot=True;super().__init__(parent,market)
+        try:
+            if self._job:self.after_cancel(self._job)
+        except Exception:pass
+        self.region=tk.StringVar(value='ALL');self.scope_index=tk.StringVar(value='ALL');self.map_limit=tk.IntVar(value=650);extra=ttk.Frame(self);extra.pack(fill='x',padx=8,pady=(0,4),before=self.pw);ttk.Label(extra,text='Region').pack(side='left');rc=ttk.Combobox(extra,textvariable=self.region,values=['ALL','United States','Canada','United Kingdom','Europe','Japan','Korea','Hong Kong','China','Singapore','India','Australia','Brazil','South Africa','Global'],state='readonly',width=15);rc.pack(side='left',padx=(3,10));ttk.Label(extra,text='Index underlyings').pack(side='left');ic=ttk.Combobox(extra,textvariable=self.scope_index,values=['ALL']+[i.symbol for i in market.indexes],state='readonly',width=12);ic.pack(side='left',padx=(3,10));ttk.Label(extra,text='Heat-map cap').pack(side='left');ttk.Combobox(extra,textvariable=self.map_limit,values=[250,400,650,900],state='readonly',width=6).pack(side='left',padx=3);ttk.Label(extra,text='Rectangle area uses sqrt(market cap); tiny tail names remain searchable.',foreground=MUTED).pack(side='left',padx=8)
+        for v in (self.region,self.scope_index,self.map_limit):v.trace_add('write',lambda *_:self.reset_page())
+        self._sec_sort=('sector',False);self._const_sort=('impact',True)
+        for col in self.sectors['columns']:self.sectors.heading(col,command=lambda c=col:self._sort_sector(c))
+        for col in self.const['columns']:self.const.heading(col,command=lambda c=col:self._sort_const(c))
+        self._fp_boot=False;self.refresh(force=True)
+    def _sort_sector(self,col):self._sec_sort=(col,not(self._sec_sort[0]==col and self._sec_sort[1]));self.refresh(force=True)
+    def _sort_const(self,col):self._const_sort=(col,not(self._const_sort[0]==col and self._const_sort[1]));self.refresh(force=True)
+    def universe(self):
+        arr=list(_MarketMap_sgp25fp_base.universe(self));reg=getattr(self,'region',None);scope=getattr(self,'scope_index',None)
+        if reg and reg.get()!='ALL':arr=[a for a in arr if self.REGION_MAP.get(str(getattr(a,'session','US')),'Global')==reg.get()]
+        if scope and scope.get()!='ALL':
+            idx=self.market.get_asset(scope.get());allowed=set(getattr(idx,'components',[]) if idx else []);arr=[a for a in arr if a.symbol in allowed]
+        return arr
+    def refresh(self,force=False):
+        if getattr(self,'_fp_boot',False):return
+        try:
+            if getattr(self,'_job',None):
+                try:self.after_cancel(self._job)
+                except Exception:pass
+            allarr=self.universe();limit=max(100,int(getattr(self,'map_limit',tk.IntVar(value=650)).get()));arr=allarr if len(allarr)<=limit else sorted(allarr,key=lambda a:float(getattr(a,'market_cap',1) or 1),reverse=True)[:limit];self.page=0;self.page_label.config(text=f'{len(allarr):,} matched • {len(arr):,} rendered • use search/region/index for the full universe')
+            # Sortable sector breadth.
+            groups={}
+            for a in self.market.stocks+self.market.international:groups.setdefault(a.category,[]).append(a)
+            rows=[]
+            for sec,vals in groups.items():
+                ch=[a.change_percent() for a in vals];rows.append((sec,sum(ch)/max(1,len(ch)),sum(x>0 for x in ch),sum(x<0 for x in ch)))
+            col,rev=self._sec_sort;ix={'sector':0,'chg':1,'adv':2,'dec':3}.get(col,0);rows.sort(key=lambda r:r[ix],reverse=rev);self.sectors.delete(*self.sectors.get_children())
+            for r in rows:self.sectors.insert('','end',values=(r[0],f'{r[1]:+.2f}',r[2],r[3]))
+            # Sector/type strips, with width related to sqrt market cap. Text is omitted on tiny cells.
+            c=self.cv;c.delete('all');self.tiles=[];w=max(500,c.winfo_width());h=max(500,c.winfo_height());by={}
+            for a in arr:by.setdefault(str(getattr(a,'category','Other')),[]).append(a)
+            totals={k:sum(math.sqrt(max(1.0,float(getattr(a,'market_cap',1) or 1))) for a in v) for k,v in by.items()};grand=sum(totals.values()) or 1;y=0.0
+            for sec,vals in sorted(by.items(),key=lambda kv:totals[kv[0]],reverse=True):
+                gh=max(22,h*totals[sec]/grand);weights=[math.sqrt(max(1.0,float(getattr(a,'market_cap',1) or 1))) for a in vals];sw=sum(weights) or 1;x=0.0
+                for a,wt in zip(vals,weights):
+                    cw=max(.25,w*wt/sw);x1,x2=x,min(w,x+cw);pc=a.change_percent();fill='#0d6845' if pc>=2 else '#15503a' if pc>=0 else '#7a273a' if pc<=-2 else '#4b2631';c.create_rectangle(x1,y,x2,max(y+1,y+gh-1),fill=fill,outline='#112b35',width=1 if cw>5 else 0)
+                    if cw>=28 and gh>=18:c.create_text((x1+x2)/2,y+gh/2-4,text=a.symbol,fill=TEXT,font=('Segoe UI',6 if cw<52 else 7,'bold'))
+                    if cw>=42 and gh>=30:c.create_text((x1+x2)/2,y+gh/2+8,text=f'{pc:+.1f}%',fill='#e4eee9',font=('Segoe UI',6))
+                    self.tiles.append((x1,y,x2,y+gh,a));x=x2
+                if gh>=28:c.create_text(4,y+3,anchor='nw',text=sec,fill='#b8c8cf',font=('Segoe UI',6,'bold'))
+                y+=gh
+            # Sortable index decomposition.
+            idxa=self.market.get_asset(self.index.get());rows2=[]
+            if idxa is not None:
+                comps=[self.market.get_asset(s) for s in getattr(idxa,'components',[])];comps=[a for a in comps if a];caps=sum(max(1,float(getattr(a,'market_cap',1))) for a in comps) or 1
+                for a in comps:
+                    wt=max(1,float(getattr(a,'market_cap',1)))/caps;rows2.append((a.symbol,wt,a.change_percent(),wt*a.change_percent(),a))
+            col,rev=self._const_sort;ix={'symbol':0,'weight':1,'chg':2,'impact':3}.get(col,3);rows2.sort(key=lambda r:r[ix],reverse=rev);self.const.delete(*self.const.get_children())
+            for sym,wt,ch,imp,a in rows2[:600]:self.const.insert('','end',iid=sym,values=(sym,f'{wt*100:.2f}%',f'{ch:+.2f}%',f'{imp:+.3f}'))
+        except Exception:pass
+        self._job=self.after(1100,self.refresh)
+
+# ---------- Global Market Viewer: fixed world view, richer freight/risk/macro intelligence ----------
+_Global_sgp25fp_base=GlobalTradeWorkstation
+class GlobalTradeWorkstation(_Global_sgp25fp_base):
+    # Slight visual offsets separate ports from nearby exchange markers while preserving the real
+    # region. Exact operational locations remain described in the object inspector.
+    PORTS=[
+      {'name':'Los Angeles','lat':33.35,'lon':-118.75,'symbols':['MATX','UPS','FDX'],'products':['electronics','autos','apparel','machinery']},
+      {'name':'New York / NJ','lat':40.35,'lon':-74.55,'symbols':['UPS','FDX','ZIM'],'products':['consumer goods','pharmaceuticals','machinery']},
+      {'name':'Rotterdam','lat':52.15,'lon':3.45,'symbols':['AMKBY','SHEL','BP'],'products':['oil products','chemicals','machinery','containers']},
+      {'name':'Singapore','lat':.75,'lon':103.25,'symbols':['D05.SI','O39.SI','ZIM','BHP'],'products':['electronics','refined fuels','machinery','transshipment containers']},
+      {'name':'Shanghai','lat':30.85,'lon':121.95,'symbols':['1199.HK','0144.HK','BABA'],'products':['electronics','machinery','apparel','auto parts']},
+      {'name':'Tokyo / Yokohama','lat':35.15,'lon':140.15,'symbols':['7203.T','6758.T','TM','SONY'],'products':['automobiles','electronics','robotics','precision machinery']},
+      {'name':'Santos','lat':-24.35,'lon':-46.80,'symbols':['VALE3.SA','PETR4.SA','VALE','PBR'],'products':['iron ore','soybeans','coffee','pulp']},
+      {'name':'Sydney','lat':-34.30,'lon':151.65,'symbols':['BHP.AX','RIO.AX','BHP'],'products':['iron ore','LNG','coal','agriculture']},
+      {'name':'Dubai / Jebel Ali','lat':24.85,'lon':55.75,'symbols':['DPW.DU'],'products':['petrochemicals','aluminum','re-export containers','machinery']},
+    ]
+    AIR=[
+      {'a':'JFK','b':'LHR','lat1':40.64,'lon1':-73.78,'lat2':51.47,'lon2':-.45,'hours':7.0,'carrier':'FDX','product':'priority parcels / pharmaceuticals','symbols':['FDX']},
+      {'a':'LAX','b':'NRT','lat1':33.94,'lon1':-118.40,'lat2':35.77,'lon2':140.39,'hours':11.5,'carrier':'UPS','product':'electronics / express parcels','symbols':['UPS','6758.T']},
+      {'a':'FRA','b':'SIN','lat1':50.04,'lon1':8.56,'lat2':1.36,'lon2':103.99,'hours':12.5,'carrier':'DHL.DE','product':'industrial / express freight','symbols':['DHL.DE','C6L.SI']},
+      {'a':'DXB','b':'HKG','lat1':25.25,'lon1':55.36,'lat2':22.31,'lon2':113.91,'hours':7.5,'carrier':'FDX','product':'high-value express freight','symbols':['FDX','DPW.DU']},
+      {'a':'ORD','b':'PVG','lat1':41.97,'lon1':-87.90,'lat2':31.14,'lon2':121.80,'hours':14.0,'carrier':'UPS','product':'machinery / electronics / parcels','symbols':['UPS']},
+    ]
+    def __init__(self,parent,market):
+        self._fp_boot=True;super().__init__(parent,market)
+        # Fixed whole-world extent: no wheel zoom. Middle-drag pan remains for inspection.
+        try:self.canvas.unbind('<MouseWheel>');self.zoom=1.0
+        except Exception:pass
+        try:
+            self.assoc.config(columns=('symbol','day','name','role'))
+            for c,t,w in [('symbol','Symbol',68),('day','Day %',58),('name','Company',118),('role','Role',90)]:self.assoc.heading(c,text=t);self.assoc.column(c,width=w,anchor='w' if c in ('symbol','name','role') else 'e')
+            self.flow_tv.config(columns=('route','provider','owner','product','status'))
+            for c,t,w in [('route','Route',110),('provider','Provider',68),('owner','Cargo owner',72),('product','Product',100),('status','Status',82)]:self.flow_tv.heading(c,text=t);self.flow_tv.column(c,width=w,anchor='w')
+            self.risk_tv.config(columns=('symbol','impact','headline'));self.risk_tv.heading('symbol',text='Asset');self.risk_tv.heading('impact',text='Impact');self.risk_tv.heading('headline',text='Risk / news');self.risk_tv.column('symbol',width=58);self.risk_tv.column('impact',width=52);self.risk_tv.column('headline',width=220)
+            self.tzstrip=ttk.Label(self,text='',foreground=MUTED,font=('Consolas',8));self.tzstrip.pack(fill='x',padx=8,pady=(0,3),before=self.pw)
+        except Exception:pass
+        self._fp_boot=False;self._static_key=None;self._set_sash();self.refresh();self.draw_dynamic()
+    def wheel(self,e):return 'break'
+    def _risk_records(self):
+        out=[];loc={code:(lat,lon) for _,code,lat,lon in self.EXCH};now=self.market.clock.current
+        # Meaningful news only: filter the tiny +0.001 gap type events that previously polluted RISK.
+        for ev in list(getattr(self.market,'news',[]))[-80:]:
+            impact=float(getattr(ev,'impact',0) or 0);sev=str(getattr(ev,'severity','NORMAL') or 'NORMAL').upper();sym=str(getattr(ev,'symbol','') or '')
+            if abs(impact)<.006 and sev not in ('MAJOR','GLOBAL','FED','MACRO','POLITICAL'):continue
+            a=self.market.get_asset(sym) if sym else None;code=str(getattr(a,'session','US') if a else 'US');lat,lon=loc.get(code,loc.get('US',(40.71,-74.01)));off=((sum(ord(ch) for ch in sym)%9)-4)*.32 if sym else 0;out.append({'symbol':sym or 'GLOBAL','headline':str(getattr(ev,'headline',ev)),'impact':impact,'severity':sev,'lat':lat+off*.25,'lon':lon+off,'asset':a,'kind':'NEWS'})
+        # Unresolved shipping hazards may be ocean events and are tied to actual product/cargo flow.
+        for sh in getattr(self.market,'shipments',[]):
+            if sh.get('hazard') in (None,'NONE') or sh.get('hazard_resolved'):continue
+            try:lat,lon=self.market.shipment_hazard_position(sh)
+            except Exception:continue
+            kind=sh.get('hazard');out.append({'symbol':sh.get('cargo_owner','GLOBAL'),'headline':f'{kind}: {sh.get("product","cargo")} exposure on {(sh.get("route") or {}).get("name","")}.','impact':-.015 if kind!='TARIFF' else -.010,'severity':'GLOBAL','lat':lat,'lon':lon,'asset':self.market.get_asset(sh.get('cargo_owner')),'kind':kind,'shipment':sh})
+        # Geopolitical engine events can sit on land, while scheduled data/Fed risks sit near NY.
+        for ev in getattr(self.market,'geopolitical_events',[]):
+            if ev.get('resolved'):continue
+            sev=float(ev.get('severity',0) or 0)
+            if sev<.008:continue
+            reg=str(ev.get('region','Global'));pos={'Asia':(34,108),'Europe':(50,15),'Middle East':(28,45),'Americas':(25,-85),'Global':(22,15)}.get(reg,(22,15));out.append({'symbol':'GLOBAL','headline':str(ev.get('name','Geopolitical risk')),'impact':-sev,'severity':'GLOBAL','lat':pos[0],'lon':pos[1],'asset':None,'kind':'POLITICAL'})
+        for ev in getattr(self.market,'scheduled_market_events',[]):
+            if ev.get('fired'):continue
+            sec=(ev.get('time')-now).total_seconds()
+            if 0<=sec<=3*86400:
+                kind=ev.get('kind','MACRO');pos=(40.71,-74.01) if kind in ('MACRO','FED') else (48,5);out.append({'symbol':'SPY','headline':f'UPCOMING • {ev.get("name")} • {ev.get("time"):%b %d %H:%M} ET','impact':0.0,'severity':'SCHEDULED','lat':pos[0],'lon':pos[1],'asset':self.market.get_asset('SPY'),'kind':kind,'scheduled':True})
+        # De-duplicate identical headlines and keep the highest-information recent set.
+        seen=set();res=[]
+        for r in reversed(out):
+            k=r['headline']
+            if k in seen:continue
+            seen.add(k);res.append(r)
+        return list(reversed(res[-30:]))
+    def draw_dynamic(self):
+        _Global_sgp25fp_base.draw_dynamic(self)
+        try:
+            c=self.canvas;w=max(700,c.winfo_width());h=max(450,c.winfo_height());c.create_rectangle(0,h-22,w,h,fill='#04101b',outline='',tags='dynamic26');c.create_text(8,h-8,anchor='sw',text='Fixed world extent • middle-drag pan • click/right-click objects to inspect/trade',fill='#80919d',font=('Segoe UI',7),tags='dynamic26')
+            # Slow breathing rings communicate escalation without rapid flicker/strobing.
+            phase=time.monotonic()
+            if self.layer_risk.get():
+                for i,r in enumerate(self._risk_records()):
+                    x,y=self.proj(r['lat'],r['lon']);pulse=.5+.5*math.sin(phase*1.2+i*.9);rad=8+4*pulse;c.create_oval(x-rad,y-rad,x+rad,y+rad,outline='#df8851' if r.get('impact',0)<=0 else '#d6bd5f',width=1,tags='dynamic26')
+        except Exception:pass
+    def select_obj(self,typ,obj):
+        pairs=[];lines=[]
+        if typ=='exchange':
+            code=obj['code'];pairs=[(a,'Venue listing') for a in self.market.all_assets() if str(getattr(a,'session','US'))==code][:100];lines=[obj['name'],f'Session {code} • {"OPEN" if market_status(code,self.market.clock.current) else "CLOSED"}',f'{len(pairs)} locally modeled listings shown']
+        elif typ=='port':
+            pairs=self._assets(obj.get('symbols',[]),'Port-linked');lines=[f'PORT • {obj["name"]}',f'Products: {", ".join(obj.get("products",[]))}','Associated logistics / exporters / importers are tradeable below.']
+        elif typ=='ship':
+            car=self.market.get_asset(obj.get('carrier'));own=self.market.get_asset(obj.get('cargo_owner'));pairs=[]
+            if car:pairs.append((car,'Shipping provider'))
+            if own and own is not car:pairs.append((own,'Cargo owner'))
+            product=obj.get('product','containerized goods');lines=[f'VESSEL • {(obj.get("route") or {}).get("name","")}',f'Shipping provider: {obj.get("carrier","—")}',f'Cargo owner: {obj.get("cargo_owner","—")}',f'Product: {product}',f'Origin → destination: {obj.get("origin","—")} → {obj.get("destination","—")}',f'Progress {float(obj.get("progress",0))*100:.1f}% • {obj.get("status","IN TRANSIT")}',f'Cargo value ${float(obj.get("cargo_value",0)):,.0f}']
+        elif typ=='air':
+            pairs=self._assets(obj.get('symbols',[]),'Air logistics');lines=[f'AIR FREIGHT • {obj["a"]} → {obj["b"]}',f'Provider: {obj.get("carrier","—")}',f'Cargo: {obj.get("product","express freight")}',f'Estimated flight time: {obj["hours"]:.1f} hours',f'1x motion uses simulated real seconds, not animation FPS.']
+        elif typ=='risk':
+            a=obj.get('asset');pairs=[]
+            if a is not None:pairs.append((a,'Direct exposure'));pairs += [(x,'Same sector') for x in self.market.stocks+self.market.international if a is not None and x is not a and x.category==a.category][:18]
+            related=[]
+            for ev in reversed(list(getattr(self.market,'news',[]))):
+                txt=str(getattr(ev,'headline',ev));sym=str(getattr(ev,'symbol','') or '')
+                if sym==obj.get('symbol') or (obj.get('symbol')=='GLOBAL' and str(getattr(ev,'severity','')).upper() in ('GLOBAL','MAJOR','FED','MACRO')):related.append(txt)
+                if len(related)>=4:break
+            lines=[f'RISK • {obj.get("kind","NEWS")} • {obj.get("symbol","GLOBAL")}',obj.get('headline',''),f'Modeled direct impact: {obj.get("impact",0):+.3f}',f'Affected sector: {getattr(a,"category","Global") if a else "Global"}']
+            if related:lines += ['','RELATED NEWS']+['• '+x for x in related]
+        self.selected_obj=(typ,obj);self.selected_assets=pairs;self.info.delete('1.0','end');self.info.insert('end','\n'.join(lines));self.assoc.delete(*self.assoc.get_children())
+        for a,role in pairs[:100]:self.assoc.insert('','end',iid=a.symbol,values=(a.symbol,f'{a.change_percent():+.2f}%',a.name,role))
+        if pairs:self.assoc.selection_set(pairs[0][0].symbol)
+    def refresh(self):
+        if getattr(self,'_fp_boot',False):return
+        try:
+            self.ex_tv.delete(*self.ex_tv.get_children())
+            for name,code,lat,lon in self.EXCH:
+                try:
+                    sess=SESSIONS.get(code);z=_sgp22_ZoneInfo(sess.tz if sess else 'UTC');local=self.market.clock.current.replace(tzinfo=_sgp22_ZoneInfo('America/New_York')).astimezone(z);state='OPEN' if market_status(code,self.market.clock.current) else 'CLOSED';lt=local.strftime('%H:%M:%S')
+                except Exception:state='—';lt='—'
+                self.ex_tv.insert('','end',values=(name,state,lt))
+            self.flow_tv.delete(*self.flow_tv.get_children())
+            for i,sh in enumerate(getattr(self.market,'shipments',[])[:100]):self.flow_tv.insert('','end',iid=f'F:{i}',values=((sh.get('route') or {}).get('name',''),sh.get('carrier','—'),sh.get('cargo_owner','—'),sh.get('product','—'),sh.get('status','IN TRANSIT')))
+            risks=self._risk_records();self.risk_tv.delete(*self.risk_tv.get_children())
+            for i,r in enumerate(risks):self.risk_tv.insert('','end',iid=f'R:{i}',values=(r.get('symbol',''),f'{r.get("impact",0):+.3f}',r.get('headline','')))
+            m=self.market.macro;next_ev=next((e for e in getattr(self.market,'scheduled_market_events',[]) if not e.get('fired') and e.get('time')>=self.market.clock.current),None);spx=self.market.get_asset('SPX');vix=self.market.get_asset('VIX');self.macro.delete('1.0','end');self.macro.insert('end',f'GLOBAL MACRO / POLICY\n\nInflation          {m.get("inflation",0):.2f}%\nFed policy rate    {m.get("policy_rate",0):.2f}%\nFed target         {m.get("fed_target",2):.2f}%\nUnemployment       {m.get("unemployment",0):.2f}%\nGDP growth         {m.get("gdp_growth",0):.2f}%\n10Y yield          {m.get("ten_year",0):.2f}%\nDollar index       {m.get("dollar",0):.2f}\nSentiment          {m.get("sentiment",0):+.2f}\nLiquidity          {m.get("liquidity",1):.2f}x\nQE balance         ${float(getattr(self.market,"qe_balance",0))/1e12:.2f}T\nQE intensity       {float(getattr(self.market,"qe_intensity",0)):+.2f}\nCredit stress      {float(getattr(self.market,"scenario_credit_stress",0)):.2f}\nFinancial cond.    {m.get("financial_conditions",0):+.2f}\nVolatility regime  {m.get("volatility_regime",1):.2f}x\nSPX day            {spx.change_percent():+.2f}%\nVIX                 {float(vix.price) if vix else 0:.2f}\n\nNEXT SCHEDULED EVENT\n{next_ev.get("time").strftime("%b %d %H:%M ET")+" • "+next_ev.get("name") if next_ev else "—"}\n\nUniverse           {len(self.market.all_assets()):,} assets')
+            utc=self.market.clock.current.replace(tzinfo=_sgp22_ZoneInfo('America/New_York')).astimezone(_sgp22_ZoneInfo('UTC'));zones=[('NY','America/New_York'),('LDN','Europe/London'),('FRA','Europe/Berlin'),('TYO','Asia/Tokyo'),('HK','Asia/Hong_Kong'),('SYD','Australia/Sydney')];self.tzstrip.config(text='MARKET CLOCKS   '+'   '.join(f'{n} {utc.astimezone(_sgp22_ZoneInfo(z)):%H:%M}' for n,z in zones))
+        except Exception:pass
+        self.after(1000,self.refresh)
+    def animate(self):
+        if not self.winfo_exists():return
+        try:self.draw_dynamic();delay=max(180,int(getattr(self.market,'global_anim_ms',600))) if self.winfo_viewable() else 1600
+        except Exception:delay=1200
+        self.after(delay,self.animate)
+GlobeWindow=GlobalTradeWorkstation
+
+# Rebind heavy-window launchers after the final classes above.
+def _sgp25fp_globe(self):return self._open_single26('global',GlobalTradeWorkstation,self.market)
+def _sgp25fp_market_map(self):return self._open_single26('marketmap',MarketMapWindow,self.market)
+App.globe=_sgp25fp_globe;App.market_map=_sgp25fp_market_map
+
+# ---------- Market Conditions Lab: expose automatic central-bank/QE stabilizer ----------
+_sgp25fp_lab_base=App.market_conditions_lab
+def _sgp25fp_market_conditions_lab(self):
+    # Keep the detailed research lab and add a separate policy strip instead of silently changing
+    # staged values. This window is intentionally compact; every market slider remains in the base lab.
+    _sgp25fp_lab_base(self)
+    w=ToolWindow(self.root);w.style_window('CENTRAL BANK / QE POLICY CONTROLS','620x390');m=self.market;ttk.Label(w,text='CENTRAL BANK / QE POLICY',font=('Segoe UI',14,'bold')).pack(anchor='w',padx=16,pady=(15,4));ttk.Label(w,text='The automatic stabilizer reacts gradually to extreme daily moves and credit stress. It reduces the probability of runaway regimes but does not prevent crashes or bubbles.',foreground=MUTED,wraplength=580).pack(anchor='w',padx=16,pady=(0,10));auto=tk.BooleanVar(value=bool(getattr(m,'auto_stabilizer',True)));ttk.Checkbutton(w,text='Automatic Fed-style stabilizer',variable=auto).pack(anchor='w',padx=16,pady=4);qe=tk.DoubleVar(value=float(getattr(m,'qe_intensity',0.0)));bal=tk.DoubleVar(value=float(getattr(m,'qe_balance',7e12))/1e12)
+    for label,var,lo,hi in [('QE / QT intensity',qe,-.50,1.00),('Balance sheet ($T)',bal,3.0,12.0)]:
+        r=ttk.Frame(w);r.pack(fill='x',padx=16,pady=6);ttk.Label(r,text=label,width=20).pack(side='left');tk.Scale(r,from_=lo,to=hi,resolution=.01 if label.startswith('QE') else .05,orient='horizontal',variable=var,length=320,bg=PANEL,fg=TEXT,highlightthickness=0).pack(side='left',fill='x',expand=True)
+    def apply():m.auto_stabilizer=auto.get();m.qe_intensity=float(qe.get());m.qe_balance=float(bal.get())*1e12;m.macro['qe_balance_trn']=m.qe_balance/1e12;self.status_flash('Central-bank / QE controls applied');w.destroy()
+    bar=ttk.Frame(w);bar.pack(side='bottom',fill='x',padx=16,pady=15);ttk.Button(bar,text='APPLY POLICY CONTROLS',command=apply).pack(side='left',fill='x',expand=True);ttk.Button(bar,text='CANCEL',command=w.destroy).pack(side='left',fill='x',expand=True,padx=(6,0))
+App.market_conditions_lab=_sgp25fp_market_conditions_lab
+
+# ============================================================================
+# Stock Game Pro 2.5 Production — buttery-smooth workspace consolidation
+# ============================================================================
+# Final authority for chart camera/layout/render pacing. This deliberately removes the
+# normal vertical-zoom tug-of-war: live charts auto-fit every visible OHLC candle, keep the
+# quote in frame, and only change scale when the visible data actually needs more/less room.
+
+_Chart_init_sgp25smooth_base = Chart.__init__
+def _sgp25smooth_chart_init(self,parent,app,index):
+    _Chart_init_sgp25smooth_base(self,parent,app,index)
+    self.auto_y=True
+    self._auto_y_state25=None
+    self._auto_y_last_sig25=None
+    self._auto_y_last_t25=time.monotonic()
+Chart.__init__=_sgp25smooth_chart_init
+
+
+def _sgp25smooth_y_bounds(self,d,live,plot_height=300):
+    """Stable automatic y camera based on *all currently visible* candles.
+
+    Expansion/translation is immediate enough that the quote never leaves the canvas. Shrinkage
+    is deliberately slow and quantized, eliminating the old pump/dump rubber-band and 8-bit
+    shimmer. FIT MAX remains frozen and manual history panning remains predictable.
+    """
+    if not d:return (0.0,1.0)
+    # FIT MAX is intentionally frozen until the user toggles it off.
+    if getattr(self,'fit_inception',False):
+        sig=('max-smooth',getattr(self.asset,'symbol',None),len(d),getattr(self.asset,'last_real_timestamp',None))
+        cached=getattr(self,'_max_bounds25',None)
+        if cached and cached[0]==sig:return cached[1]
+        lo=min(float(c.low) for c in d);hi=max(float(c.high) for c in d)
+        span=max(hi-lo,abs((hi+lo)*.5)*.003,1e-9);pad=span*.055
+        b=(lo-pad,hi+pad);self._max_bounds25=(sig,b);return b
+
+    # Retain an explicit manual FIT state for compatibility with old saves/windows, but normal
+    # charts no longer create this state because AUTO Y supersedes the slider/FIT-Y controls.
+    manual=getattr(self,'_manual_fit_bounds26',None)
+    if manual:
+        sig=(getattr(self.asset,'symbol',None),self.timeframe,getattr(self,'candle_period','Auto'),int(getattr(self,'view_offset',0)))
+        if manual[0]==sig:return manual[1]
+        self._manual_fit_bounds26=None
+
+    vals_lo=[float(c.low) for c in d];vals_hi=[float(c.high) for c in d]
+    p=float(getattr(self.asset,'price',d[-1].close)) if self.asset is not None else float(d[-1].close)
+    desired_lo=min(vals_lo+[p]);desired_hi=max(vals_hi+[p])
+    mid=(desired_hi+desired_lo)*.5
+    raw=max(desired_hi-desired_lo,abs(mid)*.00045,1e-8)
+    # About 14-18 px of breathing room independent of chart height, clamped to a sane ratio.
+    px_pad=max(.045,min(.10,16.0/max(120.0,float(plot_height))))
+    pad=raw*px_pad
+    target_lo=desired_lo-pad;target_hi=desired_hi+pad
+
+    # History/free-pan mode simply fits what is visible. This makes vertical panning deterministic
+    # and avoids a live-camera state fighting the user's manual scroll position.
+    if not live or not bool(getattr(self,'auto_y',True)):
+        shift=float(getattr(self,'_manual_y_shift',0.0))
+        if not bool(getattr(self,'auto_y',True)):
+            scale=max(.05,min(50.0,float(getattr(self,'vertical_scale',1.0))))
+            center=(target_hi+target_lo)*.5+shift;half=max((target_hi-target_lo)*.5/scale,1e-9)
+            return center-half,center+half
+        return target_lo+shift,target_hi+shift
+
+    sig=(getattr(self.asset,'symbol',None),self.timeframe,getattr(self,'candle_period','Auto'),
+         round(float(getattr(self,'zoom',1.0)),4),int(getattr(self,'view_offset',0)),int(plot_height))
+    state=getattr(self,'_auto_y_state25',None)
+    if not state or state.get('sig')!=sig or not all(math.isfinite(float(state.get(k,0))) for k in ('lo','hi')):
+        state={'sig':sig,'lo':target_lo,'hi':target_hi,'stable_since':time.monotonic(),'last_change':time.monotonic()}
+        self._auto_y_state25=state
+        return target_lo,target_hi
+
+    lo=float(state['lo']);hi=float(state['hi']);span=max(hi-lo,1e-9)
+    # Tiny guard band: don't start moving the entire chart merely because price approaches an edge.
+    # Movement begins only when visible OHLC is almost out of view.
+    guard=span*.012
+    need_low=desired_lo < lo+guard
+    need_high=desired_hi > hi-guard
+
+    # If the data is genuinely touching/exiting a boundary, translate first when possible so the
+    # existing scale is preserved. Only expand when the entire visible OHLC range cannot fit.
+    needed_span=max(target_hi-target_lo,1e-9)
+    camera_changed=False
+    if needed_span <= span*.985:
+        shift=0.0
+        if need_high:shift=max(shift,target_hi-hi)
+        if need_low:shift=min(shift,target_lo-lo)
+        if shift:
+            camera_changed=True
+            # Smooth camera translation but guarantee the quote itself cannot remain offscreen.
+            move=shift*.72
+            lo+=move;hi+=move
+            if p>hi:lo+=p-hi+span*.012;hi+=p-hi+span*.012
+            elif p<lo:hi-=lo-p+span*.012;lo-=lo-p+span*.012
+            # Final containment for full visible candle set.
+            if desired_hi>hi:delta=desired_hi-hi+span*.012;lo+=delta;hi+=delta
+            if desired_lo<lo:delta=lo-desired_lo+span*.012;lo-=delta;hi-=delta
+            state['last_change']=time.monotonic()
+    else:
+        # Real range expansion: preserve the opposite edge when possible, then add the true target.
+        changed=False
+        if target_hi>hi:hi=target_hi;changed=True
+        if target_lo<lo:lo=target_lo;changed=True
+        if changed:state['last_change']=time.monotonic();camera_changed=True
+
+    # Contract only after the visible range has been comfortably contained for several seconds.
+    # This hold is critical: without it a quiet 25 ms chart continuously breathes by fractions of
+    # a pixel and looks like the candles are shimmering even though their OHLC is unchanged.
+    span=max(hi-lo,1e-9)
+    inside=(desired_lo>lo+span*.115 and desired_hi<hi-span*.115)
+    now=time.monotonic();dt=max(.001,min(.25,now-float(getattr(self,'_auto_y_last_t25',now))));self._auto_y_last_t25=now
+    held=max(0.0,now-float(state.get('last_change',now)))
+    if inside and held>=3.0:
+        alpha=1.0-math.exp(-dt/4.5)  # very slow shrink after a three-second stability hold
+        lo += (target_lo-lo)*alpha
+        hi += (target_hi-hi)*alpha
+        camera_changed=True
+    # If nothing required camera movement, return the exact prior bounds. This prevents even
+    # sub-pixel re-quantization from making completed candles appear to shimmer.
+    if not camera_changed:
+        return float(state['lo']),float(state['hi'])
+    # Quantize far below a screen pixel to stop floating-point subpixel jitter without changing
+    # visible price precision.
+    span=max(hi-lo,1e-9);quant=max(span/max(8000.0,float(plot_height)*28.0),abs(mid)*1e-10,1e-10)
+    lo=round(lo/quant)*quant;hi=round(hi/quant)*quant
+    if hi<=lo:hi=lo+max(quant,1e-9)
+    state['lo']=lo;state['hi']=hi
+    if inside:state.setdefault('stable_since',now)
+    else:state['stable_since']=now
+    self._auto_y_state25=state
+    return lo,hi
+
+_sgp22_bounds=_sgp25smooth_y_bounds
+
+
+def _sgp25smooth_toggle_auto_y(self,chart=None):
+    c=chart or (self.charts[self.active_chart] if getattr(self,'charts',None) else None)
+    if c is None:return
+    c.auto_y=not bool(getattr(c,'auto_y',True));c._auto_y_state25=None;c._stable_bounds25=None;c._manual_fit_bounds26=None;c._key=None
+    try:
+        if c is self.charts[self.active_chart]:self.v24_fit.config(text='AUTO Y ON' if c.auto_y else 'AUTO Y OFF',width=9)
+    except Exception:pass
+    c.request_draw(force=True);self.status_flash(f'{c.asset.symbol if c.asset else "Chart"} automatic Y fit {"ON" if c.auto_y else "OFF"}')
+App.toggle_auto_y=_sgp25smooth_toggle_auto_y
+
+# Preserve every relevant chart state when changing the workspace count, and use a readable
+# responsive grid. Four columns of charts only make sense on a very wide center pane; most desktop
+# layouts are materially clearer as two columns.
+def _sgp25smooth_set_chart_count(self,initial=None):
+    count=initial or int(getattr(self,'_workspace_count',1));count=max(1,min(8,count));self._workspace_count=count
+    if not hasattr(self,'grid'):return
+    saved=[]
+    for c in getattr(self,'charts',()):
+        saved.append({'asset':c.asset,'timeframe':c.timeframe,'kind':c.kind,'zoom':c.zoom,'drawings':list(c.drawings),'refresh_ms':c.refresh_ms,
+                      'candle_period':getattr(c,'candle_period','Auto'),'show_overnight':bool(getattr(c,'show_overnight',True)),
+                      'auto_y':bool(getattr(c,'auto_y',True))})
+    for child in list(self.grid.panes()):
+        try:self.grid.forget(child)
+        except Exception:pass
+        try:self.root.nametowidget(child).destroy()
+        except Exception:pass
+    self.charts=[]
+    try:center_w=max(0,self.grid.winfo_width())
+    except Exception:center_w=0
+    if count<=2:cols=1 if center_w and center_w<900 else count
+    elif count<=4:cols=2
+    elif count<=6:cols=2 if center_w<1500 else 3
+    else:cols=2 if center_w<1650 else 4
+    rows=math.ceil(count/max(1,cols));defaults=['SPY','VIX','NVDA','AAPL','CL=F','GC=F','BTC','MSFT']
+    for col in range(cols):
+        vp=ttk.PanedWindow(self.grid,orient='vertical');self.grid.add(vp,weight=1)
+        for row in range(rows):
+            i=col*rows+row
+            if i>=count:break
+            c=Chart(vp,self,i)
+            if i<len(saved):
+                st=saved[i];c.asset=st['asset'];c.timeframe=st['timeframe'];c.kind=st['kind'];c.zoom=st['zoom'];c.drawings=st['drawings'];c.refresh_ms=st['refresh_ms'];c.candle_period=st['candle_period'];c.show_overnight=st['show_overnight'];c.auto_y=st['auto_y']
+            else:c.asset=self.market.get_asset(defaults[i]) or self.market.get_asset('SPY')
+            c._key=None;c._auto_y_state25=None;vp.add(c,weight=1);self.charts.append(c);c.request_draw(force=True)
+    self.active_chart=min(getattr(self,'active_chart',0),len(self.charts)-1);self.sync_chart_controls();self.status_flash(f'{count} chart workspace • {cols} column layout • AUTO Y enabled')
+App.set_chart_count=_sgp25smooth_set_chart_count
+
+
+def _sgp25smooth_find_outer(self):
+    for ch in self.root.winfo_children():
+        try:
+            if isinstance(ch,ttk.PanedWindow) and str(ch.cget('orient'))=='horizontal' and len(ch.panes())>=3:return ch
+        except Exception:pass
+    return None
+
+
+def _sgp25smooth_enforce_workspace(self,*_):
+    if getattr(self,'_workspace_guard_busy25',False):return
+    self._workspace_guard_busy25=True
+    try:
+        outer=getattr(self,'_outer_workspace25',None) or self._find_outer25();self._outer_workspace25=outer
+        if outer is None:return
+        panes=list(outer.panes())
+        if len(panes)<3:return
+        left=self.root.nametowidget(panes[0]);center=self.root.nametowidget(panes[1]);right=self.root.nametowidget(panes[2]);ow=max(1,outer.winfo_width())
+        lw=max(250,left.winfo_width());count=max(1,len(getattr(self,'charts',())))
+        min_center=640 if count<=2 else 800 if count<=4 else 980 if count<=6 else 1060
+        # On smaller displays, protect at least 56% of the workspace for charts. Account pane keeps
+        # enough room for the portfolio table but is not allowed to swallow ticker labels.
+        max_right=max(300,min(520,ow-lw-min_center-8,ow*.31))
+        max_right=max(280,max_right)
+        rw=right.winfo_width()
+        if rw>max_right+8:
+            try:outer.sashpos(1,int(ow-max_right))
+            except Exception:pass
+        # Keep toolbar widgets compact as center width narrows. The clock remains packed from right.
+        cw=max(1,center.winfo_width())
+        try:self.time_warp_scale.config(length=72 if cw<900 else 100 if cw<1150 else 132)
+        except Exception:pass
+        try:self.clock_label.config(font=('Segoe UI',6 if cw<800 else 7,'bold'))
+        except Exception:pass
+    finally:self._workspace_guard_busy25=False
+App._find_outer25=_sgp25smooth_find_outer
+App._enforce_workspace25=_sgp25smooth_enforce_workspace
+
+# Adaptive chart scheduler. A 25 ms requested chart actually gets 25 ms service when the machine
+# can keep up; under load the scheduler yields instead of accumulating Tk callbacks and crashing.
+def _sgp25smooth_chart_refresh_pulse(self):
+    if not getattr(self,'_chart_refresh_running',True):return
+    try:
+        if not self.root.winfo_exists():return
+    except tk.TclError:return
+    start_cpu=time.perf_counter();now_ms=time.monotonic()*1000.0
+    # Publish UI interest as ordinary Python data. The market engine runs on another thread and
+    # must never call Treeview/Canvas methods directly (doing so can stall Tcl for seconds).
+    try:
+        hot=set()
+        for _c in list(getattr(self,'charts',()))+list(getattr(self,'extra_charts',())):
+            _a=getattr(_c,'asset',None)
+            if _a:hot.add(_a.symbol)
+        try:
+            _sel=self.selected()
+            if _sel:hot.add(_sel.symbol)
+        except Exception:pass
+        self.market._ui_hot_symbols25=frozenset(hot)
+        if getattr(self.market,'_ui_refresh_watch_requested25',False):
+            self.market._ui_refresh_watch_requested25=False;self.refresh_watch()
+        _msg=getattr(self.market,'_ui_status_message25',None)
+        if _msg:
+            self.market._ui_status_message25=None;self.status_flash(str(_msg))
+    except Exception:pass
+    extras=[]
+    for c in tuple(getattr(self,'extra_charts',())):
+        try:
+            if c.winfo_exists():extras.append(c)
+        except tk.TclError:pass
+    self.extra_charts=extras;charts=list(getattr(self,'charts',()))+extras
+    profile=str(getattr(self,'graphics_profile','Balanced'));budget_ms={'Efficiency':4.0,'Balanced':6.0,'Smooth':10.0,'Maximum':15.0}.get(profile,6.0)
+    max_draw={'Efficiency':1,'Balanced':2,'Smooth':4,'Maximum':8}.get(profile,2)
+    drawn=0
+    if charts:
+        rr=int(getattr(self,'_chart_rr',0))%len(charts)
+        # Prioritize active/main chart once, then round-robin everything else.
+        order=[]
+        if getattr(self,'charts',None):order.append(self.charts[self.active_chart])
+        order += [charts[(rr+i)%len(charts)] for i in range(len(charts))]
+        seen=set()
+        for c in order:
+            if id(c) in seen:continue
+            seen.add(id(c))
+            try:
+                if c.winfo_exists() and c.winfo_viewable() and c.due_for_refresh(now_ms):
+                    c.request_draw(False);c.mark_refreshed(now_ms);drawn+=1
+                    if drawn>=max_draw or (time.perf_counter()-start_cpu)*1000.0>=budget_ms:break
+            except Exception as e:
+                try:self.market.errors.append(f'chart scheduler: {type(e).__name__}: {e}')
+                except Exception:pass
+        self._chart_rr=(rr+max(1,drawn))%len(charts)
+    spent=(time.perf_counter()-start_cpu)*1000.0
+    # Don't enqueue faster than Tk can paint. Under healthy load this remains an 8 ms service loop,
+    # which is sufficient to honor 25 ms per-chart requests.
+    delay=8 if spent<budget_ms*.85 else 12 if spent<budget_ms*1.4 else 20
+    self._chart_refresh_job=self.root.after(delay,self._chart_refresh_pulse)
+App._chart_refresh_pulse=_sgp25smooth_chart_refresh_pulse
+
+# Profile-aware visible table streams. These are independent from heavy full-account refreshes.
+def _sgp25smooth_watch_stream(self):
+    try:
+        rows=getattr(self,'_watch_iids25',None)
+        if rows is None:rows=tuple(self.watch.get_children());self._watch_iids25=rows
+        n=len(rows)
+        if n:
+            try:f0,f1=self.watch.yview();start=max(0,int(f0*n)-6);end=min(n,max(start+24,int(f1*n)+7))
+            except Exception:start,end=0,min(n,48)
+            for iid in rows[start:end]:
+                try:
+                    vals=list(self.watch.item(iid,'values'));a=self.market.get_asset(vals[0]) if vals else None
+                    if a and len(vals)>=4:
+                        px=float(a.price);price=f'${px:,.4f}' if abs(px)<1 else f'${px:,.2f}';chg=f'{a.change_percent():+.2f}%'
+                        if vals[2]!=price or vals[3]!=chg:vals[2]=price;vals[3]=chg;self.watch.item(iid,values=vals)
+                except Exception:pass
+        delay=int(getattr(self,'watch_stream_ms25',{'Efficiency':250,'Balanced':100,'Smooth':50,'Maximum':25}.get(getattr(self,'graphics_profile','Balanced'),180)))
+    except Exception:delay=250
+    self._watch_stream_job=self.root.after(max(25,delay),self._fast_watch_stream)
+App._fast_watch_stream=_sgp25smooth_watch_stream
+
+
+def _sgp25smooth_portfolio_stream(self):
+    t0=time.perf_counter()
+    try:
+        if not self.root.winfo_exists():return
+        rows=tuple(self.pos.get_children());n=len(rows)
+        if n:
+            try:f0,f1=self.pos.yview();start=max(0,int(f0*n)-3);end=min(n,max(start+18,int(f1*n)+4))
+            except Exception:start,end=0,min(n,32)
+            for iid in rows[start:end]:
+                try:
+                    vals=list(self.pos.item(iid,'values'))
+                    if iid.startswith('OPT:'):
+                        st=self.portfolio.get_strategy(iid)
+                        if st is None:continue
+                        v=float(st.current_value());pnl=v-float(getattr(st,'open_cost',0.0));pct=pnl/max(1e-9,abs(float(getattr(st,'open_cost',0.0))));expiry,_=self.portfolio.option_time_remaining(iid,self.market.clock.current)
+                        if len(vals)>=9:vals[2]=f'${v:,.2f}';vals[3]=f'${v:,.2f}';vals[4]=f'${pnl:,.2f}';vals[5]=f'{pct:+.2%}';vals[8]=expiry
+                    else:
+                        a=self.market.get_asset(iid);q=int(self.portfolio.positions.get(iid,0))
+                        if a is None or q==0:continue
+                        basis=float(self.portfolio.cost_basis.get(iid,0.0));value=float(q)*float(a.price);pnl=(value-basis) if q>0 else (basis+value);pct=pnl/max(1e-9,abs(basis))
+                        if len(vals)>=6:vals[2]=f'${float(a.price):,.2f}';vals[3]=f'${value:,.2f}';vals[4]=f'${pnl:,.2f}';vals[5]=f'{pct:+.2%}'
+                    self.pos.item(iid,values=vals)
+                except Exception:pass
+        try:self.dailypl23.config(text=f'DAILY P/L ${self.portfolio.daily_pl:+,.2f}');self.daytrade23.config(text=f'DAY TRADES {self.portfolio.day_trades_rolling}/3')
+        except Exception:pass
+        target=int(getattr(self,'portfolio_stream_ms25',{'Efficiency':120,'Balanced':50,'Smooth':33,'Maximum':25}.get(getattr(self,'graphics_profile','Balanced'),75)))
+        spent=(time.perf_counter()-t0)*1000.0;delay=max(target,int(spent*2.2))
+    except Exception:delay=120
+    self._portfolio_stream25_job=self.root.after(max(25,delay),self._portfolio_fast_stream25)
+App._portfolio_fast_stream25=_sgp25smooth_portfolio_stream
+
+# Advanced-chart side panel ticker/correlation refresh is now profile aware and can reach 25 ms on
+# Maximum without rebuilding rows. It updates values in place only.
+_Advanced_refresh_sgp25smooth_base=AdvancedChartWindow.refresh_side
+def _sgp25smooth_adv_refresh(self,force=False):
+    try:
+        _Advanced_refresh_sgp25smooth_base(self,force)
+        # Base schedules its own 800 ms callback; cancel the most recently scheduled callback is not
+        # reliably addressable across legacy layers, so this method's visible data update is also
+        # driven from a lightweight dedicated pulse installed below.
+    except Exception:pass
+AdvancedChartWindow.refresh_side=_sgp25smooth_adv_refresh
+
+def _sgp25smooth_adv_fast(self):
+    try:
+        if not self.winfo_exists():return
+        a=self.asset;q=int(self.portfolio.positions.get(a.symbol,0));basis=float(self.portfolio.cost_basis.get(a.symbol,0));entry=basis/max(1,abs(q)) if q else 0
+        price_txt=(f'${float(a.price):,.4f}' if abs(float(a.price))<1 else f'${float(a.price):,.2f}');self.ticket_title.config(text=f'{a.symbol}  {price_txt}  {a.change_percent():+.2f}%')
+    except Exception:
+        try:
+            a=self.asset;self.ticket_title.config(text=f'{a.symbol}  ${a.price:,.2f}  {a.change_percent():+.2f}%')
+        except Exception:pass
+    try:
+        for iid in self.corr.get_children(''):
+            b=self.market.get_asset(iid)
+            if b is None:continue
+            vals=list(self.corr.item(iid,'values'))
+            if len(vals)>=4:vals[2]=f'${b.price:,.4f}' if abs(float(b.price))<1 else f'${b.price:,.2f}';vals[3]=f'{b.change_percent():+.2f}%';self.corr.item(iid,values=vals)
+    except Exception:pass
+    delay=max(16,min(250,int(getattr(self.app.market,'hot_quote_ms25',45))))
+    try:self._adv_fast_job25=self.after(delay,self._fast_side25)
+    except Exception:pass
+AdvancedChartWindow._fast_side25=_sgp25smooth_adv_fast
+
+_Advanced_init_sgp25smooth_base=AdvancedChartWindow.__init__
+def _sgp25smooth_adv_init(self,parent,app,asset):
+    _Advanced_init_sgp25smooth_base(self,parent,app,asset)
+    self.chart.auto_y=True;self.chart._auto_y_state25=None
+    # Remove inherited V Zoom / FIT Y controls from the advanced toolbar. AUTO Y is the production
+    # default; free-screen history panning still disables live following as before.
+    try:
+        def walk(node):
+            for ch in node.winfo_children():
+                try:
+                    txt=str(ch.cget('text')) if 'text' in ch.keys() else ''
+                    if txt in ('V Zoom','FIT Y'):
+                        ch.pack_forget()
+                except Exception:pass
+                walk(ch)
+        walk(self)
+        bar=ttk.Frame(self);bar.pack(fill='x',padx=8,pady=(0,4));self._auto_y_btn25=ttk.Button(bar,text='AUTO Y ON',command=lambda:self._toggle_auto_y25());self._auto_y_btn25.pack(side='left')
+    except Exception:pass
+    self._adv_fast_job25=self.after(75,self._fast_side25)
+AdvancedChartWindow.__init__=_sgp25smooth_adv_init
+
+def _sgp25smooth_adv_toggle(self):
+    self.chart.auto_y=not bool(getattr(self.chart,'auto_y',True));self.chart._auto_y_state25=None;self.chart._key=None
+    try:self._auto_y_btn25.config(text='AUTO Y ON' if self.chart.auto_y else 'AUTO Y OFF')
+    except Exception:pass
+    self.chart.request_draw(force=True)
+AdvancedChartWindow._toggle_auto_y25=_sgp25smooth_adv_toggle
+
+# Final app initializer: responsive pane guard, AUTO Y controls, and custom performance knobs.
+_App_init_sgp25smooth_base=App.__init__
+def _sgp25smooth_app_init(self,root,market,portfolio):
+    _App_init_sgp25smooth_base(self,root,market,portfolio)
+    try:
+        for c in self.charts:c.auto_y=True;c._auto_y_state25=None;c.show_overnight=True
+        self.v24_title.pack_forget();self.v24_scale.pack_forget();self.v24_label.pack_forget();self.v24_fit.config(text='AUTO Y ON',width=9,command=lambda:self.toggle_auto_y());
+        # Keep the one useful control where the old FIT Y button already lived.
+        try:self.v24_fit.pack_forget();self.v24_fit.pack(side='left',padx=(2,4),before=self.ctype)
+        except Exception:pass
+    except Exception:pass
+    self.watch_stream_ms25={'Efficiency':250,'Balanced':100,'Smooth':50,'Maximum':25}.get(getattr(self,'graphics_profile','Balanced'),180)
+    self.portfolio_stream_ms25={'Efficiency':120,'Balanced':50,'Smooth':33,'Maximum':25}.get(getattr(self,'graphics_profile','Balanced'),75)
+    self._outer_workspace25=self._find_outer25()
+    try:
+        if self._outer_workspace25:
+            self._outer_workspace25.bind('<Configure>',lambda e:self.root.after_idle(self._enforce_workspace25),add='+')
+            panes=self._outer_workspace25.panes()
+            if len(panes)>=3:self.root.nametowidget(panes[2]).bind('<Configure>',lambda e:self.root.after_idle(self._enforce_workspace25),add='+')
+        self.root.after(250,self._enforce_workspace25)
+    except Exception:pass
+App.__init__=_sgp25smooth_app_init
+
+# Extend the existing graphics/performance dialog with explicit high-frequency controls. These are
+# bounded so a typo cannot accidentally schedule a 0 ms busy loop.
+_graphics_options_sgp25smooth_base=App.graphics_options
+def _sgp25smooth_graphics_options(self):
+    w=ToolWindow(self.root);w.style_window('GRAPHICS / PERFORMANCE / DATA CADENCE','760x690');cur=tk.StringVar(value=getattr(self,'graphics_profile',_sgp25fp_load_profile()));ttk.Label(w,text='PERFORMANCE / DATA CADENCE',font=('Segoe UI',15,'bold')).pack(anchor='w',padx=16,pady=(15,5));ttk.Label(w,text='Tune visible-data cadence to your computer. Faster values spend more CPU. The adaptive scheduler yields automatically when Tk rendering falls behind; Tkinter Canvas is CPU-rendered, so there is no fake GPU-memory allocator.',foreground=MUTED,wraplength=710).pack(anchor='w',padx=16,pady=(0,10));row=ttk.Frame(w);row.pack(fill='x',padx=16);ttk.Label(row,text='Preset',width=22).pack(side='left');cb=ttk.Combobox(row,textvariable=cur,values=list(_SGP25FP_PROFILES),state='readonly',width=18);cb.pack(side='left');desc=ttk.Label(w,text='',wraplength=710);desc.pack(anchor='w',padx=16,pady=8)
+    vars={
+      'Engine loop ms':tk.IntVar(value=int(max(10,round(float(getattr(self.market,'speed',.035))*1000)))),
+      'Hot quote target ms':tk.IntVar(value=int(getattr(self.market,'hot_quote_ms25',35))),
+      'Visible watchlist ms':tk.IntVar(value=int(getattr(self,'watch_stream_ms25',180))),
+      'Portfolio marks ms':tk.IntVar(value=int(getattr(self,'portfolio_stream_ms25',75))),
+      'Global animation ms':tk.IntVar(value=int(getattr(self.market,'global_anim_ms',600))),
+      'Broad asset batch':tk.IntVar(value=int(getattr(self.market,'_v20_batch',16))),
+    }
+    limits={'Engine loop ms':(10,100),'Hot quote target ms':(15,250),'Visible watchlist ms':(25,500),'Portfolio marks ms':(25,500),'Global animation ms':(120,1400),'Broad asset batch':(6,80)}
+    for name,v in vars.items():
+        lo,hi=limits[name];r=ttk.Frame(w);r.pack(fill='x',padx=16,pady=5);ttk.Label(r,text=name,width=22).pack(side='left');sc=tk.Scale(r,from_=lo,to=hi,resolution=1,orient='horizontal',variable=v,length=390,bg=PANEL,fg=TEXT,highlightthickness=0);sc.pack(side='left',fill='x',expand=True);ttk.Label(r,textvariable=v,width=7).pack(side='right')
+    ttk.Label(w,text='Chart tickrates remain individually selectable (25/50/100 ms etc.). “Hot quote target” controls how often charted/held/selected assets can receive a new simulated price, so a 25 ms chart is no longer repainting the same 90 ms quote.',foreground=MUTED,wraplength=710).pack(anchor='w',padx=16,pady=10)
+    def preset(*_):
+        cfg=_SGP25FP_PROFILES[cur.get()];desc.config(text=cfg['desc']);vars['Engine loop ms'].set(max(10,int(cfg['engine_ms'])));vars['Hot quote target ms'].set(max(15,int(cfg['engine_ms'])));vars['Visible watchlist ms'].set({'Efficiency':250,'Balanced':100,'Smooth':50,'Maximum':25}[cur.get()]);vars['Portfolio marks ms'].set({'Efficiency':120,'Balanced':50,'Smooth':33,'Maximum':25}[cur.get()]);vars['Global animation ms'].set(int(cfg['global_ms']));vars['Broad asset batch'].set(int(cfg['batch']))
+    cb.bind('<<ComboboxSelected>>',preset);desc.config(text=_SGP25FP_PROFILES[cur.get()]['desc'])
+    def apply():
+        name=cur.get() if cur.get() in _SGP25FP_PROFILES else 'Balanced';self.graphics_profile=name;self.market.graphics_profile=name;self.market.speed=max(.010,min(.100,vars['Engine loop ms'].get()/1000.0));self.market.hot_quote_ms25=max(15,min(250,int(vars['Hot quote target ms'].get())));self.watch_stream_ms25=max(25,min(500,int(vars['Visible watchlist ms'].get())));self.portfolio_stream_ms25=max(25,min(500,int(vars['Portfolio marks ms'].get())));self.market.global_anim_ms=max(120,min(1400,int(vars['Global animation ms'].get())));self.market._v20_batch=max(6,min(80,int(vars['Broad asset batch'].get())));_sgp25smooth_save_cadence(name,self.market.speed,self.market.hot_quote_ms25,self.watch_stream_ms25,self.portfolio_stream_ms25,self.market.global_anim_ms,self.market._v20_batch);self.status_flash(f'Performance cadence applied • engine {self.market.speed*1000:.0f} ms • hot quotes {self.market.hot_quote_ms25} ms');w.destroy()
+    bar=ttk.Frame(w);bar.pack(fill='x',side='bottom',padx=16,pady=16);ttk.Button(bar,text='APPLY',command=apply).pack(side='left',expand=True,fill='x');ttk.Button(bar,text='CANCEL',command=w.destroy).pack(side='left',expand=True,fill='x',padx=(6,0))
+App.graphics_options=_sgp25smooth_graphics_options
+
+# Sync regular AUTO-Y button whenever another chart becomes active.
+_sync_controls_sgp25smooth_base=App.sync_chart_controls
+def _sgp25smooth_sync_controls(self):
+    out=_sync_controls_sgp25smooth_base(self)
+    try:
+        c=self.charts[self.active_chart];self.v24_fit.config(text='AUTO Y ON' if bool(getattr(c,'auto_y',True)) else 'AUTO Y OFF')
+    except Exception:pass
+    return out
+App.sync_chart_controls=_sgp25smooth_sync_controls
+
+
+# Final cadence UI normalization: 16 ms is the practical Tk/60 Hz ceiling; faster values would
+# only enqueue redundant CPU work without producing more visible information on typical displays.
+_App_init_sgp25cadence_base=App.__init__
+def _sgp25cadence_app_init(self,root,market,portfolio):
+    _App_init_sgp25cadence_base(self,root,market,portfolio)
+    try:self.chart_rate.config(values=['16ms','25ms','33ms','50ms','75ms','100ms','180ms','250ms','500ms','1000ms','2000ms','5000ms'])
+    except Exception:pass
+App.__init__=_sgp25cadence_app_init
+
+
+# Persist explicit cadence tuning separately from presets. Choosing a preset from the Graphics menu
+# still resets to that preset; applying custom sliders remembers the exact production tuning next run.
+def _sgp25smooth_save_cadence(profile,speed,hot,watch,portfolio,global_ms,batch):
+    try:
+        _SGP25FP_PROFILE_PATH.parent.mkdir(parents=True,exist_ok=True)
+        _SGP25FP_PROFILE_PATH.write_text(json.dumps({
+            'profile':profile,'custom':True,'engine_ms':int(round(float(speed)*1000)),
+            'hot_quote_ms':int(hot),'watch_ms':int(watch),'portfolio_ms':int(portfolio),
+            'global_ms':int(global_ms),'batch':int(batch)
+        }))
+    except Exception:pass
+
+def _sgp25smooth_load_cadence():
+    try:
+        d=json.loads(_SGP25FP_PROFILE_PATH.read_text())
+        return d if isinstance(d,dict) and d.get('custom') else None
+    except Exception:return None
+
+_App_init_sgp25custom_base=App.__init__
+def _sgp25custom_app_init(self,root,market,portfolio):
+    _App_init_sgp25custom_base(self,root,market,portfolio)
+    d=_sgp25smooth_load_cadence()
+    if d:
+        try:
+            self.graphics_profile=d.get('profile',getattr(self,'graphics_profile','Balanced'));self.market.graphics_profile=self.graphics_profile
+            self.market.speed=max(.010,min(.100,float(d.get('engine_ms',35))/1000.0))
+            self.market.hot_quote_ms25=max(15,min(250,int(d.get('hot_quote_ms',45))))
+            self.watch_stream_ms25=max(25,min(500,int(d.get('watch_ms',180))))
+            self.portfolio_stream_ms25=max(25,min(500,int(d.get('portfolio_ms',75))))
+            self.market.global_anim_ms=max(120,min(1400,int(d.get('global_ms',600))))
+            self.market._v20_batch=max(6,min(80,int(d.get('batch',16))))
+        except Exception:pass
+    else:
+        # A later layout initializer intentionally does not override the chosen production profile.
+        try:
+            n=getattr(self,'graphics_profile','Balanced');self.watch_stream_ms25={'Efficiency':250,'Balanced':100,'Smooth':50,'Maximum':25}.get(n,150);self.portfolio_stream_ms25={'Efficiency':120,'Balanced':50,'Smooth':33,'Maximum':25}.get(n,75)
+        except Exception:pass
+App.__init__=_sgp25custom_app_init
+
+# Immutable synthetic history cache. Building deterministic completed-session backfill is useful,
+# but rebuilding the exact same hundreds of candles at every 16/25 ms paint wastes a core. Cache
+# per chart/timeframe seed and keep only a few recent views so memory remains bounded.
+_sgp25smooth_backfill_uncached=_sgp25fp_extended_backfill
+def _sgp25smooth_extended_backfill(chart,daily,mins,max_points=1400):
+    try:
+        if not daily:return []
+        f=daily[0];l=daily[-1]
+        key=(getattr(getattr(chart,'asset',None),'symbol',''),int(mins),int(max_points),len(daily),
+             f.timestamp,l.timestamp,round(float(f.open),6),round(float(l.close),6),round(float(l.high),6),round(float(l.low),6))
+        cache=getattr(chart,'_immutable_backfill_cache25',None)
+        if cache is None:cache={};chart._immutable_backfill_cache25=cache
+        got=cache.get(key)
+        if got is not None:return list(got)
+        out=_sgp25smooth_backfill_uncached(chart,daily,mins,max_points)
+        cache[key]=tuple(out)
+        while len(cache)>5:
+            try:cache.pop(next(iter(cache)))
+            except Exception:break
+        return list(out)
+    except Exception:return _sgp25smooth_backfill_uncached(chart,daily,mins,max_points)
+_sgp25fp_extended_backfill=_sgp25smooth_extended_backfill
+
+# Final balanced presets after profiling the full multi-window workstation. These tune *information*
+# and *paint* cadence separately: one chart can be very fast, while eight charts remain usable.
+_SGP25FP_PROFILES.update({
+ 'Efficiency':{'engine_ms':50,'batch':10,'chart_ms':180,'global_ms':900,'portfolio_ms':90,'desc':'Lowest CPU/RAM pressure; reduced animation density.'},
+ 'Balanced':{'engine_ms':30,'batch':18,'chart_ms':75,'global_ms':450,'portfolio_ms':50,'desc':'Production default: lively quotes with bounded multi-window CPU use.'},
+ 'Smooth':{'engine_ms':20,'batch':26,'chart_ms':33,'global_ms':280,'portfolio_ms':25,'desc':'High-refresh charts and tables for faster desktop CPUs.'},
+ 'Maximum':{'engine_ms':12,'batch':38,'chart_ms':16,'global_ms':150,'portfolio_ms':25,'desc':'Aggressive 60 Hz-class visible rendering. CPU use can be high with many charts/windows.'},
+})
+
+def _sgp25smooth_apply_profile_final(self,name):
+    name=name if name in _SGP25FP_PROFILES else 'Balanced';cfg=_SGP25FP_PROFILES[name]
+    self.graphics_profile=name;self.market.graphics_profile=name
+    self.market.speed=max(.010,float(cfg['engine_ms'])/1000.0);self.market._v20_batch=max(6,min(80,int(cfg['batch'])));self.market.global_anim_ms=int(cfg['global_ms'])
+    self.market.hot_quote_ms25={'Efficiency':90,'Balanced':45,'Smooth':25,'Maximum':15}[name]
+    self.watch_stream_ms25={'Efficiency':250,'Balanced':100,'Smooth':50,'Maximum':25}[name]
+    self.portfolio_stream_ms25={'Efficiency':120,'Balanced':50,'Smooth':33,'Maximum':25}[name]
+    self._portfolio_profile_ms=int(cfg['portfolio_ms'])
+    for c in getattr(self,'charts',()):c.set_refresh_rate(int(cfg['chart_ms']))
+    if not getattr(self,'_loading_profile25',False):_sgp25fp_save_profile(name)
+    try:self.status_flash(f'Performance profile: {name} • chart {cfg["chart_ms"]} ms • hot quotes {self.market.hot_quote_ms25} ms')
+    except Exception:pass
+App.apply_graphics_profile=_sgp25smooth_apply_profile_final
+
+# Final timeframe semantics. The timeframe defines the context window; candle period defines the
+# requested granularity. Default zoom now shows the whole available timeframe, while zooming in
+# crops that stable series and zooming out (<1x) may reveal older cached sessions. Extremely dense
+# views are OHLC-compacted only at the final render stage, so they cannot collapse to 5-10 candles.
+def _sgp25smooth_chart_data_final(self):
+    if self.asset is None:return []
+    if getattr(self,'fit_inception',False):
+        out=list(_Chart_data_sys25_parent(self));now=getattr(self.app.market.clock,'current',None)
+        return [c for c in out if now is None or c.timestamp<=now]
+    p,mins=_sgp25prod_period_spec(self);now=getattr(self.app.market.clock,'current',_sgp22_dt.now());zoom=max(.25,min(20.0,float(getattr(self,'zoom',1.0))))
+    try:native=sorted([c for c in _sgp25prod_native_bars(self,p) if c.timestamp<=now],key=lambda c:c.timestamp)
+    except Exception:native=[]
+    combined=list(native)
+    daily_all=sorted([c for c in self.asset.chart_candles('1d') if c.timestamp<=now],key=lambda c:c.timestamp)
+    code=_sgp_asset_session_code(self.asset)
+    if code!='CRYPTO':daily_all=[dc for dc in daily_all if (dc.timestamp.weekday()!=5 if code=='CME' else dc.timestamp.weekday()<5)]
+    # If the local snapshot has only recent daily history, deterministic older display history keeps
+    # 6M/1Y/5Y useful offline. Real cached history automatically wins whenever it is long enough.
+    _long_target={'6M':132,'1Y':252,'5Y':1260}.get(self.timeframe)
+    if _long_target and daily_all and len(daily_all)<_long_target:
+        daily_all=_sgp25prod_extend_daily(self,daily_all,_long_target)
+
+    # Intraday/tick fallback uses completed sessions only. Live bars from the current session are
+    # layered on top and are always authoritative.
+    if mins<1440:
+        completed=[dc for dc in daily_all if dc.timestamp.date()<now.date()]
+        base_days=_sgp25prod_tf_days(self.timeframe,max(1,len(completed)))
+        if zoom<1.0:base_days=min(len(completed),max(base_days,int(math.ceil(base_days/zoom))))
+        seed_days=completed[-base_days:] if completed else []
+        fallback_mins=.5 if p=='1 Tick' else max(.5,float(mins))
+        # Preserve exact 30s/1m density for a day, while bounding multi-month synthetic history.
+        if code=='US':per_day=int(round(960.0/fallback_mins))
+        elif code=='CRYPTO':per_day=int(round(1440.0/fallback_mins))
+        else:per_day=int(round(480.0/fallback_mins))
+        wanted=max(240,min(3600,max(1,len(seed_days))*max(2,per_day)))
+        need_fallback=(p=='1 Tick' and len(native)<80) or (p!='1 Tick' and len(native)<max(24,min(240,wanted//4)))
+        if seed_days and need_fallback:
+            hist=_sgp25fp_extended_backfill(self,seed_days,fallback_mins,wanted)
+            first_native=native[0].timestamp if native else now
+            hist=[c for c in hist if c.timestamp<first_native and c.timestamp<=now]
+            combined=hist+native
+    elif p=='1 Week':
+        if _long_target and daily_all:
+            bars=[];wk=None;cur=None
+            for x in daily_all:
+                iso=x.timestamp.isocalendar();k=(iso.year,iso.week)
+                if k!=wk:
+                    cur=Candle(x.timestamp,float(x.open),float(x.high),float(x.low),float(x.close),int(x.volume));bars.append(cur);wk=k
+                else:
+                    cur.high=max(cur.high,float(x.high));cur.low=min(cur.low,float(x.low));cur.close=float(x.close);cur.volume+=int(x.volume)
+            combined=bars
+        elif len(combined)<8:combined=_sgp25prod_native_bars(self,'1 Week')
+    else:
+        # Daily/weekly native history is already durable; restrict normal views to the requested
+        # trading-day horizon, expanded when the user zooms out.
+        if p=='1 Day' and daily_all:
+            days=_sgp25prod_tf_days(self.timeframe,len(daily_all));
+            if zoom<1.0:days=min(len(daily_all),max(days,int(math.ceil(days/zoom))))
+            combined=daily_all[-days:]
+
+    if not combined:
+        px=float(self.asset.price);combined=[Candle(now,px,px,px,px,max(0,int(getattr(self.asset,'volume',0))))]
+    merged={c.timestamp:c for c in combined if c.timestamp<=now};combined=[merged[k] for k in sorted(merged)]
+    # Preserve a zero-size live tick's last visible volume without changing completed tick bars.
+    if p=='1 Tick' and combined:
+        last=combined[-1];v=max(0,int(getattr(last,'volume',0) or 0))
+        if v>0:self._last_tick_volume25=v
+        elif getattr(self,'_last_tick_volume25',0)>0:combined[-1]=Candle(last.timestamp,float(last.open),float(last.high),float(last.low),float(last.close),int(self._last_tick_volume25))
+
+    # Default zoom shows the complete timeframe. >1 zooms in; <1 already expanded seed history above.
+    visible=len(combined) if zoom<=1 else max(40,min(len(combined),int(math.ceil(len(combined)/zoom))))
+    maxoff=max(0,len(combined)-visible);self.view_offset=max(0,min(int(getattr(self,'view_offset',0)),maxoff));end=len(combined)-self.view_offset;start=max(0,end-visible);window=combined[start:end]
+    # At most roughly one OHLC sample per horizontal pixel. This preserves extrema/wicks while
+    # keeping Canvas object count bounded even for 30-second multi-day views.
+    render_cap=max(420,min(1050,int(max(500,self.winfo_width())*1.12)))
+    out=_sgp25fp_compact_stable(window,render_cap);self._last_render_data25=out;return out
+Chart.data=_sgp25smooth_chart_data_final

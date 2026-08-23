@@ -1721,13 +1721,9 @@ Market._v25_note_asset_move=_sgp25_note_asset_move
 def _sgp25_hot_symbols(self,now):
     if now-self._v25_last_hot_refresh<.40:return self._v25_hot_cache
     self._v25_last_hot_refresh=now;hot={'SPY','SPX','NDX','DJI','RUT'}
-    try:
-        app=self.ui_app
-        for c in list(getattr(app,'charts',()))+list(getattr(app,'extra_charts',())):
-            a=getattr(c,'asset',None)
-            if a:hot.add(a.symbol)
-        sel=app.selected()
-        if sel:hot.add(sel.symbol)
+    # Never call Tk widgets from the simulation thread. The UI publishes a plain-Python
+    # snapshot of visible/selected symbols; reading it here is lock-free and cannot block Tcl.
+    try:hot.update(getattr(self,'_ui_hot_symbols25',()) or ())
     except Exception:pass
     try:hot.update(str(s) for s,q in self.portfolio.positions.items() if q)
     except Exception:pass
@@ -2130,3 +2126,241 @@ async def _sgp25prod_tick_crypto_day(self):
         try:self.errors.append(f'crypto UTC day rollover: {e}')
         except Exception:pass
 Market.tick=_sgp25prod_tick_crypto_day
+
+# ===== Stock Game Pro 2.5 final production polish: global logistics, macro calendar, QE =====
+_SGP25FP_CRYPTO=[
+ ('BNB-USD','BNB',820,.012),('TON-USD','Toncoin',3.6,.017),('SHIB-USD','Shiba Inu',.000013,.025),('XMR-USD','Monero',285,.012),
+ ('UNI-USD','Uniswap',11,.020),('AAVE-USD','Aave',330,.022),('NEAR-USD','NEAR Protocol',3.2,.021),('ICP-USD','Internet Computer',5.8,.021),
+ ('ETC-USD','Ethereum Classic',22,.020),('FIL-USD','Filecoin',2.6,.022),('ATOM-USD','Cosmos',4.5,.020),('ALGO-USD','Algorand',.28,.021),
+ ('VET-USD','VeChain',.028,.023),('APT-USD','Aptos',4.9,.023),('ARB-USD','Arbitrum',.55,.025),('OP-USD','Optimism',.78,.025),
+]
+
+# Waypoints deliberately hug common ocean corridors instead of connecting ports with straight
+# chords through continents. They are a simulator representation of maritime lanes, not navigation.
+_SGP25FP_FREIGHT_ROUTES=[
+ {'name':'Shanghai → Los Angeles','origin':'Shanghai','destination':'Los Angeles','days':14,'points':[(31.35,121.50),(29,124),(25,138),(26,155),(30,175),(34,-165),(35,-145),(34,-125),(33.74,-118.27)],'products':['consumer electronics','semiconductors','machinery','apparel','auto parts'],'carriers':['ZIM','MATX','AMKBY'],'owners':['AAPL','NVDA','WMT','NKE','BABA','6758.T','7203.T']},
+ {'name':'Singapore → Rotterdam','origin':'Singapore','destination':'Rotterdam','days':22,'points':[(1.26,103.84),(4,95),(7,82),(11,70),(13,58),(13,48),(18,41),(26,35),(30.2,32.6),(31.4,32.3),(34,27),(36,18),(36,8),(38,-1),(43,-9),(49,-6),(51,1),(51.95,4.14)],'products':['refined fuels','electronics','industrial machinery','chemicals','containerized goods'],'carriers':['ZIM','AMKBY','DAC'],'owners':['SHEL','BP','SAP.DE','BHP','D05.SI']},
+ {'name':'Rotterdam → New York / NJ','origin':'Rotterdam','destination':'New York / NJ','days':10,'points':[(51.95,4.14),(51,1),(49,-7),(50,-20),(47,-38),(44,-52),(41,-66),(40.67,-74.04)],'products':['pharmaceuticals','industrial equipment','autos','chemicals','consumer goods'],'carriers':['AMKBY','ZIM','DAC'],'owners':['SNY','SAP.DE','MBG.DE','SHEL','NVS']},
+ {'name':'Santos → Shanghai','origin':'Santos','destination':'Shanghai','days':28,'points':[(-23.96,-46.30),(-30,-35),(-35,-20),(-36,0),(-36,18),(-31,38),(-22,58),(-10,78),(0,97),(1,104),(8,110),(20,118),(31.35,121.50)],'products':['iron ore','soybeans','coffee','crude oil','pulp'],'carriers':['SBLK','FRO','STNG','AMKBY'],'owners':['VALE3.SA','VALE','PBR','SUZB3.SA']},
+ {'name':'Sydney → Singapore','origin':'Sydney','destination':'Singapore','days':13,'points':[(-33.96,151.21),(-30,155),(-20,150),(-12,140),(-10,125),(-8,112),(-3,106),(1.26,103.84)],'products':['iron ore','LNG','coal','agricultural goods','industrial minerals'],'carriers':['SBLK','FRO','AMKBY'],'owners':['BHP.AX','RIO.AX','BHP']},
+ {'name':'Yokohama → Los Angeles','origin':'Tokyo / Yokohama','destination':'Los Angeles','days':12,'points':[(35.45,139.64),(32,145),(30,160),(34,178),(36,-160),(35,-140),(33.74,-118.27)],'products':['automobiles','robotics','electronics','precision machinery','auto parts'],'carriers':['MATX','ZIM','AMKBY'],'owners':['7203.T','7267.T','6758.T','6902.T','TM','SONY']},
+ {'name':'Dubai / Jebel Ali → Rotterdam','origin':'Dubai / Jebel Ali','destination':'Rotterdam','days':16,'points':[(25.27,55.30),(18,48),(13,43),(20,39),(29,33),(31.4,32.3),(35,25),(37,12),(38,0),(44,-8),(50,-4),(51.95,4.14)],'products':['petrochemicals','aluminum','machinery','consumer goods','re-export containers'],'carriers':['AMKBY','ZIM','FRO'],'owners':['SHEL','BP','BHP','DPW.DU']},
+ {'name':'Santos → Rotterdam','origin':'Santos','destination':'Rotterdam','days':15,'points':[(-23.96,-46.30),(-20,-35),(-10,-25),(5,-22),(20,-25),(35,-20),(45,-12),(50,-5),(51.95,4.14)],'products':['coffee','soybeans','iron ore','pulp','orange products'],'carriers':['SBLK','DAC','AMKBY'],'owners':['VALE3.SA','SUZB3.SA','VALE']},
+]
+
+_Market_new_shipment_sgp25fp_old=Market._new_shipment
+def _sgp25fp_new_shipment(self,i,carrier=None,owner=None):
+    route=random.choice(getattr(self,'freight_routes',[]) or _SGP25FP_FREIGHT_ROUTES);carriers=route.get('carriers') or ['ZIM','MATX','SBLK','DAC','FRO','STNG'];owners=route.get('owners') or ['AAPL','WMT'];carrier=carrier if carrier in carriers else random.choice(carriers);owner=owner if owner in owners else random.choice(owners);product=random.choice(route.get('products') or ['containerized goods'])
+    # Risk frequency is intentionally low; ordinary 0.1% gaps are not global risk events.
+    hazard=random.choices(['NONE','STORM','PIRATES','PORT_STRIKE','TARIFF'],weights=[72,12,4,6,6],k=1)[0];hpos=random.uniform(.28,.84)
+    return {'id':int(i),'name':f'{carrier} Vessel {int(i)+1:02d}','carrier':carrier,'provider':carrier,'cargo_owner':owner,'product':product,'route':route,'origin':route.get('origin','—'),'destination':route.get('destination','—'),'progress':random.random()*.72,'hazard':hazard,'hazard_progress':hpos,'hazard_resolved':False,'cargo_value':random.randint(35,950)*1_000_000,'status':'IN TRANSIT'}
+Market._new_shipment=_sgp25fp_new_shipment
+
+_Market_apply_ship_sgp25fp_old=Market._apply_shipment_shock
+def _sgp25fp_apply_shipment_shock(self,sh,kind):
+    # Let the established accounting/logistics-loss system run, then clarify the associated news.
+    _Market_apply_ship_sgp25fp_old(self,sh,kind)
+    try:
+        product=sh.get('product','cargo');route=(sh.get('route') or {}).get('name','trade lane');sev=.014 if kind in ('TARIFF','PORT_STRIKE') else .020
+        headline={'STORM':f'Major storm disrupts {route}; {product} transit delayed.', 'PIRATES':f'Piracy threat disrupts {route}; {product} cargo at risk.', 'PORT_STRIKE':f'Port labor disruption constrains {route}; {product} deliveries delayed.', 'TARIFF':f'Tariff escalation reprices {product} flows on {route}.'}.get(kind,f'Logistics shock affects {route}.')
+        self.news.append(NewsEvent(headline,sh.get('cargo_owner'),-sev,0,'GLOBAL'))
+    except Exception:pass
+Market._apply_shipment_shock=_sgp25fp_apply_shipment_shock
+
+# The 2026 scheduled releases below are known calendar events. Outcomes are deliberately simulated
+# when the game clock reaches them; this is a market game, not a claim about future economic data.
+def _sgp25fp_macro_calendar():
+    rows=[
+      ('2026-09-04 08:30','Employment Situation','MACRO'),('2026-09-10 08:30','Producer Price Index','MACRO'),('2026-09-11 08:30','Consumer Price Index','MACRO'),('2026-09-16 14:00','FOMC Decision / Press Conference','FED'),
+      ('2026-10-02 08:30','Employment Situation','MACRO'),('2026-10-14 08:30','Consumer Price Index','MACRO'),('2026-10-15 08:30','Producer Price Index','MACRO'),('2026-10-28 14:00','FOMC Decision / Press Conference','FED'),
+      ('2026-11-06 08:30','Employment Situation','MACRO'),('2026-11-10 08:30','Consumer Price Index','MACRO'),('2026-11-13 08:30','Producer Price Index','MACRO'),
+      ('2026-12-04 08:30','Employment Situation','MACRO'),('2026-12-09 14:00','FOMC Decision / Press Conference','FED'),('2026-12-10 08:30','Consumer Price Index','MACRO'),('2026-12-15 08:30','Producer Price Index','MACRO'),
+    ]
+    out=[]
+    for ds,name,kind in rows:
+        try:dt=datetime.strptime(ds,'%Y-%m-%d %H:%M')
+        except Exception:continue
+        out.append({'time':dt,'name':name,'kind':kind,'fired':False,'source':'scheduled 2026 release calendar'})
+    # Recurring simulated geopolitical meetings keep politics represented without fabricating a
+    # claim that a real named leader meeting is scheduled on a particular date.
+    base=datetime(2026,8,25,10,0)
+    for i,(name,region) in enumerate([('SIMULATED US–EU trade-minister consultation','Europe'),('SIMULATED US–China tariff consultation','Asia'),('SIMULATED G7 leaders policy meeting','Global'),('SIMULATED energy-producer policy meeting','Energy')]):
+        out.append({'time':base+timedelta(days=9*i),'name':name,'kind':'POLITICAL','region':region,'fired':False,'source':'simulated political calendar'})
+    return sorted(out,key=lambda x:x['time'])
+
+_Market_init_sgp25fp_base=Market.__init__
+def _sgp25fp_market_init(self,*args,**kwargs):
+    _Market_init_sgp25fp_base(self,*args,**kwargs)
+    # Broader 24/7 digital-asset coverage. These receive real creation-time snapshots whenever one
+    # exists; otherwise the bundled value is only the starting fallback.
+    existing={a.symbol for a in self.crypto}
+    for sym,name,price,vol in _SGP25FP_CRYPTO:
+        if sym in existing:continue
+        a=Crypto(sym,name,price,vol);a.fundamental_value=float(price);a.liquidity_health=1.0;a.last_market_impact=0.0;a.last_execution_vwap=float(price);self.crypto.append(a);self._assets[sym]=a;existing.add(sym)
+    self.sectors=sorted({a.category for a in self.stocks+self.international})
+    # Rebuild optimized broad-universe bookkeeping after adding instruments.
+    self._v20_assets=[a for a in self.all_assets() if a not in self.indexes];now=time.monotonic();self._v20_last_asset_time={a.symbol:now for a in self._v20_assets};self._v20_cursor=0
+    # Keep the default profile conservative even with ~3k assets.
+    self._v20_batch=max(12,min(24,int(getattr(self,'_v20_batch',16))))
+    self._session_groups24={}
+    for a in self.all_assets():
+        code=str(getattr(a,'session','US') or 'US');code=code if code in SESSIONS else 'US';self._session_groups24.setdefault(code,[]).append(a)
+    self._session_state24={code:bool(market_status(code,self.clock.current)) for code in self._session_groups24}
+    # Rebuild enriched freight after all assets exist.
+    self.freight_routes=[dict(r) for r in _SGP25FP_FREIGHT_ROUTES];self.shipments=[self._new_shipment(i) for i in range(18)]
+    self.scheduled_market_events=_sgp25fp_macro_calendar();self._scheduled_gate=0.0;self._policy_gate=0.0;self.qe_balance=7.0e12;self.qe_intensity=0.0;self.auto_stabilizer=True;self.policy_interventions=[];self.macro.setdefault('qe_balance_trn',self.qe_balance/1e12);self.macro.setdefault('financial_conditions',0.0);self.macro.setdefault('credit_spread',1.20);self.macro.setdefault('volatility_regime',1.0)
+    try:self._v25_rebuild_index_cache()
+    except Exception:pass
+Market.__init__=_sgp25fp_market_init
+
+def _sgp25fp_fire_scheduled(self):
+    now=self.clock.current
+    for ev in self.scheduled_market_events:
+        if ev.get('fired') or now<ev['time']:continue
+        ev['fired']=True;kind=ev['kind'];name=ev['name'];surprise=random.gauss(0,1)
+        if kind=='FED':
+            infl=float(self.macro.get('inflation',2.5));un=float(self.macro.get('unemployment',4.1));delta=-.25 if infl<2.2 and un>4.5 else .25 if infl>3.5 else 0.0;self.macro['policy_rate']=max(0.0,float(self.macro.get('policy_rate',4.0))+delta);impact=max(-.018,min(.018,-surprise*.006-delta*.018));headline=f'{name}: simulated policy outcome {"cut 25 bp" if delta<0 else "hike 25 bp" if delta>0 else "hold"}; markets reprice rates.'
+        elif kind=='POLITICAL':
+            impact=max(-.026,min(.026,surprise*.012));headline=f'{name}: simulated negotiation outcome shifts global trade-risk expectations.';self.scenario_credit_stress=max(0.0,float(getattr(self,'scenario_credit_stress',0.0))-impact*8)
+        else:
+            impact=max(-.020,min(.020,surprise*.009));headline=f'{name}: simulated surprise {surprise:+.1f}σ triggers cross-asset repricing.'
+            if 'Consumer Price' in name:self.macro['inflation']=max(-2.0,float(self.macro.get('inflation',2.5))+surprise*.12)
+            if 'Employment' in name:self.macro['unemployment']=max(1.0,float(self.macro.get('unemployment',4.1))-surprise*.07)
+        sev='MAJOR' if abs(impact)>=.012 or kind in ('FED','POLITICAL') else 'MACRO';self.news.append(NewsEvent(headline,'SPY',impact,0,sev))
+        for sym,mult in [('SPY',1.0),('SPX',1.0),('NDX',1.15),('DJI',.8),('VIX',-1.8)]:
+            a=self.get_asset(sym)
+            if a is not None:
+                try:self.queue_or_apply_return(a,impact*mult)
+                except Exception:pass
+        self.visual_version+=1
+Market._process_scheduled_events=_sgp25fp_fire_scheduled
+
+def _sgp25fp_policy_stabilizer(self):
+    if not getattr(self,'auto_stabilizer',True):return
+    spx=self.get_asset('SPX') or self.get_asset('SPY')
+    if spx is None:return
+    move=float(spx.change_percent());infl=float(self.macro.get('inflation',2.5));liq=float(self.macro.get('liquidity',1.0));action=None
+    # Circuit-breaker-like policy response is intentionally gradual; crashes/pumps are still possible.
+    if move<=-7.0 or (float(getattr(self,'scenario_credit_stress',0.0))>=3.5 and move<=-3.5):
+        old=self.qe_intensity;self.qe_intensity=min(1.0,old+.08);self.qe_balance=min(11e12,self.qe_balance+45e9);self.macro['liquidity']=min(3.0,liq+.025);self.scenario_credit_stress=max(0.0,float(getattr(self,'scenario_credit_stress',0.0))-.06);action='QE / liquidity support'
+    elif move>=8.0 and infl>2.8:
+        old=self.qe_intensity;self.qe_intensity=max(-.5,old-.06);self.qe_balance=max(3e12,self.qe_balance-35e9);self.macro['liquidity']=max(.35,liq-.018);action='liquidity normalization'
+    else:
+        self.qe_intensity*=.985
+    self.macro['qe_balance_trn']=self.qe_balance/1e12;self.macro['financial_conditions']=float(getattr(self,'scenario_credit_stress',0.0))-.6*(float(self.macro.get('liquidity',1.0))-1.0);self.macro['volatility_regime']=float(getattr(self,'scenario_volatility',1.0))
+    if action:
+        rec={'time':self.clock.current,'action':action,'spx_change':move,'qe':self.qe_balance,'intensity':self.qe_intensity};self.policy_interventions.append(rec);self.policy_interventions=self.policy_interventions[-80:]
+        # Throttle policy headlines so a persistent crash does not spam news every check.
+        last=getattr(self,'_last_policy_news',None)
+        if last is None or (self.clock.current-last).total_seconds()>=3600:
+            self._last_policy_news=self.clock.current;self.news.append(NewsEvent(f'Federal Reserve simulation: {action}; balance-sheet support ${self.qe_balance/1e12:.2f}T, liquidity {self.macro.get("liquidity",1):.2f}x.','SPY',.009 if 'support' in action else -.006,0,'FED'))
+Market._auto_policy_stabilizer=_sgp25fp_policy_stabilizer
+
+_Market_tick_sgp25fp_base=Market.tick
+async def _sgp25fp_tick(self):
+    await _Market_tick_sgp25fp_base(self)
+    now=time.monotonic()
+    if now-getattr(self,'_scheduled_gate',0)>0.50:
+        self._scheduled_gate=now
+        try:self._process_scheduled_events()
+        except Exception as e:self.errors.append(f'scheduled macro: {e}')
+    if now-getattr(self,'_policy_gate',0)>2.0:
+        self._policy_gate=now
+        try:self._auto_policy_stabilizer()
+        except Exception as e:self.errors.append(f'auto policy: {e}')
+Market.tick=_sgp25fp_tick
+
+# ============================================================================
+# Stock Game Pro 2.5 Production — adaptive high-frequency market scheduler
+# ============================================================================
+# The renderer may request 25 ms frames, but prior engines only repriced hot symbols every ~90 ms.
+# This final scheduler makes hot quote cadence configurable while keeping the ~3k-asset universe in
+# a rotating batch and retaining scheduled macro/QE logic. No network I/O occurs here.
+
+_Market_init_sgp25smooth_base=Market.__init__
+def _sgp25smooth_market_init(self,*args,**kwargs):
+    _Market_init_sgp25smooth_base(self,*args,**kwargs)
+    profile=str(getattr(self,'graphics_profile','Balanced'))
+    self.hot_quote_ms25={'Efficiency':90,'Balanced':45,'Smooth':25,'Maximum':18}.get(profile,45)
+    self._smooth_tick_ema25=0.0;self._smooth_overload25=0.0;self._smooth_last_status25=time.monotonic()
+Market.__init__=_sgp25smooth_market_init
+
+async def _sgp25smooth_tick(self):
+    if not self.running:return
+    loop_start=time.perf_counter()
+    if self.paused:
+        self._last_real_tick=time.monotonic();await asyncio.sleep(max(.015,float(getattr(self,'speed',.035))));return
+    now=time.monotonic();real_dt=max(.001,min(.18,now-self._last_real_tick));self._last_real_tick=now
+    warp=max(1.0/60.0,min(100.0/60.0,float(getattr(self,'time_warp',1.0/60.0))))
+    game_seconds=real_dt*60.0*warp;game_minutes=game_seconds/60.0;changed=False
+    try:
+        self.clock.advance_seconds(game_seconds);self._handle_session_transitions24();self._update_macro(game_minutes)
+        with self._lock:
+            assets=self._v20_assets;n=len(assets);updated=set();market_z=random.gauss(0,1);sector_cache={}
+            hot_interval=max(.015,min(.250,float(getattr(self,'hot_quote_ms25',45))/1000.0))
+            # Charted/held/selected/working-order symbols get the user's requested information rate.
+            # Each asset still scales stochastic motion by its actual elapsed simulated time.
+            for sym in tuple(self._v25_hot_symbols(now)):
+                a=self.get_asset(sym)
+                if a is None or a in self.indexes or not self.asset_quote_open(a):continue
+                last=self._v20_last_asset_time.get(a.symbol,0.0)
+                if now-last<hot_interval:continue
+                elapsed=max(.004,min(1.5,now-last));self._v20_last_asset_time[a.symbol]=now
+                cat=getattr(a,'category','OTHER');sector_z=sector_cache.setdefault(cat,random.gauss(0,1));r=self._asset_return(a,elapsed*warp,market_z,sector_z)
+                state=self.asset_trade_state(a);vol=random.randint(5,5000) if state=='OVERNIGHT ECN' else random.randint(50,35000);old=float(a.price);a.update_price(a.price*max(.75,1+r),vol,self.clock.current);self._v25_note_asset_move(a,old);updated.add(a.symbol);changed=True
+            # Adaptive broad-market batch: under load preserve hot symbols and reduce only hidden
+            # universe work. When the loop is healthy, honor the user's configured batch fully.
+            if n:
+                overload=max(0.0,min(1.0,float(getattr(self,'_smooth_overload25',0.0))))
+                configured=max(6,min(80,int(getattr(self,'_v20_batch',16))));count=max(4,min(configured,int(round(configured*(1.0-.55*overload)))))
+                start=self._v20_cursor
+                for j in range(count):
+                    a=assets[(start+j)%n]
+                    if a.symbol in updated or not self.asset_quote_open(a):continue
+                    last=self._v20_last_asset_time.get(a.symbol,now);elapsed=max(.01,min(8.0,now-last));self._v20_last_asset_time[a.symbol]=now
+                    cat=getattr(a,'category','OTHER');sector_z=sector_cache.setdefault(cat,random.gauss(0,1));r=self._asset_return(a,elapsed*warp,market_z,sector_z)
+                    state=self.asset_trade_state(a);vol=random.randint(5,5000) if state=='OVERNIGHT ECN' else random.randint(50,35000);old=float(a.price);a.update_price(a.price*max(.75,1+r),vol,self.clock.current);self._v25_note_asset_move(a,old);changed=True
+                self._v20_cursor=(start+count)%n
+            # Index values are cached incrementally; faster refresh while visible without rescanning
+            # their hundreds/thousands of underlying constituents.
+            idx_interval=.10 if float(getattr(self,'hot_quote_ms25',45))<=25 else .16
+            if now-self._v20_last_index>=idx_interval:
+                self._v20_last_index=now
+                for idx in self.indexes:
+                    if not self.asset_regular_open(idx):continue
+                    rec=self._v25_index_cache.get(idx.symbol)
+                    if not rec or rec.get('den',0)<=0:continue
+                    ret=rec['num']/rec['den']-1.0 if rec['mode']=='price' else rec['num']/rec['den'];target=max(.0001,float(idx.open_price)*(1+ret));old=float(idx.price);new=old+(target-old)*.38;idx.update_price(new,random.randint(500,65000),self.clock.current);changed=True
+            # Orders stay responsive. Expensive world systems remain decoupled from quote speed.
+            if now-self._v20_last_risk>=.08:
+                elapsed=now-self._v20_last_risk;self._v20_last_risk=now;gm=elapsed*warp;self._process_orders();self._process_expirations()
+                world_interval=max(.20,float(getattr(self,'global_anim_ms',600))/1000.0*.65)
+                if now-getattr(self,'_smooth_world_gate25',0.0)>=world_interval:
+                    self._smooth_world_gate25=now;self._update_freight(gm);self._update_geopolitics(gm)
+            if now-self._v20_last_housekeeping>=.50:
+                self._v20_last_housekeeping=now
+                try:self._corporate_action_cycle();self._process_earnings_v16()
+                except Exception as e:self.errors.append(f'daily systems: {type(e).__name__}: {e}')
+                if hasattr(self,'portfolio') and now-getattr(self,'_last_networth_calc',0)>4.0:
+                    self._last_networth_calc=now;self.portfolio.best_net_worth=max(self.portfolio.best_net_worth,self.portfolio.mark_value(self.all_assets()))
+            if now-self._v25_last_index_rebuild>30.0:self._v25_rebuild_index_cache()
+        if changed and now-self._v25_last_visual>=max(.02,hot_interval*.70):self.visual_version+=1;self._v25_last_visual=now
+        # Scheduled economic/political releases and policy stabilizer are integrated here instead of
+        # stacking another coroutine sleep on top of the high-frequency engine.
+        if now-getattr(self,'_scheduled_gate',0)>0.50:
+            self._scheduled_gate=now
+            try:self._process_scheduled_events()
+            except Exception as e:self.errors.append(f'scheduled macro: {e}')
+        if now-getattr(self,'_policy_gate',0)>2.0:
+            self._policy_gate=now
+            try:self._auto_policy_stabilizer()
+            except Exception as e:self.errors.append(f'auto policy: {e}')
+        self.data_status=f'ADAPTIVE SIM • {warp*60.0:.2f}x • hot {hot_interval*1000:.0f}ms • {len(self.stocks):,} stocks • CPI {self.macro["inflation"]:.2f}% • FED {self.macro["policy_rate"]:.2f}%'
+    except Exception as e:
+        self.errors.append(f'tick v2.5 smooth: {type(e).__name__}: {e}')
+        if len(self.errors)>100:self.errors=self.errors[-100:]
+    spent=time.perf_counter()-loop_start;target=max(.010,min(.100,float(getattr(self,'speed',.035))))
+    ema=float(getattr(self,'_smooth_tick_ema25',0.0));ema=spent if ema<=0 else ema*.92+spent*.08;self._smooth_tick_ema25=ema
+    ratio=ema/max(target,1e-6);ov=float(getattr(self,'_smooth_overload25',0.0));goal=max(0.0,min(1.0,(ratio-0.75)/1.25));self._smooth_overload25=ov*.90+goal*.10
+    await asyncio.sleep(max(.001,target-spent))
+Market.tick=_sgp25smooth_tick
