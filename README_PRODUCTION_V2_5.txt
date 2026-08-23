@@ -3,8 +3,8 @@ Stock Game Pro 2.5 — Chart Stability / Index Universe / Performance Overhaul
 KEY FIXES
 - Rigid live-chart camera: the vertical scale no longer expands/contracts on every pump/dump wick. The viewport remains fixed while price stays inside it, translates only after price actually leaves the visible range, and expands only if a single candle physically cannot fit.
 - Fixed synthetic-history/live-price welding. A current live candle is appended instead of forcing the current quote into a stale historical candle, eliminating artificial mega-wicks on intraday views.
-- Startup is SPY 1D / 5 Min with a dense full-session view instead of a 1M synthetic chart that paints ~1,400 candles immediately.
-- Chart scheduler renders at most one due canvas per 16 ms pulse and main charts default to a calmer ~160 ms redraw interval.
+- Startup opens a three-chart workstation: SPY 1D / 1 Tick at maximum time zoom and 50 ms, Gold MAX as an all-history line, and BTC 1D candles at 50 ms.
+- The adaptive chart scheduler keeps independent per-chart targets; the startup workspace uses 50 ms for SPY/BTC and 250 ms for the static Gold MAX context chart.
 - Synthetic intraday expansion is cached; duplicate per-frame session shading/data rebuild passes were removed.
 - 1-Tick zero-volume prints preserve the last visible non-zero display volume so volume bars do not blink out for one frame.
 - DAY/AH metrics are moved away from the open/close countdown row.
@@ -187,3 +187,24 @@ Validation performed for this consolidation
 
 Normal gameplay remains offline. New-account market seeding and the explicitly confirmed Experimental ->
 Refresh Market Snapshot action remain the only market-data network paths.
+
+2.5 production hotfix — slot cash / index news
+- Slot machine bankroll now displays and live-refreshes spendable account cash instead of marked net worth.
+- Index news monitor emits session-open/close headlines and meaningful threshold/breadth headlines for index symbols without double-applying price impact.
+
+2.5 PRODUCTION REFINEMENT — TICKER / TIME-WARP / HEAT MAP
+- Login local-market ticker is a slower, clipped NYSE-wall-style tape sourced only from the newest locally cached account-creation/manual-refresh snapshot. Cached previous-close data provides red/green direction arrows when available.
+- Login and Global Viewer freight strokes are clipped against the bundled world coastline geometry. Vessel animation follows the resulting water-only route runs, so a coarse route chord is never painted over land.
+- Watchlist density control removed; production row density is fixed at 18 px.
+- 1D + 1 Day candle combination is disabled; 1 Day candles remain available for wider contexts and MAX.
+- Candle buckets use the simulated market clock. At 100x, a 30-second candle advances in about 0.30 real seconds while the relevant market is quote-active.
+- AUTO Y now aggressively recovers from an oversized/flattened vertical camera, then eases into the final all-visible-OHLC fit while keeping the current quote in frame.
+- Market Map now uses a market-cap-proportional squarified treemap with day-change color, sector grouping, hover detail, search/region/index filtering, sortable breadth/index-impact tables, and slimmer side research panes.
+
+2.5 PRODUCTION OPTIMIZATION — CASINO / WORKSTATION / MARKET MAP
+- Roulette now suppresses every inherited denomination painter before drawing the single modern two-row poker-chip rack; no legacy chip controls can leak over the table.
+- Slots draw spendable CASH BALANCE directly in the final composition, with responsive spacing that prevents the default-window label collision.
+- The redundant bottom WORLD CLOCK strip is removed. PAUSE WORLD and SKIP TO NEXT OPEN now sit beside NEWS / MARKET TAPE → POP OUT / RESIZE.
+- AUTO Y ON/OFF and FIT MAX use compact padding with enough character width to display their complete labels.
+- Market Map fixes the treemap row orientation, dynamically limits the unfiltered view to readable tiles, labels substantially more assets, adds direction arrows, and exposes a 100–2,000 ms map refresh selector (250 ms default). Sector/index tables refresh independently at a lower cadence, while a bounded profile-aware set of the largest visible tiles receives priority quote updates.
+- Validation for this patch: all Python modules compiled; deterministic 250-tile geometry had a 1.04 median / 1.61 maximum aspect ratio with all 250 test tickers labeled; mocked default-size casino renders confirmed one 11-chip roulette selector and one non-overlapping CASH BALANCE label; startup-state assertions matched all three requested charts.

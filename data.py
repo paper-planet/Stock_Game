@@ -175,7 +175,8 @@ def _sgp26_quote_dict_from_history(symbol):
         if not bars:return None
         c=bars[-1]
         ts=getattr(c,'timestamp',None)
-        return {'close':float(c.close),'volume':int(getattr(c,'volume',0) or 0),
+        prev=float(getattr(bars[-2],'close',c.open)) if len(bars)>1 else float(getattr(c,'open',c.close))
+        return {'close':float(c.close),'previous_close':prev,'volume':int(getattr(c,'volume',0) or 0),
                 'timestamp':ts.isoformat() if hasattr(ts,'isoformat') else None,
                 'saved_at':float(p.stat().st_mtime),'source':'history-cache'}
     except Exception:return None
@@ -228,7 +229,7 @@ def _sgp26_parse_spark(obj):
     for row in rows:
         try:
             sym=str(row.get('symbol') or '').strip();resp=(row.get('response') or [{}])[0];meta=resp.get('meta') or {}
-            price=meta.get('regularMarketPrice');ts=meta.get('regularMarketTime');vol=meta.get('regularMarketVolume',0)
+            price=meta.get('regularMarketPrice');ts=meta.get('regularMarketTime');vol=meta.get('regularMarketVolume',0);prev=meta.get('chartPreviousClose',meta.get('previousClose',meta.get('regularMarketPreviousClose')))
             if price is None:
                 stamps=resp.get('timestamp') or [];quote=((resp.get('indicators') or {}).get('quote') or [{}])[0]
                 closes=quote.get('close') or [];vols=quote.get('volume') or []
@@ -237,7 +238,7 @@ def _sgp26_parse_spark(obj):
                         price=closes[i];ts=stamps[i] if i<len(stamps) else ts;vol=vols[i] if i<len(vols) and vols[i] is not None else vol;break
             if not sym or price is None:continue
             dt=_sgp26_datetime.fromtimestamp(float(ts),_sgp26_timezone.utc).isoformat() if ts else _sgp26_datetime.now(_sgp26_timezone.utc).isoformat()
-            out[sym]={'close':float(price),'volume':int(vol or 0),'timestamp':dt,'saved_at':_time.time(),'source':'snapshot-network'}
+            out[sym]={'close':float(price),'previous_close':float(prev) if prev not in (None,0) else None,'volume':int(vol or 0),'timestamp':dt,'saved_at':_time.time(),'source':'snapshot-network'}
         except Exception:continue
     return out
 

@@ -41,7 +41,7 @@ def main_menu(root,accounts):
         for _name,_rec in accounts.accounts.items():
             _last=_rec.get('last_login') or _rec.get('created');_lt=_dt.datetime.fromtimestamp(_last).strftime('%b %d  %H:%M') if _last else '—'
             _rows.append(f'{_name}   {_rec.get("mode","MEDIUM")}   ${float(_rec.get("cash",0)):,.0f}   {int(_rec.get("credit_score",700))}   {int(_rec.get("xp",0))}   {_lt}')
-        panel_px=max(470,min(760,max([_rf.measure(x)+84 for x in _rows] or [470])))
+        panel_px=max(450,min(710,max([_rf.measure(x)+38 for x in _rows] or [450])))
     except Exception:panel_px=500
 
     # The launcher ticker is a read-only view of the newest local market snapshot. No quote
@@ -55,31 +55,68 @@ def main_menu(root,accounts):
     for _label,_sym in _preferred:
         _rec=_portal_snapshot.get(_sym)
         if isinstance(_rec,dict) and _rec.get('close') is not None:
-            _ticker_entries.append((_label,float(_rec['close']),_rec.get('timestamp') or _rec.get('saved_at')));_used.add(_sym)
+            _ticker_entries.append((_label,float(_rec['close']),float(_rec.get('previous_close') or _rec.get('close') or 0),_rec.get('timestamp') or _rec.get('saved_at')));_used.add(_sym)
     # Fill the tape with additional cached instruments so it behaves like a dense exchange wall.
     for _sym,_rec in list(_portal_snapshot.items()):
         if len(_ticker_entries)>=72:break
         if _sym in _used or not isinstance(_rec,dict) or _rec.get('close') is None:continue
-        try:_ticker_entries.append((str(_sym).replace('=F',''),float(_rec['close']),_rec.get('timestamp') or _rec.get('saved_at')));_used.add(_sym)
+        try:_ticker_entries.append((str(_sym).replace('=F',''),float(_rec['close']),float(_rec.get('previous_close') or _rec.get('close') or 0),_rec.get('timestamp') or _rec.get('saved_at')));_used.add(_sym)
         except Exception:pass
 
     anim={'t0':__import__('time').monotonic(),'job':None,'static_key':None}
     try:
         from world_land import LAND_POLYGONS as _PORTAL_LAND, COUNTRY_BORDERS as _PORTAL_BORDERS
     except Exception:_PORTAL_LAND=[];_PORTAL_BORDERS=[]
+    # Precompute water-only route runs once for the launcher.  This clips the schematic trade
+    # network against the same coastline geometry used to draw the Earth map, so neither lane
+    # strokes nor animated vessels appear over land when a coarse waypoint chord clips a coast.
+    _portal_land=[poly for typ,poly in _PORTAL_LAND if typ in (1,5) and len(poly)>=3]
+    _portal_water_cache={}
+    def _portal_point_in_poly(x,y,poly):
+        pts=[]
+        for px,py in poly:
+            while px-x>180:px-=360
+            while px-x<-180:px+=360
+            pts.append((px,py))
+        inside=False;j=len(pts)-1
+        for i,(xi,yi) in enumerate(pts):
+            xj,yj=pts[j]
+            if ((yi>y)!=(yj>y)) and x < (xj-xi)*(y-yi)/((yj-yi) if abs(yj-yi)>1e-12 else 1e-12)+xi:inside=not inside
+            j=i
+        return inside
+    def _portal_is_land(lat,lon):
+        return any(_portal_point_in_poly(lon,lat,poly) for poly in _portal_land)
+    def _portal_water_runs(points):
+        key=tuple((round(float(a),3),round(float(b),3)) for a,b in points);got=_portal_water_cache.get(key)
+        if got is not None:return got
+        runs=[];run=[]
+        for a,b in zip(points,points[1:]):
+            la1,lo1=a;la2,lo2=b;dl=lo2-lo1
+            if dl>180:lo2-=360
+            elif dl<-180:lo2+=360
+            dist=max(abs(la2-la1),abs(lo2-lo1)*max(.25,math.cos(math.radians((la1+la2)*.5))));n=max(3,min(150,int(math.ceil(dist/.5))))
+            for k in range(n+1):
+                t=k/n;la=la1+(la2-la1)*t;lo=((lo1+(lo2-lo1)*t+180)%360)-180
+                if not _portal_is_land(la,lo):
+                    if not run or abs(run[-1][0]-la)>1e-6 or abs(run[-1][1]-lo)>1e-6:run.append((la,lo))
+                elif run:
+                    if len(run)>=2:runs.append(run)
+                    run=[]
+        if run and len(run)>=2:runs.append(run)
+        _portal_water_cache[key]=runs;return runs
     try:
         from game_core import market_status as _portal_market_status, SESSIONS as _PORTAL_SESSIONS
     except Exception:_portal_market_status=None;_PORTAL_SESSIONS={}
     portal_ex=[('NYSE','US',40.71,-74.01),('CME','CME',41.88,-87.63),('LSE','LSE',51.51,-.13),('XETRA','XETRA',50.11,8.68),('TSE','TSE',35.68,139.77),('HKEX','HKEX',22.32,114.17),('SSE','SSE',31.23,121.47),('SGX','SGX',1.35,103.82),('ASX','ASX',-33.87,151.21),('B3','B3',-23.55,-46.63)]
-    portal_routes=[
-      {'name':'Shanghai → Los Angeles','days':14,'points':[(31.35,121.5),(29,124),(24,138),(25,155),(30,175),(34,-165),(35,-145),(34,-125),(33.74,-118.27)]},
-      {'name':'Singapore → Rotterdam','days':22,'points':[(1.26,103.84),(4,95),(7,82),(11,70),(13,58),(13,48),(18,41),(26,35),(30.2,32.6),(31.4,32.3),(34,27),(36,18),(36,8),(38,-1),(43,-9),(49,-6),(51,1),(51.95,4.14)]},
-      {'name':'Rotterdam → New York','days':10,'points':[(51.95,4.14),(51,1),(49,-7),(50,-20),(47,-38),(44,-52),(41,-66),(40.67,-74.04)]},
-      {'name':'Santos → Shanghai','days':28,'points':[(-23.96,-46.30),(-30,-35),(-35,-20),(-36,0),(-36,18),(-31,38),(-22,58),(-10,78),(0,97),(1,104),(8,110),(20,118),(31.35,121.5)]},
-      {'name':'Sydney → Singapore','days':13,'points':[(-33.96,151.21),(-30,155),(-20,150),(-12,140),(-10,125),(-8,112),(-3,106),(1.26,103.84)]},
-      {'name':'Yokohama → Los Angeles','days':12,'points':[(35.45,139.64),(32,145),(30,160),(34,178),(36,-160),(35,-140),(33.74,-118.27)]},
-      {'name':'Dubai → Rotterdam','days':16,'points':[(25.27,55.30),(18,48),(13,43),(20,39),(29,33),(31.4,32.3),(35,25),(37,12),(38,0),(44,-8),(50,-4),(51.95,4.14)]},
-    ]
+    try:
+        from market import _SGP25FP_FREIGHT_ROUTES as _PORTAL_SHARED_ROUTES
+        portal_routes=[{'name':r.get('name','Trade lane'),'days':r.get('days',14),'points':list(r.get('points',()))} for r in _PORTAL_SHARED_ROUTES]
+    except Exception:
+        portal_routes=[
+          {'name':'Shanghai → Los Angeles','days':14,'points':[(31.0,123.0),(27,140),(30,170),(34,-160),(34,-124)]},
+          {'name':'Rotterdam → New York','days':10,'points':[(51.5,2.0),(49,-10),(46,-35),(42,-60),(40.5,-72.5)]},
+          {'name':'Yokohama → Los Angeles','days':12,'points':[(35.0,141.0),(31,160),(35,-165),(34,-140),(33.7,-120.5)]},
+        ]
     # Low-frequency risk monitor preview. It is visibly labeled as simulated launcher context;
     # live in-game risks come from the market/news engine after login.
     portal_risks=[('WX',30,155,0),('PIR',12,48,9),('POL',49,18,17),('LOG',1,103,25),('WX',-31,150,31)]
@@ -115,14 +152,15 @@ def main_menu(root,accounts):
                 if len(pts)>=4:c.create_line(*pts,fill='#1b4b40',width=1,tags='portal_static')
             # Ocean-safe waypoints are drawn as segmented trade lanes instead of port-to-port chords.
             for route in portal_routes:
-                seg=[];lastx=None
-                for lat,lon in route['points']:
-                    x,y=xy(lat,lon)
-                    if lastx is not None and abs(x-lastx)>mw*.55:
-                        if len(seg)>=4:c.create_line(*seg,fill='#12657e',width=1,dash=(4,5),tags='portal_static')
-                        seg=[]
-                    seg.extend((x,y));lastx=x
-                if len(seg)>=4:c.create_line(*seg,fill='#12657e',width=1,dash=(4,5),tags='portal_static')
+                for run in _portal_water_runs(route['points']):
+                    seg=[];lastx=None
+                    for lat,lon in run:
+                        x,y=xy(lat,lon)
+                        if lastx is not None and abs(x-lastx)>mw*.55:
+                            if len(seg)>=4:c.create_line(*seg,fill='#12657e',width=1,dash=(4,5),tags='portal_static')
+                            seg=[]
+                        seg.extend((x,y));lastx=x
+                    if len(seg)>=4:c.create_line(*seg,fill='#12657e',width=1,dash=(4,5),tags='portal_static')
             c.create_text(mx0+10,my0+8,anchor='nw',text='GLOBAL MARKET / TRADE NETWORK',fill='#dfeef4',font=('Segoe UI',10,'bold'),tags='portal_static')
             c.create_text(mx0+10,my0+27,anchor='nw',text='Real coastlines • exchange sessions • ocean + air logistics',fill='#6798aa',font=('Segoe UI',7),tags='portal_static')
         c.delete('portal_dynamic')
@@ -138,25 +176,24 @@ def main_menu(root,accounts):
             except Exception:op=False
             c.create_oval(x-5,y-5,x+5,y+5,fill='#28c996' if op else '#596875',outline='#e1edf2',tags='portal_dynamic');c.create_text(x+7,y-7,text=f'{name} {"OPEN" if op else "CLOSED"}',anchor='w',fill='#8fd9c2' if op else '#82929c',font=('Consolas',6,'bold'),tags='portal_dynamic')
         def route_pos(points,t):
-            if len(points)<2:return points[0][0],points[0][1],0
-            segs=[];total=0.0
-            for a,b in zip(points,points[1:]):
-                la1,lo1=a;la2,lo2=b;dl=lo2-lo1
-                if dl>180:dl-=360
-                elif dl<-180:dl+=360
-                dist=max(.001,((la2-la1)**2+(dl*max(.25,math.cos(math.radians((la1+la2)/2))))**2)**.5);segs.append((dist,a,b,dl));total+=dist
+            runs=_portal_water_runs(points);segs=[];total=0.0
+            for run in runs:
+                for a,b in zip(run,run[1:]):
+                    dl=b[1]-a[1]
+                    if dl>180:dl-=360
+                    elif dl<-180:dl+=360
+                    dist=max(.001,math.hypot(b[0]-a[0],dl*max(.25,math.cos(math.radians((a[0]+b[0])*.5)))));segs.append((dist,a,b,dl));total+=dist
+            if not segs:
+                x,y=xy(*points[0]);return x,y,0
             target=(t%1.0)*total;acc=0.0
             for dist,a,b,dl in segs:
                 if acc+dist>=target:
-                    f=(target-acc)/dist;la=a[0]+(b[0]-a[0])*f;lo=a[1]+dl*f
-                    while lo>180:lo-=360
-                    while lo<-180:lo+=360
-                    la2,lo2=b;x,y=xy(la,lo);xn,yn=xy(la2,lo2);return x,y,math.atan2(yn-y,xn-x)
+                    f=(target-acc)/dist;la=a[0]+(b[0]-a[0])*f;lo=((a[1]+dl*f+180)%360)-180;x,y=xy(la,lo);f2=min(1.0,f+.03);la2=a[0]+(b[0]-a[0])*f2;lo2=((a[1]+dl*f2+180)%360)-180;xn,yn=xy(la2,lo2);return x,y,math.atan2(yn-y,xn-x)
                 acc+=dist
-            x,y=xy(*points[-1]);return x,y,0
+            x,y=xy(*segs[-1][2]);return x,y,0
         # Faster launcher animation is purely visual and does not alter the simulator clock.
         for j,route in enumerate(portal_routes):
-            t=(elapsed/(20.0+j*2.3)+j*.137)%1.0;x,y,ang=route_pos(route['points'],t);cs,sn=math.cos(ang),math.sin(ang);shape=[(-10,2),(-8,-2),(-3,-4),(8,-3),(12,0),(8,3),(-3,4)] ;pts=[]
+            t=(elapsed/(12.0+j*1.4)+j*.137)%1.0;x,y,ang=route_pos(route['points'],t);cs,sn=math.cos(ang),math.sin(ang);shape=[(-10,2),(-8,-2),(-3,-4),(8,-3),(12,0),(8,3),(-3,4)] ;pts=[]
             for px,py in shape:pts.extend((x+px*cs-py*sn,y+px*sn+py*cs))
             c.create_polygon(*pts,fill='#6fd8ef',outline='#dffaff',tags='portal_dynamic')
         # Air corridors are approximate great-circle-like arcs between logistics hubs.
@@ -190,13 +227,33 @@ def main_menu(root,accounts):
             utc=_datetime.datetime.now(_datetime.timezone.utc);zones=[('NY','America/New_York'),('LDN','Europe/London'),('FRA','Europe/Berlin'),('TYO','Asia/Tokyo'),('HK','Asia/Hong_Kong'),('SYD','Australia/Sydney')];zt='   '.join(f'{n} {utc.astimezone(_ZoneInfo(z)):%H:%M}' for n,z in zones)
             c.create_rectangle(mx0+7,my0+mh-27,mx0+mw-7,my0+mh-5,fill='#06131d',outline='#173848',tags='portal_dynamic');c.create_text(mx0+14,my0+mh-16,anchor='w',text=zt,fill='#86aebe',font=('Consolas',7,'bold'),tags='portal_dynamic')
         except Exception:pass
-        # NYSE-style single-row tape sourced from the local creation/refresh snapshot.
-        tape_y=hh-42;c.create_rectangle(0,tape_y,map_w,hh,fill='#000000',outline='#1d2830',tags='portal_dynamic')
+        # NYSE-wall inspired single-row tape.  It is strictly clipped to the map/local-snapshot
+        # viewport and uses the latest cached creation/refresh snapshot; the launcher never polls.
+        tape_y=hh-42;tape_left=mx0;tape_right=max(tape_left+120,map_w-8)
+        c.create_rectangle(tape_left,tape_y,tape_right,hh,fill='#000000',outline='#1d2830',tags='portal_dynamic')
         if _ticker_entries:
-            tape='    '.join(f'{sym}  {px:,.2f}' for sym,px,_ in _ticker_entries)+'     '
-            est=max(1000,len(tape)*7);offset=(elapsed*74)%est;c.create_text(map_w-offset,tape_y+21,anchor='w',text=tape+tape,fill='#e8edf0',font=('Consolas',9,'bold'),tags='portal_dynamic')
-            c.create_text(7,tape_y+5,anchor='nw',text='LOCAL MARKET SNAPSHOT',fill='#6f8c99',font=('Segoe UI',6,'bold'),tags='portal_dynamic')
-        else:c.create_text(12,tape_y+21,anchor='w',text='LOCAL MARKET SNAPSHOT UNAVAILABLE • CREATE OR REFRESH AN ACCOUNT TO CACHE CURRENT QUOTES',fill='#8ea0a9',font=('Consolas',8,'bold'),tags='portal_dynamic')
+            try:
+                import tkinter.font as _tkf
+                _tf=_tkf.Font(family='Consolas',size=9,weight='bold')
+                pieces=[];total=0
+                for sym,px,prev,_stamp in _ticker_entries:
+                    ch=(px/prev-1)*100 if prev else 0.0;arrow='▲' if ch>0.0001 else '▼' if ch<-0.0001 else '•'
+                    text=f' {sym} {px:,.2f} {arrow}{abs(ch):.2f}%   ';wid=max(62,_tf.measure(text));pieces.append((text,wid,ch));total+=wid
+                total=max(total,1);offset=(elapsed*28.0)%total;x0=tape_left+118-offset
+                # Draw two copies piece-by-piece; Canvas has no clip path, so skip any glyph run
+                # completely outside the snapshot rectangle instead of letting text run under login.
+                for rep in (0,1):
+                    x=x0+rep*total
+                    for text,wid,ch in pieces:
+                        if x>=tape_left+112 and x+wid<=tape_right-2:
+                            color='#56d69a' if ch>0.0001 else '#ff6b73' if ch<-0.0001 else '#d7e0e5'
+                            c.create_text(x,tape_y+22,anchor='w',text=text,fill=color,font=('Consolas',9,'bold'),tags='portal_dynamic')
+                        x+=wid
+                c.create_rectangle(tape_left,tape_y,tape_left+112,hh,fill='#000000',outline='',tags='portal_dynamic')
+                c.create_text(tape_left+7,tape_y+6,anchor='nw',text='LOCAL MARKET',fill='#6f8c99',font=('Segoe UI',6,'bold'),tags='portal_dynamic')
+                c.create_text(tape_left+7,tape_y+18,anchor='nw',text='SNAPSHOT',fill='#6f8c99',font=('Segoe UI',6,'bold'),tags='portal_dynamic')
+            except Exception:pass
+        else:c.create_text(tape_left+12,tape_y+21,anchor='w',text='LOCAL MARKET SNAPSHOT UNAVAILABLE • CREATE OR REFRESH AN ACCOUNT TO CACHE CURRENT QUOTES',fill='#8ea0a9',font=('Consolas',8,'bold'),tags='portal_dynamic')
         anim['job']=w.after(80,draw_bg)
     canvas.bind('<Configure>',lambda e:anim.__setitem__('static_key',None))
     draw_bg()

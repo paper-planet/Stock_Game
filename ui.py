@@ -1063,7 +1063,7 @@ class App:
         ttk.Label(left,text='MARKET / WATCHLIST',font=('Arial',12,'bold')).pack(anchor='w',padx=7,pady=5);sf=ttk.Frame(left);sf.pack(fill='x',padx=7);self.search=tk.StringVar();e=ttk.Entry(sf,textvariable=self.search);e.pack(fill='x');e.bind('<KeyRelease>',lambda x:self.refresh_watch());ff=ttk.Frame(left);ff.pack(fill='x',padx=7,pady=4);self.kind=tk.StringVar(value='STOCK');ttk.Combobox(ff,textvariable=self.kind,values=['STOCK','INDEX','COMMODITY','FUTURES','CRYPTO','INTERNATIONAL','FOREX','ALL'],state='readonly',width=12).pack(side='left');self.sector=tk.StringVar(value='ALL');ttk.Combobox(ff,textvariable=self.sector,values=['ALL']+self.market.sectors,state='readonly',width=14).pack(side='right');self.watchlists=self._load_watchlists();self.watchlist_name=tk.StringVar(value='All Market');wl=ttk.Frame(left);wl.pack(fill='x',padx=7,pady=(0,4));self.watchlist_combo=ttk.Combobox(wl,textvariable=self.watchlist_name,values=['All Market']+sorted(self.watchlists),state='readonly',width=16);self.watchlist_combo.pack(side='left',fill='x',expand=True);self.watchlist_combo.bind('<<ComboboxSelected>>',lambda e:self.refresh_watch());ttk.Button(wl,text='NEW',width=5,command=self.create_watchlist).pack(side='left',padx=(3,0));ttk.Button(wl,text='DEL',width=4,command=self.delete_watchlist).pack(side='left',padx=(3,0));self.watch=ttk.Treeview(left,columns=('symbol','name','price','chg','sector'),show='headings',selectmode='browse');
         for c,l in zip(self.watch['columns'],['Symbol','Name','Price','Chg %','Sector']):self.watch.heading(c,text=l,command=lambda col=c:self.sort_watch(col));self.watch.column(c,width=78 if c!='name' else 130,anchor='center')
         self.watch.pack(fill='both',expand=True,padx=7,pady=5);self.kind.trace_add('write',lambda *x:self.refresh_watch());self.sector.trace_add('write',lambda *x:self.refresh_watch());self.watch.bind('<<TreeviewSelect>>',self.market_selected);self.watch.bind('<Double-1>',self.open_selected_advanced);self.watch.bind('<Button-3>',self.watch_context)
-        ttk.Button(left,text='BUY / SELL / SHORT',command=self.order_window).pack(fill='x',padx=7,pady=3);ttk.Button(left,text='OPTIONS / SPREADS',command=self.options).pack(fill='x',padx=7,pady=3);ttk.Label(left,text='Click = load chart • Double-click = advanced chart • Right-click = trade/menu',foreground=MUTED).pack(fill='x',padx=7,pady=3);density=ttk.Frame(left);density.pack(fill='x',padx=7,pady=(0,4));ttk.Label(density,text='Watchlist density').pack(side='left');self.watch_density=tk.IntVar(value=24);tk.Scale(density,from_=18,to=34,variable=self.watch_density,orient='horizontal',showvalue=0,length=120,bg=PANEL,fg=TEXT,highlightthickness=0,command=lambda x:self.apply_watch_density()).pack(side='left',fill='x',expand=True);self.watch_density_label=ttk.Label(density,text='24px',width=5);self.watch_density_label.pack(side='right')
+        ttk.Button(left,text='BUY / SELL / SHORT',command=self.order_window).pack(fill='x',padx=7,pady=3);ttk.Button(left,text='OPTIONS / SPREADS',command=self.options).pack(fill='x',padx=7,pady=3);ttk.Label(left,text='Click = load chart • Double-click = advanced chart • Right-click = trade/menu',foreground=MUTED).pack(fill='x',padx=7,pady=3);self.watch_density=tk.IntVar(value=18);ttk.Style().configure('Treeview',rowheight=18)
         top=ttk.Frame(center);top.pack(fill='x',padx=5,pady=4);self.active_label=ttk.Label(top,text='Chart 1');self.active_label.pack(side='left');self.tf=ttk.Combobox(top,values=['1D','1W','1M','3M','6M','1Y','5Y','MAX'],state='readonly',width=7);self.tf.set('1D');self.tf.pack(side='left',padx=5);self.tf.bind('<<ComboboxSelected>>',lambda e:self.charts[self.active_chart].set_tf(self.tf.get()));self.ctype=ttk.Combobox(top,values=['Candles','Line','Area'],state='readonly',width=9);self.ctype.set('Candles');self.ctype.pack(side='left');self.ctype.bind('<<ComboboxSelected>>',lambda e:self.set_type());ttk.Button(top,text='BUY',command=lambda:self.chart_trade('BUY')).pack(side='left',padx=3);ttk.Button(top,text='SELL',command=lambda:self.chart_trade('SELL')).pack(side='left',padx=3);ttk.Button(top,text='LIMIT',command=lambda:self.chart_trade('BUY','LIMIT')).pack(side='left',padx=3);ttk.Button(top,text='STOP',command=lambda:self.chart_trade('SELL','STOP')).pack(side='left',padx=3);ttk.Label(top,text='TIME WARP').pack(side='left',padx=(10,2));self.time_warp=tk.DoubleVar(value=10.0);self.time_warp_scale=tk.Scale(top,from_=0.25,to=40,resolution=.25,orient='horizontal',showvalue=0,length=150,variable=self.time_warp,bg=PANEL,fg=TEXT,highlightthickness=0,command=self.set_time_warp);self.time_warp_scale.pack(side='left');self.time_warp_label=ttk.Label(top,text='10.00x',width=8);self.time_warp_label.pack(side='left',padx=(2,5));self.clock_label=ttk.Label(top,text='',font=('Arial',10,'bold'));self.clock_label.pack(side='right');self.set_time_warp(self.time_warp.get())
         self.grid=ttk.PanedWindow(center,orient='horizontal');self.grid.pack(fill='both',expand=True,padx=5,pady=5);self.charts=[];self.extra_charts=[]
         self._chart_refresh_job=None
@@ -1194,7 +1194,7 @@ class App:
                 vp.add(c,weight=1);self.charts.append(c);c.request_draw(force=True)
         self.active_chart=min(getattr(self,'active_chart',0),len(self.charts)-1);self.sync_chart_controls();self.status_flash(f'{count} chart workspace — each chart has an independent tickrate')
     def apply_watch_density(self):
-        px=int(self.watch_density.get());self.watch_density_label.config(text=f'{px}px');ttk.Style().configure('Treeview',rowheight=px)
+        self.watch_density.set(18);ttk.Style().configure('Treeview',rowheight=18)
     def toggle_pause(self):
         self.market.paused=not getattr(self.market,'paused',False);self.status_flash('Simulation PAUSED' if self.market.paused else 'Simulation RUNNING')
     def account_panel(self):
@@ -7720,17 +7720,26 @@ _SGP_CHIP_COLORS.update({25000:'#d9792d',100000:'#b33e89',250000:'#257d87',50000
 _Roulette_sgp25fp_base=RouletteWindow
 class RouletteWindow(_Roulette_sgp25fp_base):
     def draw(self,wheel_number=None,ball_phase=0,spinning=False):
-        super().draw(wheel_number,ball_phase,spinning);c=self.cv;w=max(1000,c.winfo_width());h=max(650,c.winfo_height());left=12;right=min(w*.405,560);top=max(430,h-174);bottom=h-12
-        # Cover every inherited selector rack (including legacy duplicates), then draw one rack.
-        c.create_rectangle(left,top,right,bottom,fill='#081018',outline='#3a5364',width=2);c.create_text((left+right)/2,top+14,text='AVAILABLE CHIPS • SELECT BET SIZE',fill='#dce7ec',font=('Segoe UI',8,'bold'));self._chip_hits=[];vals=list(dict.fromkeys([25,100,500,1000,5000,10000,25000,100000,250000,500000,1000000]));cols=6;usable=right-left-20;spacing=usable/max(1,cols);r=19
+        # Older roulette layers each painted their own denomination selector.  Suppress those
+        # painters at the source, then restore the single modern poker-chip set below.  Merely
+        # covering the old rack left its high denominations visible over the betting table.
+        vals=[25,100,500,1000,5000,10000,25000,100000,250000,500000,1000000]
+        self.chips=[]
+        try:super().draw(wheel_number,ball_phase,spinning)
+        finally:self.chips=list(vals)
+        c=self.cv;w=max(1000,c.winfo_width());h=max(650,c.winfo_height());cx=w*.18;cy=h*.27;wheel_r=min(h*.23,w*.135);bx,by,cw,ch,zero_w=self._table_geom(w,h)
+        left=12;right=max(left+360,min(bx-zero_w-12,560));top=cy+wheel_r+12;bottom=min(h-132,top+158)
+        # One compact two-row rack sits between the wheel and spin history.  This cleanup panel
+        # also removes the inherited rack captions/background without covering recorded spins.
+        c.create_rectangle(left,top,right,bottom,fill='#081018',outline='#3a5364',width=2);c.create_text((left+right)/2,top+14,text='AVAILABLE CHIPS • SELECT BET SIZE',fill='#dce7ec',font=('Segoe UI',8,'bold'));self._chip_hits=[];cols=6;usable=right-left-20;spacing=usable/max(1,cols);r=18
         for i,val in enumerate(vals):
-            row,col=divmod(i,cols);x=left+10+spacing*(col+.5);y=top+52+row*51;fill=_SGP_CHIP_COLORS[val];sel=int(self.chip.get())==val
+            row,col=divmod(i,cols);x=left+10+spacing*(col+.5);y=top+52+row*49;fill=_SGP_CHIP_COLORS[val];sel=int(self.chip.get())==val
             c.create_oval(x-r,y-r,x+r,y+r,fill=fill,outline='#ffffff' if sel else '#e5d9bc',width=3 if sel else 2)
             c.create_oval(x-r+5,y-r+5,x+r-5,y+r-5,outline='#f4eee0',width=1)
             for ang in range(0,360,60):
                 xx=x+math.cos(math.radians(ang))*(r-3);yy=y+math.sin(math.radians(ang))*(r-3);c.create_oval(xx-2,yy-2,xx+2,yy+2,fill='#f4eee0',outline='')
             label=f'${val//1000}K' if 1000<=val<1000000 else '$1M' if val>=1000000 else f'${val}';c.create_text(x,y,text=label,fill='white',font=('Segoe UI',6,'bold'));self._chip_hits.append((x,y,val))
-        c.create_text((left+right)/2,bottom-12,text=f'Cash ${self.portfolio.cash:,.0f} • On table ${sum(self.bets.values()):,.0f}',fill='#9fb7c4',font=('Segoe UI',7,'bold'))
+        c.create_text((left+right)/2,bottom-11,text=f'Cash ${self.portfolio.cash:,.0f} • On table ${sum(self.bets.values()):,.0f}',fill='#9fb7c4',font=('Segoe UI',7,'bold'))
 GlobeWindow=GlobalTradeWorkstation
 
 # ---------- Market Map: sortable research tables + region/index drill-down + weighted heat map ----------
@@ -8175,6 +8184,10 @@ def _sgp25smooth_chart_refresh_pulse(self):
         for _c in list(getattr(self,'charts',()))+list(getattr(self,'extra_charts',())):
             _a=getattr(_c,'asset',None)
             if _a:hot.add(_a.symbol)
+        # A bounded set of the largest currently visible heat-map tiles receives the same safe
+        # plain-Python interest path.  This makes the map visibly live without promoting hundreds
+        # of hidden/tiny names into the high-frequency engine loop.
+        hot.update(getattr(self.market,'_ui_market_map_hot25',()) or ())
         try:
             _sel=self.selected()
             if _sel:hot.add(_sel.symbol)
@@ -8565,3 +8578,543 @@ def _sgp25smooth_chart_data_final(self):
     render_cap=max(420,min(1050,int(max(500,self.winfo_width())*1.12)))
     out=_sgp25fp_compact_stable(window,render_cap);self._last_render_data25=out;return out
 Chart.data=_sgp25smooth_chart_data_final
+
+# ============================================================================
+# Stock Game Pro 2.5 Production — cash-accurate slots hotfix
+# ============================================================================
+# Slots wager immediately available account CASH, not marked portfolio equity.  The older
+# casino artwork reused the portfolio net-worth renderer, which could both show securities as
+# spendable casino balance and remain visually stale while the window sat idle.
+_Slot_draw_sgp25_cash_base = SlotMachineWindow.draw
+
+def _sgp25_cash_slot_draw(self):
+    try:
+        # Draw the final slot composition directly.  The previous hotfix painted CASH BALANCE
+        # over an inherited NET WORTH label; at the default canvas height those labels shared the
+        # exact same baseline, even though the cover rectangle happened to hide it fullscreen.
+        c=self.cv;c.delete('all');w=max(700,c.winfo_width());h=max(450,c.winfo_height())
+        c.create_rectangle(w*.18,h*.11,w*.82,h*.82,fill='#291b35',outline='#e0b85f',width=7)
+        c.create_text(w/2,h*.18,text='STOCK GAME PRO',fill='#f5d88b',font=('Georgia',18 if h<520 else 22,'bold'))
+        reel_top=h*.29;reel_bottom=h*.56
+        for i,s in enumerate(self.reels):
+            x=w*.31+i*w*.19;c.create_rectangle(x-65,reel_top,x+65,reel_bottom,fill='#f5efe0',outline='#d9b85e',width=4);c.create_text(x,(reel_top+reel_bottom)/2,text=s,fill='#251c2d',font=('Georgia',30 if h<520 else 34,'bold'))
+        # This baseline leaves a real gap below the reels at the 900x650 default while retaining
+        # the original roomy spacing as the window grows.
+        bankroll_y=h*.71;_sgp_draw_bankroll(c,w*.50,bankroll_y,float(self.portfolio.cash),'CASH BALANCE',0)
+        c.create_text(w/2,h*.89,text='3 MATCH = JACKPOT • PAIR = PUSH • virtual simulator credits',fill='#9e8faf',font=('Arial',9))
+    except Exception:
+        pass
+SlotMachineWindow.draw=_sgp25_cash_slot_draw
+
+_Slot_init_sgp25_cash_base = SlotMachineWindow.__init__
+def _sgp25_cash_slot_init(self,parent,portfolio,market):
+    _Slot_init_sgp25_cash_base(self,parent,portfolio,market)
+    self._slot_cash_seen25=None
+    try:self.draw()
+    except Exception:pass
+    def cash_pulse():
+        try:
+            if not self.winfo_exists():return
+            cash=round(float(self.portfolio.cash),2)
+            # During a spin the reel animator already repaints frequently.  While idle, repaint only
+            # when cash actually changes elsewhere in the account so the window stays lightweight.
+            if not getattr(self,'spinning',False) and cash!=getattr(self,'_slot_cash_seen25',None):
+                self._slot_cash_seen25=cash;self.draw()
+            self.after(250,cash_pulse)
+        except tk.TclError:
+            pass
+    self.after(250,cash_pulse)
+SlotMachineWindow.__init__=_sgp25_cash_slot_init
+
+# ============================================================================
+# Stock Game Pro 2.5 Production — heat-map / chart-camera / ocean-lane refinement
+# ============================================================================
+# Final authority for this production pass.  These overrides intentionally remove controls that
+# were fighting automatic layout/camera behavior and keep expensive rendering proportional to the
+# pixels that are actually visible.
+
+# --- Watchlist density is fixed at the compact production default. ---
+_App_init_sgp25_refine_base=App.__init__
+def _sgp25_refine_app_init(self,root,market,portfolio):
+    _App_init_sgp25_refine_base(self,root,market,portfolio)
+    try:
+        if hasattr(self,'watch_density'):self.watch_density.set(18)
+        ttk.Style().configure('Treeview',rowheight=18)
+    except Exception:pass
+    # Timeframe-aware candle selector: a 1D context with a 1D candle contains only one bar and is
+    # not useful as an interactive chart.  Keep daily candles available on wider contexts/MAX.
+    try:self._refresh_candle_choices25()
+    except Exception:pass
+App.__init__=_sgp25_refine_app_init
+
+def _sgp25_refine_apply_density(self):
+    try:self.watch_density.set(18)
+    except Exception:pass
+    ttk.Style().configure('Treeview',rowheight=18)
+App.apply_watch_density=_sgp25_refine_apply_density
+
+_SGP25_CANDLE_CHOICES_ALL=tuple(_SGP_CANDLE_PERIODS)
+def _sgp25_candle_choices_for_tf(tf):
+    return tuple(x for x in _SGP25_CANDLE_CHOICES_ALL if not (str(tf)=='1D' and x=='1 Day'))
+
+def _sgp25_refresh_candle_choices(self):
+    try:
+        c=self.charts[self.active_chart];vals=_sgp25_candle_choices_for_tf(c.timeframe)
+        self.candle_period_cb.configure(values=vals)
+        if c.candle_period not in vals:
+            c.set_candle_period('Auto');self.candle_period_var.set('Auto')
+    except Exception:pass
+App._refresh_candle_choices25=_sgp25_refresh_candle_choices
+
+_Chart_set_candle_refine_base=Chart.set_candle_period
+def _sgp25_refine_set_candle(self,value):
+    if str(getattr(self,'timeframe',''))=='1D' and str(value)=='1 Day':value='Auto'
+    out=_Chart_set_candle_refine_base(self,value)
+    self._auto_y_state25=None
+    return out
+Chart.set_candle_period=_sgp25_refine_set_candle
+
+_Chart_set_tf_refine_base=Chart.set_tf
+def _sgp25_refine_set_tf(self,tf):
+    out=_Chart_set_tf_refine_base(self,tf)
+    if str(getattr(self,'timeframe',''))=='1D' and str(getattr(self,'candle_period',''))=='1 Day':
+        self.candle_period='Auto';self._key=None
+    try:
+        if self is self.app.charts[self.app.active_chart]:
+            self.app.tf.set(self.timeframe);self.app.candle_period_var.set(self.candle_period);self.app._refresh_candle_choices25()
+    except Exception:pass
+    self._auto_y_state25=None;self.request_draw(force=True);return out
+Chart.set_tf=_sgp25_refine_set_tf
+
+_App_sync_refine_base=App.sync_chart_controls
+def _sgp25_refine_sync_controls(self):
+    out=_App_sync_refine_base(self)
+    try:self._refresh_candle_choices25()
+    except Exception:pass
+    return out
+App.sync_chart_controls=_sgp25_refine_sync_controls
+
+# Rebind the main timeframe selector after all legacy initializers have run so it always goes
+# through Chart.set_tf (and therefore the timeframe-aware candle choices above).
+_App_init_tf_refine_base=App.__init__
+def _sgp25_refine_tf_init(self,root,market,portfolio):
+    _App_init_tf_refine_base(self,root,market,portfolio)
+    try:
+        self.tf.unbind('<<ComboboxSelected>>')
+        self.tf.bind('<<ComboboxSelected>>',lambda e:self.charts[self.active_chart].set_tf(self.tf.get()))
+        self._refresh_candle_choices25()
+    except Exception:pass
+App.__init__=_sgp25_refine_tf_init
+
+# Advanced charts share the same guard.  The combobox itself is updated when one can be found,
+# while Chart.set_candle_period remains the authoritative safety net.
+_Adv_init_refine_base=AdvancedChartWindow.__init__
+def _sgp25_refine_adv_init(self,parent,app,asset):
+    _Adv_init_refine_base(self,parent,app,asset)
+    try:
+        for w in self.winfo_children():
+            stack=[w]
+            while stack:
+                q=stack.pop();stack.extend(q.winfo_children())
+                if isinstance(q,ttk.Combobox):
+                    try:
+                        vals=tuple(q.cget('values'))
+                        if '1 Tick' in vals and '1 Day' in vals:q.configure(values=_sgp25_candle_choices_for_tf(self.chart.timeframe))
+                    except Exception:pass
+    except Exception:pass
+AdvancedChartWindow.__init__=_sgp25_refine_adv_init
+
+# --- AUTO Y: use the whole vertical plot instead of keeping an oversized stale camera. ---
+def _sgp25_refine_y_bounds(self,d,live,plot_height=300):
+    if not d:return (0.0,1.0)
+    if getattr(self,'fit_inception',False):
+        sig=('max-refine',getattr(self.asset,'symbol',None),len(d),getattr(self.asset,'last_real_timestamp',None))
+        cached=getattr(self,'_max_bounds25',None)
+        if cached and cached[0]==sig:return cached[1]
+        lo=min(float(c.low) for c in d);hi=max(float(c.high) for c in d);span=max(hi-lo,abs((hi+lo)*.5)*.002,1e-9);b=(lo-span*.055,hi+span*.055);self._max_bounds25=(sig,b);return b
+    lows=[float(c.low) for c in d];highs=[float(c.high) for c in d];p=float(getattr(self.asset,'price',d[-1].close)) if self.asset else float(d[-1].close)
+    dlo=min(lows+[p]);dhi=max(highs+[p]);mid=(dlo+dhi)*.5;raw=max(dhi-dlo,abs(mid)*.00035,1e-9)
+    # 6% total breathing room makes visible candles occupy ~89% of the plot height.
+    pad=raw*.06;target_lo=dlo-pad;target_hi=dhi+pad
+    if not live or not bool(getattr(self,'auto_y',True)):
+        if bool(getattr(self,'auto_y',True)):return target_lo,target_hi
+        scale=max(.05,min(50.0,float(getattr(self,'vertical_scale',1.0))));center=(target_lo+target_hi)*.5+float(getattr(self,'_manual_y_shift',0.0));half=(target_hi-target_lo)*.5/scale;return center-half,center+half
+    sig=(getattr(self.asset,'symbol',None),self.timeframe,getattr(self,'candle_period','Auto'),round(float(getattr(self,'zoom',1.0)),4),int(getattr(self,'view_offset',0)),int(plot_height))
+    now=time.monotonic();st=getattr(self,'_auto_y_state25',None)
+    if not st or st.get('sig')!=sig:
+        st={'sig':sig,'lo':target_lo,'hi':target_hi,'t':now};self._auto_y_state25=st;return target_lo,target_hi
+    lo=float(st['lo']);hi=float(st['hi']);span=max(hi-lo,1e-9);target_span=max(target_hi-target_lo,1e-9);dt=max(.001,min(.20,now-float(st.get('t',now))));st['t']=now
+    # Expansion or escape must never leave the latest quote/candle outside the chart.
+    if target_span>=span*.985 or target_lo<lo or target_hi>hi:
+        new_lo=min(lo,target_lo);new_hi=max(hi,target_hi)
+        # If the target fits inside the existing span, translate rather than resize.
+        if target_span<span:
+            center=(target_lo+target_hi)*.5;new_lo=center-span*.5;new_hi=center+span*.5
+            if new_lo>target_lo:new_lo=target_lo;new_hi=new_lo+span
+            if new_hi<target_hi:new_hi=target_hi;new_lo=new_hi-span
+        lo,hi=new_lo,new_hi
+    else:
+        # Shrink much faster when the candles are visibly flattened, then ease into the final fit.
+        fill=target_span/span
+        if fill<.48:
+            # Clearly flattened/stale camera: one decisive refit is visually calmer than spending
+            # several frames squeezing the chart inward while every candle appears to grow.
+            lo,hi=target_lo,target_hi
+        else:
+            tau=.28 if fill<.62 else .55 if fill<.76 else 1.25 if fill<.90 else 2.6
+            a=1.0-math.exp(-dt/tau);lo+=(target_lo-lo)*a;hi+=(target_hi-hi)*a
+    # Center follows more quickly than scale so pumps/dumps translate smoothly without rubber-band.
+    span=max(hi-lo,1e-9);center=(lo+hi)*.5;tcenter=(target_lo+target_hi)*.5;ca=1.0-math.exp(-dt/.22);center+=(tcenter-center)*ca;lo=center-span*.5;hi=center+span*.5
+    if dlo<lo:
+        sh=lo-dlo+span*.012;lo-=sh;hi-=sh
+    if dhi>hi:
+        sh=dhi-hi+span*.012;lo+=sh;hi+=sh
+    span=max(hi-lo,1e-9);quant=max(span/max(12000.0,float(plot_height)*36.0),abs(mid)*1e-11,1e-11);lo=round(lo/quant)*quant;hi=round(hi/quant)*quant
+    if hi<=lo:hi=lo+quant
+    st['lo']=lo;st['hi']=hi;self._auto_y_state25=st;return lo,hi
+_sgp22_bounds=_sgp25_refine_y_bounds
+
+# --- Ocean-lane clipping: trade lanes and ships never render on top of land. ---
+def _sgp25_point_in_poly(x,y,poly):
+    inside=False;n=len(poly)
+    if n<3:return False
+    # Shift longitudes around the query to make dateline polygons well behaved.
+    pts=[]
+    for px,py in poly:
+        while px-x>180:px-=360
+        while px-x<-180:px+=360
+        pts.append((px,py))
+    j=n-1
+    for i in range(n):
+        xi,yi=pts[i];xj,yj=pts[j]
+        if ((yi>y)!=(yj>y)):
+            den=(yj-yi) if abs(yj-yi)>1e-12 else 1e-12
+            xx=(xj-xi)*(y-yi)/den+xi
+            if x<xx:inside=not inside
+        j=i
+    return inside
+
+_SGP25_LAND_GEOM=[poly for typ,poly in _SGP24_LAND if typ in (1,5) and len(poly)>=3]
+_SGP25_LAND_BOX=[]
+for _poly in _SGP25_LAND_GEOM:
+    try:
+        lons=[p[0] for p in _poly];lats=[p[1] for p in _poly]
+        # Wide dateline polygons are left unbounded in longitude and checked directly.
+        _SGP25_LAND_BOX.append((min(lons),max(lons),min(lats),max(lats),_poly,max(lons)-min(lons)>180))
+    except Exception:pass
+
+def _sgp25_is_land(lat,lon):
+    for x0,x1,y0,y1,poly,wide in _SGP25_LAND_BOX:
+        if not (y0<=lat<=y1):continue
+        if not wide and not (x0<=lon<=x1):continue
+        if _sgp25_point_in_poly(lon,lat,poly):return True
+    return False
+
+_SGP25_ROUTE_WATER_CACHE={}
+def _sgp25_water_runs(points):
+    key=tuple((round(float(a),4),round(float(b),4)) for a,b in points)
+    got=_SGP25_ROUTE_WATER_CACHE.get(key)
+    if got is not None:return got
+    runs=[];run=[]
+    for a,b in zip(points,points[1:]):
+        la1,lo1=float(a[0]),float(a[1]);la2,lo2=float(b[0]),float(b[1]);dl=lo2-lo1
+        if dl>180:lo2-=360
+        elif dl<-180:lo2+=360
+        dist=max(abs(la2-la1),abs(lo2-lo1)*max(.25,math.cos(math.radians((la1+la2)*.5))));steps=max(3,min(180,int(math.ceil(dist/.45))))
+        for k in range(steps+(0 if run else 1)):
+            t=(k+1)/steps if run else k/steps;la=la1+(la2-la1)*t;lo=((lo1+(lo2-lo1)*t+180)%360)-180;wet=not _sgp25_is_land(la,lo)
+            if wet:
+                if not run or abs(run[-1][0]-la)>1e-6 or abs(run[-1][1]-lo)>1e-6:run.append((la,lo))
+            elif run:
+                if len(run)>=2:runs.append(run)
+                run=[]
+    if run and len(run)>=2:runs.append(run)
+    _SGP25_ROUTE_WATER_CACHE[key]=runs
+    return runs
+
+def _sgp25_water_route_pos(view,points,progress):
+    runs=_sgp25_water_runs(points)
+    segs=[];total=0.0
+    for run in runs:
+        for a,b in zip(run,run[1:]):
+            dl=b[1]-a[1]
+            if dl>180:dl-=360
+            elif dl<-180:dl+=360
+            dist=max(.001,math.hypot(b[0]-a[0],dl*max(.25,math.cos(math.radians((a[0]+b[0])*.5)))));segs.append((dist,a,b,dl));total+=dist
+    if not segs:
+        return view.proj(*points[0])+(0.0,)
+    target=(float(progress)%1.0)*total;acc=0.0
+    for dist,a,b,dl in segs:
+        if acc+dist>=target:
+            t=(target-acc)/dist;la=a[0]+(b[0]-a[0])*t;lo=((a[1]+dl*t+180)%360)-180;x,y=view.proj(la,lo);t2=min(1.0,t+.03);la2=a[0]+(b[0]-a[0])*t2;lo2=((a[1]+dl*t2+180)%360)-180;xn,yn=view.proj(la2,lo2);return x,y,math.atan2(yn-y,xn-x)
+        acc+=dist
+    a,b,_=segs[-1][1:];x,y=view.proj(*b);return x,y,0.0
+
+_Global_draw_static_refine_base=GlobalTradeWorkstation.draw_static
+def _sgp25_refine_global_static(self):
+    # Suppress inherited freight chords, draw all other static layers, then add clipped water runs.
+    try:freight=bool(self.layer_freight.get())
+    except Exception:freight=False
+    if freight:
+        try:self.layer_freight.set(False);self._static_key=None
+        except Exception:pass
+    _Global_draw_static_refine_base(self)
+    if freight:
+        try:
+            self.layer_freight.set(True);c=self.canvas
+            for sh in getattr(self.market,'shipments',[]):
+                pts=list((sh.get('route') or {}).get('points',[]))
+                for run in _sgp25_water_runs(pts):_sgp24_map_path(c,self,run,'#17627b',1,(4,4))
+        except Exception:pass
+GlobalTradeWorkstation.draw_static=_sgp25_refine_global_static
+
+def _sgp25_refine_route_pos(self,pts,pr):return _sgp25_water_route_pos(self,pts,pr)
+GlobalTradeWorkstation._route_pos=_sgp25_refine_route_pos
+
+# --- Real market-heat-map style treemap. ---
+def _sgp25_heat_color(pct):
+    x=max(-6.0,min(6.0,float(pct)));mag=abs(x)/6.0
+    if abs(x)<.05:return '#263239'
+    if x>0:
+        a=(22,70,48);b=(31,174,103)
+    else:
+        a=(74,38,47);b=(205,54,73)
+    rgb=tuple(int(a[i]+(b[i]-a[i])*(.22+.78*mag)) for i in range(3));return '#%02x%02x%02x'%rgb
+
+def _sgp25_norm_sizes(vals,area):
+    s=sum(max(0.0,float(v)) for v in vals) or 1.0;return [max(0.0,float(v))*area/s for v in vals]
+
+def _sgp25_worst(row,short):
+    if not row:return float('inf')
+    sm=sum(row);mx=max(row);mn=max(min(row),1e-12);sq=max(short*short,1e-12)
+    return max(sq*mx/(sm*sm),(sm*sm)/(sq*mn))
+
+def _sgp25_layout_row(row,items,x,y,w,h,horizontal,out):
+    sm=sum(row)
+    if horizontal:
+        rh=sm/max(w,1e-9);cx=x
+        for ar,it in zip(row,items):rw=ar/max(rh,1e-9);out.append((cx,y,rw,rh,it));cx+=rw
+        return x,y+rh,w,max(0,h-rh)
+    rw=sm/max(h,1e-9);cy=y
+    for ar,it in zip(row,items):rh=ar/max(rw,1e-9);out.append((x,cy,rw,rh,it));cy+=rh
+    return x+rw,y,max(0,w-rw),h
+
+def _sgp25_squarify(items,sizes,x,y,w,h):
+    paired=sorted(zip(sizes,items),key=lambda z:z[0],reverse=True);areas=[z[0] for z in paired];objs=[z[1] for z in paired];out=[];row=[];rit=[]
+    while areas:
+        short=max(1e-9,min(w,h));nxt=areas[0]
+        if not row or _sgp25_worst(row+[nxt],short)<=_sgp25_worst(row,short):row.append(areas.pop(0));rit.append(objs.pop(0))
+        else:
+            # Lay along the shorter edge.  The former orientation was inverted: wide remaining
+            # rectangles became shallow horizontal strips, producing the hard-to-read tiles.
+            x,y,w,h=_sgp25_layout_row(row,rit,x,y,w,h,w<h,out);row=[];rit=[]
+    if row:_sgp25_layout_row(row,rit,x,y,w,h,w<h,out)
+    return out
+
+_MarketMap_refine_base=MarketMapWindow
+class MarketMapWindow(_MarketMap_refine_base):
+    def __init__(self,parent,market):
+        super().__init__(parent,market)
+        try:
+            self.title('STOCK GAME PRO • MARKET HEAT MAP')
+            self.map_limit.set(250)
+            for container in self.winfo_children():
+                for ch in container.winfo_children():
+                    try:
+                        if isinstance(ch,ttk.Label) and str(ch.cget('text')).startswith('Rectangle area uses sqrt'):
+                            ch.config(text='Heat map • larger tile = larger company • green up / red down')
+                        if isinstance(ch,ttk.Combobox) and str(ch.cget('textvariable'))==str(self.map_limit):
+                            ch.config(values=[120,200,250,350,500,650])
+                    except Exception:pass
+            self.map_refresh_ms=tk.IntVar(value=250)
+            guide=ttk.Frame(self);guide.pack(fill='x',padx=8,pady=(0,4),before=self.pw)
+            ttk.Label(guide,text='TILE SIZE = MARKET CAP     ▲ GAIN     • FLAT     ▼ LOSS',foreground=MUTED).pack(side='left')
+            self.map_tick_cb25=ttk.Combobox(guide,textvariable=self.map_refresh_ms,values=[100,250,500,750,1000,2000],state='readonly',width=6)
+            self.map_tick_cb25.pack(side='right');ttk.Label(guide,text='Map refresh (ms)').pack(side='right',padx=(8,3));self.map_tick_cb25.bind('<<ComboboxSelected>>',lambda e:self.refresh(force=True))
+            # Slim research sidebars; dedicate the bulk of the window to the treemap.
+            self.after(40,self._refine_sashes25);self.after(180,self._refine_sashes25)
+        except Exception:pass
+        self._heat_hover25=None;self._table_refresh25=0.0
+        try:self.cv.bind('<Motion>',self._heat_motion25,add='+');self.cv.bind('<Leave>',lambda e:self.detail.config(text='Right-click a tile to trade • double-click for Advanced Chart'),add='+');self.bind('<Destroy>',self._clear_map_interest25,add='+')
+        except Exception:pass
+        self.refresh(force=True)
+    def _refine_sashes25(self):
+        try:
+            self.update_idletasks();W=max(900,self.pw.winfo_width());self.pw.sashpos(0,165);self.pw.sashpos(1,W-215)
+        except Exception:pass
+    def _size_value25(self,a):
+        cap=float(getattr(a,'market_cap',0) or 0)
+        if cap>0:return cap
+        return max(1.0,float(getattr(a,'price',1) or 1)*max(1.0,float(getattr(a,'volume',0) or 1)))
+    def _clear_map_interest25(self,event=None):
+        if event is not None and getattr(event,'widget',None) is not self:return
+        try:self.market._ui_market_map_hot25=frozenset()
+        except Exception:pass
+    def refresh(self,force=False):
+        if getattr(self,'_fp_boot',False):return
+        try:
+            if getattr(self,'_job',None):
+                try:self.after_cancel(self._job)
+                except Exception:pass
+            c=self.cv;w=max(520,c.winfo_width());h=max(420,c.winfo_height());plot_h=max(100,h-20);pad=2
+            limit_var=getattr(self,'map_limit',None);allarr=self.universe();requested=max(80,int(limit_var.get() if limit_var is not None else 250))
+            # Keep enough pixels per asset for a ticker.  Filters can still expose every small name,
+            # while the unfiltered view prioritizes the economically largest readable tiles.
+            readable_cap=max(80,int((w*plot_h)/1450.0));limit=min(requested,readable_cap)
+            arr=allarr if len(allarr)<=limit else sorted(allarr,key=self._size_value25,reverse=True)[:limit]
+            profile=str(getattr(self.market,'graphics_profile','Balanced'));hot_count={'Efficiency':12,'Balanced':24,'Smooth':36,'Maximum':48}.get(profile,24);self.market._ui_market_map_hot25=frozenset(a.symbol for a in arr[:hot_count])
+            self.page=0;tail=max(0,len(allarr)-len(arr));self.page_label.config(text=f'{len(allarr):,} matched • {len(arr):,} readable tiles'+(f' • {tail:,} available by filter/search' if tail else ''))
+            # Tables need not be deleted/reinserted at the visual tile cadence.  Updating them once
+            # per second keeps the 100/250 ms map options responsive without churning Treeviews.
+            now=time.monotonic()
+            if force or now-getattr(self,'_table_refresh25',0.0)>=1.0:
+                self._table_refresh25=now;groups={}
+                for a in self.market.stocks+self.market.international:groups.setdefault(str(getattr(a,'category','Other')),[]).append(a)
+                rows=[]
+                for sec,vals in groups.items():
+                    changes=[float(a.change_percent()) for a in vals];rows.append((sec,sum(changes)/max(1,len(changes)),sum(x>0 for x in changes),sum(x<0 for x in changes)))
+                col,rev=getattr(self,'_sec_sort',('sector',False));ix={'sector':0,'chg':1,'adv':2,'dec':3}.get(col,0);rows.sort(key=lambda r:r[ix],reverse=rev);self.sectors.delete(*self.sectors.get_children())
+                for row in rows:self.sectors.insert('','end',values=(row[0],f'{row[1]:+.2f}',row[2],row[3]))
+                idxa=self.market.get_asset(self.index.get());rows2=[]
+                if idxa is not None:
+                    comps=[self.market.get_asset(s) for s in getattr(idxa,'components',[])];comps=[a for a in comps if a];caps=sum(self._size_value25(a) for a in comps) or 1
+                    for a in comps:
+                        wt=self._size_value25(a)/caps;rows2.append((a.symbol,wt,a.change_percent(),wt*a.change_percent(),a))
+                col,rev=getattr(self,'_const_sort',('impact',True));ix={'symbol':0,'weight':1,'chg':2,'impact':3}.get(col,3);rows2.sort(key=lambda r:r[ix],reverse=rev);self.const.delete(*self.const.get_children())
+                for sym,wt,ch,imp,a in rows2[:400]:self.const.insert('','end',iid=sym,values=(sym,f'{wt*100:.2f}%',f'{ch:+.2f}%',f'{imp:+.3f}'))
+
+            c.delete('all');self.tiles=[]
+            by={}
+            for a in arr:by.setdefault(str(getattr(a,'category','Other')),[]).append(a)
+            sec_items=[];sec_vals=[]
+            for sec,vals in by.items():sec_items.append((sec,vals));sec_vals.append(sum(self._size_value25(a) for a in vals))
+            sec_areas=_sgp25_norm_sizes(sec_vals,w*plot_h)
+            sec_rects=_sgp25_squarify(sec_items,sec_areas,0,0,w,plot_h)
+            for sx,sy,sw,sh,item in sec_rects:
+                sec,vals=item
+                if sw<2 or sh<2:continue
+                inner_x=sx+1;inner_y=sy+14 if sh>28 else sy+1;inner_w=max(0,sw-2);inner_h=max(0,sh-(16 if sh>28 else 2))
+                if sh>28 and sw>38:c.create_text(sx+4,sy+3,anchor='nw',text=sec.upper(),fill='#b8c9d1',font=('Segoe UI',7,'bold'))
+                vals=sorted(vals,key=self._size_value25,reverse=True);areas=_sgp25_norm_sizes([self._size_value25(a) for a in vals],max(1,inner_w*inner_h));rects=_sgp25_squarify(vals,areas,inner_x,inner_y,inner_w,inner_h)
+                for x,y,rw,rh,a in rects:
+                    if rw<.6 or rh<.6:continue
+                    pc=float(a.change_percent());x2=x+rw-pad*.5;y2=y+rh-pad*.5;c.create_rectangle(x,y,x2,y2,fill=_sgp25_heat_color(pc),outline='#071019',width=1 if min(rw,rh)>4 else 0)
+                    # Corrected squarification plus a lower label threshold keeps tickers on nearly
+                    # every useful tile. Percent and direction are added where a second line fits.
+                    if rw>=22 and rh>=13:
+                        fs=6 if min(rw,rh)<24 else 7 if min(rw,rh)<40 else 8;two_lines=rw>=40 and rh>=29
+                        c.create_text(x+rw/2,y+rh/2-(5 if two_lines else 0),text=a.symbol,fill='#f7fafb',font=('Segoe UI',fs,'bold'))
+                        if two_lines:
+                            arrow='▲' if pc>.005 else '▼' if pc<-.005 else '•';c.create_text(x+rw/2,y+rh/2+8,text=f'{arrow} {abs(pc):.2f}%',fill='#edf2f4',font=('Segoe UI',6,'bold'))
+                    self.tiles.append((x,y,x2,y2,a))
+            rate_var=getattr(self,'map_refresh_ms',None);rate=max(100,min(2000,int(rate_var.get() if rate_var is not None else 250)));c.create_text(7,h-6,anchor='sw',text=f'AREA = MARKET CAP     COLOR = DAY CHANGE     REFRESH = {rate} ms',fill='#879aa5',font=('Segoe UI',7,'bold'))
+        except Exception as e:
+            try:self.detail.config(text=f'Heat map refresh: {e}')
+            except Exception:pass
+        try:
+            rate_var=getattr(self,'map_refresh_ms',None);rate=max(100,min(2000,int(rate_var.get() if rate_var is not None else 250)));self._job=self.after(rate,self.refresh)
+        except tk.TclError:self._job=None
+    def _heat_motion25(self,e):
+        a=self._asset_at(e)
+        if a is None:return
+        try:self.detail.config(text=f'{a.symbol} • {a.name} • ${a.price:,.4f} • {a.change_percent():+.2f}% • {getattr(a,"category","Other")} • Market cap ${self._size_value25(a):,.0f}')
+        except Exception:pass
+
+# Existing singleton launcher resolves MarketMapWindow at call time, so this final class is used.
+
+# --- Final chart data refinement: full 24h completed-session context for US when overnight shading
+# is enabled, without ever creating future bars.  Genuine simulator candles always win. ---
+_sgp25_refine_data_base=Chart.data
+def _sgp25_refine_chart_data(self):
+    out=list(_sgp25_refine_data_base(self))
+    # Ensure default Auto/intraday views never collapse to a tiny handful solely because a new live
+    # session has only just started.  Older completed bars remain visible behind live native bars.
+    if self.asset is None:return out
+    p,mins=_sgp25prod_period_spec(self)
+    if self.timeframe=='1D' and 0<mins<1440 and len(out)<48:
+        try:
+            now=self.app.market.clock.current;daily=sorted([d for d in self.asset.chart_candles('1d') if d.timestamp.date()<now.date()],key=lambda c:c.timestamp)
+            if daily:
+                hist=_sgp25fp_extended_backfill(self,daily[-1:],mins,max_points=max(96,min(1440,int(1440/max(.5,mins)))))
+                first=out[0].timestamp if out else now;hist=[c for c in hist if c.timestamp<first and c.timestamp<=now];merged={c.timestamp:c for c in hist+out};out=[merged[k] for k in sorted(merged)]
+        except Exception:pass
+    return out
+Chart.data=_sgp25_refine_chart_data
+
+# ============================================================================
+# Stock Game Pro 2.5 Production — requested workstation defaults / compact chrome
+# ============================================================================
+def _sgp25_apply_startup_chart(app,chart,symbol,timeframe,candle_period,kind,zoom,refresh_ms,fit_max=False):
+    asset=app.market.get_asset(symbol) or app.market.get_asset('SPY')
+    chart.asset=asset;chart.timeframe=timeframe;chart.candle_period=candle_period;chart.kind=kind;chart.zoom=max(.25,min(20.0,float(zoom)));chart.view_offset=0;chart.fit_inception=bool(fit_max);chart.follow_latest=not fit_max;chart.pan_mode=False;chart.auto_y=True;chart.show_overnight=True;chart.vertical_scale=1.35 if candle_period=='1 Tick' else 1.0
+    chart._manual_y_shift=0.0;chart._follow_center=None;chart._follow_half=None;chart._key=None;chart._display_data_cache25=None;chart._auto_y_state25=None;chart._stable_bounds25=None;chart._manual_fit_bounds26=None;chart._max_bounds25=None;chart._immutable_backfill_cache25={};chart._volume_cache25={};chart.set_refresh_rate(refresh_ms)
+    if fit_max:
+        # Give FIT MAX a useful restoration target even though this chart intentionally boots in
+        # MAX mode instead of entering it through the button.
+        chart._pre_fit23={'timeframe':'1Y','candle_period':'1 Day','zoom':1.0,'view_offset':0,'follow_latest':True,'pan_mode':False,'_manual_y_shift':0.0,'vertical_scale':1.0}
+        try:app.market.load_ipo_history(asset)
+        except Exception:pass
+    else:chart._pre_fit23=None
+    chart.request_draw(force=True)
+
+def _sgp25_news_header(app):
+    try:
+        frame=app.news.master
+        for child in frame.winfo_children():
+            if not isinstance(child,ttk.Frame):continue
+            for widget in child.winfo_children():
+                try:
+                    if isinstance(widget,ttk.Button) and str(widget.cget('text')).strip().upper()=='POP OUT / RESIZE':return child,widget
+                except Exception:pass
+    except Exception:pass
+    return None,None
+
+_App_init_sgp25_requested_base=App.__init__
+def _sgp25_requested_app_init(self,root,market,portfolio):
+    _App_init_sgp25_requested_base(self,root,market,portfolio)
+
+    # Boot into the requested three-chart workstation.  Gold/MAX is intentionally slower because
+    # its all-history line is static context; both live trading charts receive true 50 ms targets.
+    try:
+        self.set_chart_count(initial=3)
+        specs=(
+            ('SPY','1D','1 Tick','Candles',20.0,50,False),
+            ('GC=F','MAX','1 Day','Line',1.0,250,True),
+            ('BTC-USD','1D','Auto','Candles',1.0,50,False),
+        )
+        for chart,spec in zip(self.charts,specs):_sgp25_apply_startup_chart(self,chart,*spec)
+        self.active_chart=0;self._workspace_count=3;self.sync_chart_controls()
+        self.root.after_idle(lambda:[c.request_draw(force=True) for c in self.charts if c.winfo_exists()])
+    except Exception as e:
+        try:self.market.errors.append(f'startup chart workspace: {type(e).__name__}: {e}')
+        except Exception:pass
+
+    # Compact button chrome preserves the full AUTO Y ON/OFF and FIT MAX labels without making
+    # the already-busy chart toolbar wider.
+    try:
+        ttk.Style(self.root).configure('Compact.TButton',padding=(3,2))
+        self.v24_fit.config(text='AUTO Y ON' if bool(getattr(self.charts[self.active_chart],'auto_y',True)) else 'AUTO Y OFF',width=10,style='Compact.TButton')
+        self.v24_fit.pack_configure(padx=(1,2))
+        top=self.tf.master
+        for widget in top.winfo_children():
+            try:
+                if isinstance(widget,ttk.Button) and str(widget.cget('text')).strip().upper()=='FIT MAX':
+                    self.fit_max_button25=widget;widget.config(width=8,style='Compact.TButton');widget.pack_configure(padx=(1,2))
+            except Exception:pass
+        self.tf.config(width=5);self.tick22.config(width=7);self.candle_period_cb.config(width=8);self.ctype.config(width=8)
+    except Exception:pass
+
+    # Remove the separate WORLD CLOCK strip and keep its two actual actions beside the news
+    # POP OUT / RESIZE control.  The live clock itself remains in the chart toolbar.
+    try:
+        header,popout=_sgp25_news_header(self);old_pause=getattr(self,'pause_btn_v12',None);old_strip=getattr(old_pause,'master',None)
+        if old_strip is not None and old_strip is not header:old_strip.destroy()
+        if header is not None and popout is not None:
+            pause_text='▶ RESUME WORLD' if self.market.paused else '⏸ PAUSE WORLD'
+            self.pause_btn_v12=ttk.Button(header,text=pause_text,command=self.toggle_pause,width=15,style='Compact.TButton');self.pause_btn_v12.pack(side='left',padx=(1,2),after=popout)
+            self.skip_open_btn25=ttk.Button(header,text='⏭ SKIP TO NEXT OPEN',command=self.skip_to_next_open,width=19,style='Compact.TButton');self.skip_open_btn25.pack(side='left',padx=(1,4),after=self.pause_btn_v12)
+    except Exception as e:
+        try:self.market.errors.append(f'world control layout: {type(e).__name__}: {e}')
+        except Exception:pass
+    self.status_flash('3-chart startup • SPY 1D/1 Tick 50 ms • Gold MAX line • BTC 1D candles 50 ms')
+App.__init__=_sgp25_requested_app_init

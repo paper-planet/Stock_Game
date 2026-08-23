@@ -2138,14 +2138,14 @@ _SGP25FP_CRYPTO=[
 # Waypoints deliberately hug common ocean corridors instead of connecting ports with straight
 # chords through continents. They are a simulator representation of maritime lanes, not navigation.
 _SGP25FP_FREIGHT_ROUTES=[
- {'name':'Shanghai → Los Angeles','origin':'Shanghai','destination':'Los Angeles','days':14,'points':[(31.35,121.50),(29,124),(25,138),(26,155),(30,175),(34,-165),(35,-145),(34,-125),(33.74,-118.27)],'products':['consumer electronics','semiconductors','machinery','apparel','auto parts'],'carriers':['ZIM','MATX','AMKBY'],'owners':['AAPL','NVDA','WMT','NKE','BABA','6758.T','7203.T']},
- {'name':'Singapore → Rotterdam','origin':'Singapore','destination':'Rotterdam','days':22,'points':[(1.26,103.84),(4,95),(7,82),(11,70),(13,58),(13,48),(18,41),(26,35),(30.2,32.6),(31.4,32.3),(34,27),(36,18),(36,8),(38,-1),(43,-9),(49,-6),(51,1),(51.95,4.14)],'products':['refined fuels','electronics','industrial machinery','chemicals','containerized goods'],'carriers':['ZIM','AMKBY','DAC'],'owners':['SHEL','BP','SAP.DE','BHP','D05.SI']},
- {'name':'Rotterdam → New York / NJ','origin':'Rotterdam','destination':'New York / NJ','days':10,'points':[(51.95,4.14),(51,1),(49,-7),(50,-20),(47,-38),(44,-52),(41,-66),(40.67,-74.04)],'products':['pharmaceuticals','industrial equipment','autos','chemicals','consumer goods'],'carriers':['AMKBY','ZIM','DAC'],'owners':['SNY','SAP.DE','MBG.DE','SHEL','NVS']},
- {'name':'Santos → Shanghai','origin':'Santos','destination':'Shanghai','days':28,'points':[(-23.96,-46.30),(-30,-35),(-35,-20),(-36,0),(-36,18),(-31,38),(-22,58),(-10,78),(0,97),(1,104),(8,110),(20,118),(31.35,121.50)],'products':['iron ore','soybeans','coffee','crude oil','pulp'],'carriers':['SBLK','FRO','STNG','AMKBY'],'owners':['VALE3.SA','VALE','PBR','SUZB3.SA']},
- {'name':'Sydney → Singapore','origin':'Sydney','destination':'Singapore','days':13,'points':[(-33.96,151.21),(-30,155),(-20,150),(-12,140),(-10,125),(-8,112),(-3,106),(1.26,103.84)],'products':['iron ore','LNG','coal','agricultural goods','industrial minerals'],'carriers':['SBLK','FRO','AMKBY'],'owners':['BHP.AX','RIO.AX','BHP']},
- {'name':'Yokohama → Los Angeles','origin':'Tokyo / Yokohama','destination':'Los Angeles','days':12,'points':[(35.45,139.64),(32,145),(30,160),(34,178),(36,-160),(35,-140),(33.74,-118.27)],'products':['automobiles','robotics','electronics','precision machinery','auto parts'],'carriers':['MATX','ZIM','AMKBY'],'owners':['7203.T','7267.T','6758.T','6902.T','TM','SONY']},
- {'name':'Dubai / Jebel Ali → Rotterdam','origin':'Dubai / Jebel Ali','destination':'Rotterdam','days':16,'points':[(25.27,55.30),(18,48),(13,43),(20,39),(29,33),(31.4,32.3),(35,25),(37,12),(38,0),(44,-8),(50,-4),(51.95,4.14)],'products':['petrochemicals','aluminum','machinery','consumer goods','re-export containers'],'carriers':['AMKBY','ZIM','FRO'],'owners':['SHEL','BP','BHP','DPW.DU']},
- {'name':'Santos → Rotterdam','origin':'Santos','destination':'Rotterdam','days':15,'points':[(-23.96,-46.30),(-20,-35),(-10,-25),(5,-22),(20,-25),(35,-20),(45,-12),(50,-5),(51.95,4.14)],'products':['coffee','soybeans','iron ore','pulp','orange products'],'carriers':['SBLK','DAC','AMKBY'],'owners':['VALE3.SA','SUZB3.SA','VALE']},
+ {'name':'Shanghai → Los Angeles','origin':'Shanghai','destination':'Los Angeles','days':14,'points':[(30.2,123.3),(25,140),(27,162),(32,178),(34,-162),(35,-140),(33.8,-121.0)],'products':['consumer electronics','semiconductors','machinery','apparel','auto parts'],'carriers':['ZIM','MATX','AMKBY'],'owners':['AAPL','NVDA','WMT','NKE','BABA','6758.T','7203.T']},
+ {'name':'Singapore → Rotterdam • Cape lane','origin':'Singapore','destination':'Rotterdam','days':28,'points':[(-8.2,106.0),(-18,92),(-28,70),(-36,45),(-39,24),(-35,12),(-26,3),(-12,-7),(8,-16),(28,-20),(43,-14),(50,-6),(51.5,2.0)],'products':['refined fuels','electronics','industrial machinery','chemicals','containerized goods'],'carriers':['ZIM','AMKBY','DAC'],'owners':['SHEL','BP','SAP.DE','BHP','D05.SI']},
+ {'name':'Rotterdam → New York / NJ','origin':'Rotterdam','destination':'New York / NJ','days':10,'points':[(51.4,2.0),(49,-8),(49,-22),(46,-40),(42,-58),(40.5,-72.5)],'products':['pharmaceuticals','industrial equipment','autos','chemicals','consumer goods'],'carriers':['AMKBY','ZIM','DAC'],'owners':['SNY','SAP.DE','MBG.DE','SHEL','NVS']},
+ {'name':'Santos → Shanghai • Cape / Pacific lane','origin':'Santos','destination':'Shanghai','days':31,'points':[(-25.0,-44.0),(-34,-30),(-39,-8),(-39,18),(-34,42),(-25,68),(-15,92),(-10,108),(-8,125),(2,138),(16,134),(28,126),(30.4,123.0)],'products':['iron ore','soybeans','coffee','crude oil','pulp'],'carriers':['SBLK','FRO','STNG','AMKBY'],'owners':['VALE3.SA','VALE','PBR','SUZB3.SA']},
+ {'name':'Sydney → Singapore • Indian Ocean lane','origin':'Sydney','destination':'Singapore','days':16,'points':[(-34.0,153.0),(-44,150),(-44,128),(-35,111),(-22,103),(-10,99),(-3,101),(0.2,103.0)],'products':['iron ore','LNG','coal','agricultural goods','industrial minerals'],'carriers':['SBLK','FRO','AMKBY'],'owners':['BHP.AX','RIO.AX','BHP']},
+ {'name':'Yokohama → Los Angeles','origin':'Tokyo / Yokohama','destination':'Los Angeles','days':12,'points':[(35.0,141.5),(31,158),(34,178),(36,-164),(35,-142),(33.8,-121.0)],'products':['automobiles','robotics','electronics','precision machinery','auto parts'],'carriers':['MATX','ZIM','AMKBY'],'owners':['7203.T','7267.T','6758.T','6902.T','TM','SONY']},
+ {'name':'Dubai / Jebel Ali → Rotterdam • Cape lane','origin':'Dubai / Jebel Ali','destination':'Rotterdam','days':24,'points':[(23.8,60.0),(12,66),(-6,60),(-25,44),(-37,24),(-34,10),(-20,-2),(0,-12),(22,-20),(42,-14),(50,-6),(51.5,2.0)],'products':['petrochemicals','aluminum','machinery','consumer goods','re-export containers'],'carriers':['AMKBY','ZIM','FRO'],'owners':['SHEL','BP','BHP','DPW.DU']},
+ {'name':'Santos → Rotterdam','origin':'Santos','destination':'Rotterdam','days':15,'points':[(-25.0,-44.0),(-20,-35),(-8,-27),(8,-25),(25,-22),(39,-16),(49,-7),(51.5,2.0)],'products':['coffee','soybeans','iron ore','pulp','orange products'],'carriers':['SBLK','DAC','AMKBY'],'owners':['VALE3.SA','SUZB3.SA','VALE']},
 ]
 
 _Market_new_shipment_sgp25fp_old=Market._new_shipment
@@ -2364,3 +2364,88 @@ async def _sgp25smooth_tick(self):
     ratio=ema/max(target,1e-6);ov=float(getattr(self,'_smooth_overload25',0.0));goal=max(0.0,min(1.0,(ratio-0.75)/1.25));self._smooth_overload25=ov*.90+goal*.10
     await asyncio.sleep(max(.001,target-spent))
 Market.tick=_sgp25smooth_tick
+
+# ============================================================================
+# Stock Game Pro 2.5 Production — index news monitor
+# ============================================================================
+# Index headlines are derived from the simulated index tape itself.  They are informational and do
+# not apply a second price shock; the underlying constituent/macro engine remains authoritative.
+_Market_init_sgp25_indexnews_base=Market.__init__
+def _sgp25_indexnews_init(self,*args,**kwargs):
+    _Market_init_sgp25_indexnews_base(self,*args,**kwargs)
+    self._index_news_gate25=0.0
+    self._index_news_state25={}
+    for idx in self.indexes:
+        try:
+            self._index_news_state25[idx.symbol]={'band':0,'sign':0,'open':bool(self.asset_regular_open(idx))}
+        except Exception:
+            self._index_news_state25[idx.symbol]={'band':0,'sign':0,'open':False}
+Market.__init__=_sgp25_indexnews_init
+
+
+def _sgp25_index_breadth_line(self,idx):
+    """Return a compact, bounded breadth/leadership summary for an index headline."""
+    syms=list(getattr(idx,'components',()) or ())
+    if not syms:return ''
+    # News is infrequent, but very broad indexes can contain thousands of members.  Cap the scan
+    # deterministically to keep a headline from becoming a CPU spike.
+    if len(syms)>600:
+        step=max(1,len(syms)//600);syms=syms[::step][:600]
+    rows=[];adv=dec=0
+    for s in syms:
+        a=self.get_asset(s)
+        if a is None:continue
+        try:chg=float(a.change_percent())
+        except Exception:continue
+        rows.append((chg,s))
+        if chg>0.02:adv+=1
+        elif chg<-0.02:dec+=1
+    if not rows:return ''
+    rows.sort()
+    total=max(1,adv+dec);breadth=100.0*adv/total
+    lag=rows[0];lead=rows[-1]
+    return f' Breadth {breadth:.0f}% advancing; leaders {lead[1]} {lead[0]:+.2f}%, laggards {lag[1]} {lag[0]:+.2f}%.'
+Market._index_breadth_line25=_sgp25_index_breadth_line
+
+
+def _sgp25_emit_index_news(self):
+    # Called from the market thread.  No Tk calls and no network access.
+    thresholds=(.50,1.0,2.0,3.0,5.0,7.0,10.0,15.0,20.0)
+    for idx in self.indexes:
+        try:
+            st=self._index_news_state25.setdefault(idx.symbol,{'band':0,'sign':0,'open':False})
+            is_open=bool(self.asset_regular_open(idx));was_open=bool(st.get('open',False))
+            if is_open!=was_open:
+                st['open']=is_open;st['band']=0;st['sign']=0
+                state='opens' if is_open else 'closes'
+                chg=float(idx.change_percent())
+                self.news.append(NewsEvent(f'{idx.name} ({idx.symbol}) {state} its regular session at {chg:+.2f}% on the day.',idx.symbol,0,0,'INDEX'))
+            chg=float(idx.change_percent());mag=abs(chg);sign=1 if chg>0 else -1 if chg<0 else 0
+            band=sum(1 for x in thresholds if mag>=x)
+            old_band=int(st.get('band',0));old_sign=int(st.get('sign',0))
+            # Emit only when a meaningful threshold is newly crossed, or direction flips while the
+            # move is already at least 0.5%.  This avoids tiny-gap/routine-noise headlines.
+            crossed=band>old_band and band>0
+            flipped=band>0 and sign and old_sign and sign!=old_sign
+            if crossed or flipped:
+                sev='MAJOR' if mag>=3 else 'INDEX'
+                verb='rallies' if chg>0 else 'falls'
+                breadth=self._index_breadth_line25(idx)
+                self.news.append(NewsEvent(f'{idx.name} ({idx.symbol}) {verb} {mag:.2f}% from its session open.{breadth}',idx.symbol,0,0,sev))
+            st['band']=band;st['sign']=sign
+        except Exception as e:
+            self.errors.append(f'index news {getattr(idx,"symbol","?")}: {e}')
+    # Bound the tape independently of UI rendering so very long accelerated sessions stay cheap.
+    if len(self.news)>2500:self.news=self.news[-2500:]
+Market._emit_index_news25=_sgp25_emit_index_news
+
+_Market_tick_sgp25_indexnews_base=Market.tick
+async def _sgp25_indexnews_tick(self):
+    await _Market_tick_sgp25_indexnews_base(self)
+    now=time.monotonic()
+    if now-getattr(self,'_index_news_gate25',0.0)>=1.0:
+        self._index_news_gate25=now
+        try:self._emit_index_news25()
+        except Exception as e:
+            self.errors.append(f'index news monitor: {e}')
+Market.tick=_sgp25_indexnews_tick
