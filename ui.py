@@ -7313,6 +7313,7 @@ class GlobalTradeWorkstation(ToolWindow):
                     dur=max(3600,float(r['hours'])*3600);t=((base+j*dur*.217)%dur)/dur;la,lo=_sgp24_geo_interp(r['lat1'],r['lon1'],r['lat2'],r['lon2'],t,arc=9);la2,lo2=_sgp24_geo_interp(r['lat1'],r['lon1'],r['lat2'],r['lon2'],min(.999,t+.004),arc=9);x,y=self.proj(la,lo);xn,yn=self.proj(la2,lo2);ang=math.atan2(yn-y,xn-x);self._rotpoly(x,y,ang,[(12,0),(2,-2),(-1,-8),(-4,-8),(-3,-2),(-10,-1),(-10,1),(-3,2),(-4,8),(-1,8),(2,2)],'#c9bfff','#f0ecff');self.hits.append((x,y,13,'air',r))
             if self.layer_risk.get():
                 for rec in self._risk_records():
+                    if not rec.get('map_visible',True):continue
                     x,y=self.proj(rec['lat'],rec['lon']);c.create_oval(x-7,y-7,x+7,y+7,outline=ORANGE if rec['impact']<=0 else YELLOW,width=2,tags='dynamic26');c.create_text(x+9,y,text='RISK',anchor='w',fill=ORANGE,font=('Consolas',6,'bold'),tags='dynamic26');self.hits.append((x,y,11,'risk',rec))
             c.create_rectangle(6,6,330,48,fill='#06131d',outline='#294a5c',tags='dynamic26');c.create_text(14,13,anchor='nw',text='WORLD MARKETS / FREIGHT / RISK',fill='#e9f0f3',font=('Segoe UI',9,'bold'),tags='dynamic26');c.create_text(14,31,anchor='nw',text='Click objects for related tradable securities',fill='#7f9caa',font=('Segoe UI',7),tags='dynamic26');c.create_text(8,h-8,anchor='sw',text='Middle-drag pan • wheel zoom • right-click objects to trade',fill='#80919d',font=('Segoe UI',7),tags='dynamic26')
         except Exception:pass
@@ -7854,24 +7855,43 @@ class GlobalTradeWorkstation(_Global_sgp25fp_base):
         for ev in list(getattr(self.market,'news',[]))[-80:]:
             impact=float(getattr(ev,'impact',0) or 0);sev=str(getattr(ev,'severity','NORMAL') or 'NORMAL').upper();sym=str(getattr(ev,'symbol','') or '')
             if abs(impact)<.006 and sev not in ('MAJOR','GLOBAL','FED','MACRO','POLITICAL'):continue
-            a=self.market.get_asset(sym) if sym else None;code=str(getattr(a,'session','US') if a else 'US');lat,lon=loc.get(code,loc.get('US',(40.71,-74.01)));off=((sum(ord(ch) for ch in sym)%9)-4)*.32 if sym else 0;out.append({'symbol':sym or 'GLOBAL','headline':str(getattr(ev,'headline',ev)),'impact':impact,'severity':sev,'lat':lat+off*.25,'lon':lon+off,'asset':a,'kind':'NEWS'})
+            a=self.market.get_asset(sym) if sym else None
+            # Asset-specific news belongs at that asset's modeled exchange. Global headlines stay
+            # in the risk tape, but do not receive a fabricated New York (or 0,0) map location.
+            if a is not None:
+                code=str(getattr(a,'session','US') or 'US');lat,lon=loc.get(code,loc.get('US',(40.71,-74.01)));off=((sum(ord(ch) for ch in sym)%9)-4)*.32;lat+=off*.25;lon+=off;map_visible=True
+            else:lat=lon=0.0;map_visible=False
+            out.append({'symbol':sym or 'GLOBAL','headline':str(getattr(ev,'headline',ev)),'impact':impact,'severity':sev,'lat':lat,'lon':lon,'asset':a,'kind':'NEWS','map_visible':map_visible})
         # Unresolved shipping hazards may be ocean events and are tied to actual product/cargo flow.
         for sh in getattr(self.market,'shipments',[]):
             if sh.get('hazard') in (None,'NONE') or sh.get('hazard_resolved'):continue
-            try:lat,lon=self.market.shipment_hazard_position(sh)
+            points=list((sh.get('route') or {}).get('points') or ())
+            if len(points)<2:continue
+            try:lat,lon=self.market.shipment_hazard_position(sh);lat=float(lat);lon=float(lon)
             except Exception:continue
-            kind=sh.get('hazard');out.append({'symbol':sh.get('cargo_owner','GLOBAL'),'headline':f'{kind}: {sh.get("product","cargo")} exposure on {(sh.get("route") or {}).get("name","")}.','impact':-.015 if kind!='TARIFF' else -.010,'severity':'GLOBAL','lat':lat,'lon':lon,'asset':self.market.get_asset(sh.get('cargo_owner')),'kind':kind,'shipment':sh})
-        # Geopolitical engine events can sit on land, while scheduled data/Fed risks sit near NY.
+            if not math.isfinite(lat) or not math.isfinite(lon) or not -90<=lat<=90 or not -180<=lon<=180:continue
+            kind=sh.get('hazard');out.append({'symbol':sh.get('cargo_owner','GLOBAL'),'headline':f'{kind}: {sh.get("product","cargo")} exposure on {(sh.get("route") or {}).get("name","")}.','impact':-.015 if kind!='TARIFF' else -.010,'severity':'GLOBAL','lat':lat,'lon':lon,'asset':self.market.get_asset(sh.get('cargo_owner')),'kind':kind,'shipment':sh,'map_visible':True})
+        # Preserve real event coordinates. If an older save lacks coordinates, use an actual
+        # modeled exchange/port for a named region; a truly global event remains list-only.
+        regional_anchor={'Asia':loc.get('SSE',(30.85,121.95)),'Europe':loc.get('XETRA',(50.10,8.70)),'Middle East':(24.85,55.75),'Americas':loc.get('US',(40.71,-74.01)),'Energy':(24.85,55.75)}
         for ev in getattr(self.market,'geopolitical_events',[]):
             if ev.get('resolved'):continue
             sev=float(ev.get('severity',0) or 0)
             if sev<.008:continue
-            reg=str(ev.get('region','Global'));pos={'Asia':(34,108),'Europe':(50,15),'Middle East':(28,45),'Americas':(25,-85),'Global':(22,15)}.get(reg,(22,15));out.append({'symbol':'GLOBAL','headline':str(ev.get('name','Geopolitical risk')),'impact':-sev,'severity':'GLOBAL','lat':pos[0],'lon':pos[1],'asset':None,'kind':'POLITICAL'})
+            pos=None
+            try:
+                lat=float(ev.get('lat'));lon=float(ev.get('lon'))
+                if math.isfinite(lat) and math.isfinite(lon) and -90<=lat<=90 and -180<=lon<=180 and (abs(lat)>.01 or abs(lon)>.01):pos=(lat,lon)
+            except Exception:pass
+            reg=str(ev.get('region','Global') or 'Global')
+            if pos is None:pos=regional_anchor.get(reg)
+            lat,lon=pos if pos is not None else (0.0,0.0)
+            out.append({'symbol':'GLOBAL','headline':str(ev.get('name','Geopolitical risk')),'impact':-sev,'severity':'GLOBAL','lat':lat,'lon':lon,'asset':None,'kind':'POLITICAL','map_visible':pos is not None})
         for ev in getattr(self.market,'scheduled_market_events',[]):
             if ev.get('fired'):continue
             sec=(ev.get('time')-now).total_seconds()
             if 0<=sec<=3*86400:
-                kind=ev.get('kind','MACRO');pos=(40.71,-74.01) if kind in ('MACRO','FED') else (48,5);out.append({'symbol':'SPY','headline':f'UPCOMING • {ev.get("name")} • {ev.get("time"):%b %d %H:%M} ET','impact':0.0,'severity':'SCHEDULED','lat':pos[0],'lon':pos[1],'asset':self.market.get_asset('SPY'),'kind':kind,'scheduled':True})
+                kind=ev.get('kind','MACRO');reg=str(ev.get('region','Global') or 'Global');pos=loc.get('US',(40.71,-74.01)) if kind in ('MACRO','FED') else regional_anchor.get(reg);lat,lon=pos if pos is not None else (0.0,0.0);out.append({'symbol':'SPY','headline':f'UPCOMING • {ev.get("name")} • {ev.get("time"):%b %d %H:%M} ET','impact':0.0,'severity':'SCHEDULED','lat':lat,'lon':lon,'asset':self.market.get_asset('SPY'),'kind':kind,'scheduled':True,'map_visible':pos is not None})
         # De-duplicate identical headlines and keep the highest-information recent set.
         seen=set();res=[]
         for r in reversed(out):
@@ -7887,6 +7907,7 @@ class GlobalTradeWorkstation(_Global_sgp25fp_base):
             phase=time.monotonic()
             if self.layer_risk.get():
                 for i,r in enumerate(self._risk_records()):
+                    if not r.get('map_visible',True):continue
                     x,y=self.proj(r['lat'],r['lon']);pulse=.5+.5*math.sin(phase*1.2+i*.9);rad=8+4*pulse;c.create_oval(x-rad,y-rad,x+rad,y+rad,outline='#df8851' if r.get('impact',0)<=0 else '#d6bd5f',width=1,tags='dynamic26')
         except Exception:pass
     def select_obj(self,typ,obj):
@@ -9382,6 +9403,14 @@ def _sgp26_money_text(value,compact=True):
         return f'{sign}${av:.3e}'
     return f'{sign}${av:,.2f}'
 
+def _sgp26_last_text(value,position_type=''):
+    # Option position_rows stores aggregate strategy value in Last. It must use the same compact
+    # formatter in both the structural refresh and fast mark stream or trillion-scale rows alternate
+    # between "$1.234T" and the full raw number every callback.
+    if str(position_type).upper()=='OPTION':return _sgp26_money_text(value)
+    v=_sgp26_finite(value)
+    return f'${v:,.4f}' if abs(v)<1 else f'${v:,.2f}'
+
 def _sgp26_qty_text(value):
     try:v=int(value)
     except Exception:return '0'
@@ -9419,8 +9448,8 @@ def _sgp26_refresh_positions(self):
         existing=set(self.pos.get_children(''));wanted=[r['iid'] for r in rows];wanted_set=set(wanted)
         for iid in existing-wanted_set:self.pos.delete(iid)
         for r in rows:
-            last=f'${_sgp26_finite(r["last"]):,.4f}' if abs(_sgp26_finite(r['last']))<1 else f'${_sgp26_finite(r["last"]):,.2f}'
-            vals=(r['symbol'],_sgp26_qty_text(r['qty']),last,_sgp26_money_text(r['value']),_sgp26_money_text(r['pnl']),f"{_sgp26_finite(r['pct']):+.2%}",r['type'],r['underlying'],r['expiry'])
+            last=_sgp26_last_text(r['last'],r['type'])
+            vals=(r['symbol'],_sgp26_qty_text(r['qty']),last,_sgp26_money_text(r['value']),_sgp26_money_text(r['pnl']),f"{_sgp26_finite(r['pct']):+.2%}",_sgp27_position_type(self,r['iid'],r['type']),r['underlying'],r['expiry'])
             if self.pos.exists(r['iid']):
                 if tuple(self.pos.item(r['iid'],'values'))!=tuple(str(x) for x in vals):self.pos.item(r['iid'],values=vals)
             else:self.pos.insert('','end',iid=r['iid'],values=vals)
@@ -9453,11 +9482,11 @@ def _sgp26_portfolio_stream(self):
                         st=self.portfolio.get_strategy(iid)
                         if st is None:continue
                         value=_sgp26_finite(st.current_value());pnl=value-_sgp26_finite(getattr(st,'open_cost',0.0));pct=self.portfolio.option_return_pct(st,value);expiry,_=self.portfolio.option_time_remaining(iid,self.market.clock.current)
-                        if len(vals)>=9:vals[2]=_sgp26_money_text(value);vals[3]=_sgp26_money_text(value);vals[4]=_sgp26_money_text(pnl);vals[5]=f'{pct:+.2%}';vals[8]=expiry
+                        if len(vals)>=9:vals[2]=_sgp26_last_text(value,'OPTION');vals[3]=_sgp26_money_text(value);vals[4]=_sgp26_money_text(pnl);vals[5]=f'{pct:+.2%}';vals[8]=expiry
                     else:
                         a=self.market.get_asset(iid);q=int(self.portfolio.positions.get(iid,0))
                         if a is None or q==0:continue
-                        basis=_sgp26_finite(self.portfolio.cost_basis.get(iid,0.0));value=_sgp26_finite(_sgp26_finite(q)*_sgp26_finite(a.price));pnl=_sgp26_finite(value-basis if q>0 else basis+value);pct=pnl/max(1e-9,abs(basis));vals[2]=f'${float(a.price):,.4f}' if abs(float(a.price))<1 else f'${float(a.price):,.2f}';vals[3]=_sgp26_money_text(value);vals[4]=_sgp26_money_text(pnl);vals[5]=f'{pct:+.2%}'
+                        basis=_sgp26_finite(self.portfolio.cost_basis.get(iid,0.0));value=_sgp26_finite(_sgp26_finite(q)*_sgp26_finite(a.price));pnl=_sgp26_finite(value-basis if q>0 else basis+value);pct=pnl/max(1e-9,abs(basis));vals[2]=_sgp26_last_text(a.price);vals[3]=_sgp26_money_text(value);vals[4]=_sgp26_money_text(pnl);vals[5]=f'{pct:+.2%}'
                     if tuple(self.pos.item(iid,'values'))!=tuple(str(x) for x in vals):self.pos.item(iid,values=vals)
                 except Exception:pass
         equity=self.portfolio.cached_net_worth(max_age=.15);day=self.market.clock.current.date().isoformat();base=float(getattr(self.portfolio,'_daily_equity_open',{}).get(day,equity));daily=_sgp26_finite(equity-base)
@@ -9652,3 +9681,365 @@ def _sgp26_app_init(self,root,market,portfolio):
         self.root.after(120,self._schedule_workspace26)
     except Exception:pass
 App.__init__=_sgp26_app_init
+
+
+# ============================================================================
+# Stock Game Pro 2.7 — institutional exits / selection-safe UI / render priority
+# ============================================================================
+def _sgp27_parent_state(app):
+    now=time.monotonic();cached=getattr(app,'_parent_state_cache27',None)
+    if cached and now-cached[0]<.10:return cached[1]
+    state={}
+    for o in getattr(app.market,'algo_orders',()):
+        if str(o.get('status','')) not in ('WORKING','PAUSED','WAITING SESSION'):continue
+        if str(o.get('kind','STOCK')).upper()=='OPTION':
+            st=o.get('strategy');sid=getattr(st,'strategy_id',o.get('strategy_id'));key=f'OPT:{sid}' if sid is not None else ''
+            if key:state[key]='OPTION • CLOSING'
+        else:
+            a=o.get('asset');side=str(o.get('side','')).upper();base='LONG' if side in ('BUY','SELL') else 'SHORT';action='BUYING' if side in ('BUY','COVER') else 'SELLING'
+            if a is not None:state[a.symbol]=f'{base} • {action}'
+    app._parent_state_cache27=(now,state);return state
+
+def _sgp27_position_type(app,iid,base):
+    try:return _sgp27_parent_state(app).get(str(iid),str(base))
+    except Exception:return str(base)
+
+class LiquidationWindow(ToolWindow):
+    """Single O(1) parent ticket for shares or ratio-preserving option strategies."""
+    METHODS={
+        'IMMEDIATE':'Execute available liquidity now. Any oversized share or option residual is automatically routed to a paced VWAP parent.',
+        'VWAP':'Follow the simulated intraday volume curve, using larger clips near the open and close.',
+        'TWAP':'Divide the live position into approximately equal time-based clips.',
+        'POV':'Participate at the selected percentage of newly observed market volume.',
+        'ICEBERG':'Expose a fixed disclosed clip while keeping the remainder in one hidden parent record.',
+    }
+    def __init__(self,parent,app,ref):
+        super().__init__(parent);self.app=app;self.market=app.market;self.portfolio=app.portfolio;self.ref=str(ref);self.style_window('LIQUIDATE POSITION • EXECUTION METHOD','700x565');self.resizable(True,True)
+        self.strategy=self.portfolio.get_strategy(self.ref) if self.ref.startswith('OPT:') else None;self.asset=None if self.strategy is not None else self.market.get_asset(self.ref)
+        if self.strategy is None and self.asset is None:self.after_idle(self.destroy);return
+        if self.strategy is not None:
+            self.units=self.portfolio.strategy_units(self.strategy);under=self.strategy.legs[0].contract.underlying.symbol if self.strategy.legs else 'OPTION';title=f'{getattr(self.strategy,"name","Option strategy")} • {under} • {self.units:,} ratio units';large=self.units>20
+        else:
+            q=int(self.portfolio.positions.get(self.asset.symbol,0));self.units=abs(q);self.side='SELL' if q>0 else 'COVER';cap=max(1,int(self.market.max_executable_qty(self.asset,self.side,self.units))) if self.units else 1;title=f'{self.asset.symbol} • {q:+,} shares • estimated immediate capacity {cap:,}';large=self.units>cap
+        ttk.Label(self,text='POSITION LIQUIDATION DESK',font=('Segoe UI',15,'bold')).pack(anchor='w',padx=18,pady=(16,4));ttk.Label(self,text=title,font=('Segoe UI',10,'bold'),foreground=CYAN,wraplength=650).pack(anchor='w',padx=18,pady=(0,7));ttk.Label(self,text='Choose how the close should interact with simulated liquidity. Staged methods remain visible in Working Orders and can be batch-cancelled.',foreground=MUTED,wraplength=650).pack(anchor='w',padx=18,pady=(0,12))
+        self.method=tk.StringVar(value='VWAP' if large else 'IMMEDIATE');methods=ttk.LabelFrame(self,text='LIQUIDATION METHOD');methods.pack(fill='x',padx=18,pady=5)
+        row=ttk.Frame(methods);row.pack(fill='x',padx=8,pady=8)
+        for name in self.METHODS:ttk.Radiobutton(row,text=name,variable=self.method,value=name,command=self._update).pack(side='left',expand=True,padx=3)
+        self.desc=ttk.Label(methods,text='',foreground=MUTED,wraplength=620,justify='left');self.desc.pack(fill='x',padx=10,pady=(0,10))
+        pace=ttk.LabelFrame(self,text='PACE / DISPLAY PARTICIPATION');pace.pack(fill='x',padx=18,pady=8);self.part=tk.DoubleVar(value=12.0);r=ttk.Frame(pace);r.pack(fill='x',padx=9,pady=8);ttk.Label(r,text='Participation / clip').pack(side='left');self.scale=tk.Scale(r,from_=1,to=50,resolution=1,orient='horizontal',variable=self.part,length=390,bg=PANEL,fg=TEXT,highlightthickness=0,command=lambda _v:self._update());self.scale.pack(side='left',fill='x',expand=True,padx=8);self.part_label=ttk.Label(r,width=7);self.part_label.pack(side='right')
+        ttk.Label(pace,text='Lower values reduce footprint and take longer. TWAP uses this value to choose its number of clips; Iceberg uses it for the disclosed slice.',foreground=MUTED,wraplength=620).pack(fill='x',padx=10,pady=(0,9))
+        self.preview=ttk.Label(self,text='',font=('Consolas',9),wraplength=650,justify='left');self.preview.pack(fill='x',padx=18,pady=8)
+        bar=ttk.Frame(self);bar.pack(side='bottom',fill='x',padx=18,pady=16);ttk.Button(bar,text='SUBMIT LIQUIDATION',command=self.submit).pack(side='left',fill='x',expand=True,ipady=5);ttk.Button(bar,text='CANCEL',command=self.destroy).pack(side='left',fill='x',expand=True,padx=(7,0),ipady=5);self._update()
+    def _update(self):
+        method=self.method.get();part=max(1.0,min(50.0,float(self.part.get())));self.part_label.config(text=f'{part:.0f}%');self.desc.config(text=self.METHODS.get(method,''));self.scale.config(state='disabled' if method=='IMMEDIATE' else 'normal')
+        if self.strategy is not None:self.preview.config(text=f'POSITION  {self.units:,} strategy units\nACTION    {"Close now" if method=="IMMEDIATE" else f"Create one {method} option parent"}')
+        else:
+            first=self.units if method=='IMMEDIATE' else self.market.parent_slice_qty({'style':method,'participation':part,'asset':self.asset,'display_qty':max(1,int(self.units*part/100)),'planned_slices':max(2,int(math.ceil(100/part))),'slices_done':0,'last_observed_volume':int(getattr(self.asset,'volume',0))},max(1,int(self.market.max_executable_qty(self.asset,self.side,self.units))),max(1,self.units))
+            self.preview.config(text=f'POSITION  {_sgp26_qty_text(self.units)} {self.asset.symbol}\nFIRST CLIP (estimate)  {_sgp26_qty_text(first)}\nSIDE      {self.side}')
+    def submit(self):
+        method=self.method.get();part=max(1.0,min(50.0,float(self.part.get())))
+        try:
+            if self.strategy is not None:
+                if method=='IMMEDIATE':
+                    units=self.portfolio.strategy_units(self.strategy);cap=max(1,int(self.market.option_execution_cap(self.strategy,units)));ok,msg,filled,_=self.portfolio.liquidate_strategy_units(self.strategy,min(units,cap))
+                    remaining=self.portfolio.strategy_units(self.strategy)
+                    if ok and remaining>0:
+                        o=self.market.submit_option_liquidation(self.strategy,'VWAP',part);msg+=f' • residual {remaining:,} routed to VWAP parent #{o.get("id")}'
+                else:o=self.market.submit_option_liquidation(self.strategy,method,part);ok=True;msg=f'{method} option liquidation parent #{o.get("id")} accepted • {int(o.get("remaining",0)):,} units working'
+            else:
+                live=int(self.portfolio.positions.get(self.asset.symbol,0))
+                if live==0:ok=False;msg='Position is already flat.'
+                elif method=='IMMEDIATE':ok,msg=self.portfolio.liquidate_asset(self.asset)
+                else:
+                    side='SELL' if live>0 else 'COVER';o=self.market.submit_algo_order(side,self.asset,abs(live),method,part);ok=True;msg=f'{method} liquidation parent #{o.get("id")} accepted • {_sgp26_qty_text(abs(live))} {self.asset.symbol} working'
+        except Exception as e:ok=False;msg=f'{type(e).__name__}: {e}'
+        self.app.refresh_positions();self.app.refresh_orders();self.app.status_flash(msg)
+        for c in list(getattr(self.app,'charts',()))+list(getattr(self.app,'extra_charts',())):
+            try:c.request_draw(force=True)
+            except Exception:pass
+        if ok:self.destroy();messagebox.showinfo('Liquidation desk',msg)
+        else:messagebox.showerror('Liquidation rejected',msg)
+
+def _sgp27_liquidate(self):
+    sel=self.pos.selection() if hasattr(self,'pos') else ()
+    if not sel:return messagebox.showwarning('Liquidate position','Select a share or option position first.')
+    return LiquidationWindow(self.root,self,sel[0])
+App.liquidate=_sgp27_liquidate
+
+# Stable multi-row order model. Refreshing values never collapses a Shift selection.
+def _sgp27_refresh_orders(self):
+    if not hasattr(self,'orders_view'):return
+    selected=tuple(self.orders_view.selection());focus=self.orders_view.focus();wanted=[]
+    for o in self.market.pending_orders:
+        a=o.get('asset');wanted.append((f"STOCK:{o.get('id')}",(o.get('id',''),getattr(a,'symbol',''),o.get('side',''),o.get('type',''),_sgp26_qty_text(o.get('qty',0)),f"${float(o.get('price') or 0):,.2f}",'WORKING')))
+    for o in self.market.pending_option_orders:
+        c=o.get('contract');wanted.append((f"OPTION:{o.get('id')}",(o.get('id',''),getattr(getattr(c,'underlying',None),'symbol',''),o.get('side',''),f"OPT {o.get('type','')}",_sgp26_qty_text(o.get('qty',1)),f"${float(o.get('price') or 0):,.2f}",'WORKING')))
+    for o in self.market.pending_spread_orders:
+        st=o.get('strategy');wanted.append((f"SPREAD:{o.get('id')}",(o.get('id',''),getattr(st,'name','SPREAD'),o.get('side',''),f"SPREAD {o.get('type','')}",len(getattr(st,'legs',[])),f"${float(o.get('price') or 0):,.2f}",'WORKING')))
+    for o in getattr(self.market,'algo_orders',()):
+        a=o.get('asset');filled=int(o.get('filled_qty',0));total=max(1,int(o.get('qty',1)));kind=str(o.get('kind','STOCK')).upper();typ=f"{o.get('style','VWAP')} {'OPTION' if kind=='OPTION' else 'PARENT'}";side='CLOSE' if kind=='OPTION' else o.get('side','');status=f"{o.get('status','WORKING')} {filled/total:.1%}";price='—' if not float(o.get('last_vwap') or 0) else f"${float(o.get('last_vwap')):,.4f}";wanted.append((f"ALGO:{o.get('id')}",(o.get('id',''),getattr(a,'symbol',''),side,typ,_sgp26_qty_text(o.get('remaining',0)),price,status)))
+    existing=set(self.orders_view.get_children());ids=[iid for iid,_ in wanted];idset=set(ids)
+    for iid in existing-idset:self.orders_view.delete(iid)
+    for idx,(iid,vals) in enumerate(wanted):
+        if self.orders_view.exists(iid):
+            if tuple(self.orders_view.item(iid,'values'))!=tuple(str(x) for x in vals):self.orders_view.item(iid,values=vals)
+        else:self.orders_view.insert('','end',iid=iid,values=vals)
+        if self.orders_view.index(iid)!=idx:self.orders_view.move(iid,'',idx)
+    surviving=tuple(iid for iid in selected if iid in idset)
+    if surviving:self.orders_view.selection_set(surviving)
+    else:self.orders_view.selection_remove(self.orders_view.selection())
+    if focus in idset:self.orders_view.focus(focus)
+App.refresh_orders=_sgp27_refresh_orders
+
+def _sgp27_cancel_selected_orders(self):
+    selected=tuple(self.orders_view.selection()) if hasattr(self,'orders_view') else ()
+    if not selected:return messagebox.showwarning('Cancel orders','Highlight one or more working orders first. Use Shift or Ctrl to select multiple rows.')
+    cancelled=[];failed=[]
+    for iid in selected:
+        try:kind,oid=iid.split(':',1);ok,msg=self.market.cancel_order(oid,kind)
+        except Exception as e:ok=False;msg=str(e)
+        (cancelled if ok else failed).append((iid,msg))
+    self.refresh_orders();summary=f'Cancelled {len(cancelled):,} highlighted order{"s" if len(cancelled)!=1 else ""}'
+    if failed:summary+=f' • {len(failed):,} could not be cancelled'
+    self.status_flash(summary)
+    if failed:messagebox.showwarning('Cancel orders',summary+'\n\n'+'\n'.join(msg for _,msg in failed[:8]))
+    for c in list(getattr(self,'charts',()))+list(getattr(self,'extra_charts',())):
+        try:c.request_draw(force=True)
+        except Exception:pass
+App.cancel_selected_order=_sgp27_cancel_selected_orders
+
+def _sgp27_orders_context(self,event):
+    iid=self.orders_view.identify_row(event.y);selected=set(self.orders_view.selection())
+    if iid and iid not in selected:self.orders_view.selection_set(iid)
+    if iid:self.orders_view.focus(iid)
+    count=len(self.orders_view.selection());m=tk.Menu(self.orders_view,tearoff=0);m.add_command(label=f'CANCEL {count} HIGHLIGHTED ORDER'+('S' if count!=1 else ''),command=self.cancel_selected_order);m.add_command(label='REFRESH ORDERS',command=self.refresh_orders);m.tk_popup(event.x_root,event.y_root)
+App.orders_context=_sgp27_orders_context
+
+# Every visible watch row receives a fresh price/P&L percentage on a bounded 100–300 ms cadence,
+# and the exact symbols are published to the simulation's hot-quote set.
+def _sgp27_watch_stream(self):
+    try:
+        rows=getattr(self,'_watch_iids25',None)
+        if rows is None:rows=tuple(self.watch.get_children());self._watch_iids25=rows
+        n=len(rows);symbols=[]
+        if n:
+            try:f0,f1=self.watch.yview();start=max(0,int(f0*n)-2);end=min(n,max(start+20,int(math.ceil(f1*n))+3))
+            except Exception:start,end=0,min(n,48)
+            for iid in rows[start:end]:
+                try:
+                    vals=list(self.watch.item(iid,'values'));a=self.market.get_asset(vals[0]) if vals else None
+                    if a is None or len(vals)<4:continue
+                    symbols.append(a.symbol);px=float(a.price);price=f'${px:,.4f}' if abs(px)<1 else f'${px:,.2f}';chg=f'{a.change_percent():+.2f}%'
+                    if vals[2]!=price or vals[3]!=chg:vals[2]=price;vals[3]=chg;self.watch.item(iid,values=vals)
+                except Exception:pass
+        self.market._ui_visible_watch27=frozenset(symbols);delay=max(100,min(300,int(getattr(self,'watch_stream_ms25',150))))
+    except Exception:delay=200
+    self._watch_stream_job=self.root.after(delay,self._fast_watch_stream)
+App._fast_watch_stream=_sgp27_watch_stream
+
+# Publish only visible position marks; the market no longer updates every hidden holding at the
+# high-frequency quote cadence on very large accounts.
+_App_portfolio_stream_sgp27_base=App._portfolio_fast_stream25
+def _sgp27_portfolio_stream(self):
+    _App_portfolio_stream_sgp27_base(self)
+    try:
+        rows=tuple(self.pos.get_children());n=len(rows);symbols=[]
+        if n:
+            f0,f1=self.pos.yview();start=max(0,int(f0*n)-2);end=min(n,max(start+18,int(math.ceil(f1*n))+3))
+            for iid in rows[start:end]:
+                if not str(iid).startswith('OPT:') and self.market.get_asset(iid) is not None:symbols.append(str(iid))
+        self.market._ui_position_hot27=frozenset(symbols)
+    except Exception:pass
+App._portfolio_fast_stream25=_sgp27_portfolio_stream
+
+# Advanced canvases receive the render budget first. Main-workspace canvases drop to a lightweight
+# background cadence only while a visible pop-out is covering them, eliminating duplicate 50 ms
+# paints without freezing their state.
+def _sgp27_chart_refresh_pulse(self):
+    if not getattr(self,'_chart_refresh_running',True):return
+    try:
+        if not self.root.winfo_exists():return
+    except tk.TclError:return
+    start_cpu=time.perf_counter();now_ms=time.monotonic()*1000.0;live_extras=[]
+    for c in tuple(getattr(self,'extra_charts',())):
+        try:
+            if c.winfo_exists():live_extras.append(c)
+        except tk.TclError:pass
+    self.extra_charts=live_extras;visible_extras=[]
+    for c in live_extras:
+        try:
+            if c.winfo_viewable():visible_extras.append(c)
+        except Exception:pass
+    try:
+        hot=set(getattr(self.market,'_ui_visible_watch27',()) or ());hot.update(getattr(self.market,'_ui_position_hot27',()) or ());hot.update(getattr(self.market,'_ui_market_map_hot25',()) or ());hot.update(getattr(self.market,'_ui_options_hot25',()) or ())
+        for c in list(getattr(self,'charts',()))+visible_extras:
+            a=getattr(c,'asset',None)
+            if a:hot.add(a.symbol)
+        try:
+            a=self.selected()
+            if a:hot.add(a.symbol)
+        except Exception:pass
+        self.market._ui_hot_symbols25=frozenset(hot)
+        if getattr(self.market,'_ui_refresh_watch_requested25',False):self.market._ui_refresh_watch_requested25=False;self.refresh_watch()
+        msg=getattr(self.market,'_ui_status_message25',None)
+        if msg:self.market._ui_status_message25=None;self.status_flash(str(msg))
+    except Exception:pass
+    profile=str(getattr(self,'graphics_profile','Balanced'));budget={'Efficiency':3.5,'Balanced':6.0,'Smooth':9.0,'Maximum':13.0}.get(profile,6.0);limit={'Efficiency':1,'Balanced':2,'Smooth':3,'Maximum':5}.get(profile,2);heavy=_sgp25_heavy_window_count(self.market)
+    if heavy>=3:budget=max(3.0,budget*.70);limit=1
+    order=[]
+    if visible_extras:
+        rr=int(getattr(self,'_advanced_rr27',0))%len(visible_extras);order.extend(visible_extras[(rr+i)%len(visible_extras)] for i in range(len(visible_extras)));self._advanced_rr27=(rr+1)%len(visible_extras)
+        if now_ms-float(getattr(self,'_main_background_ms27',0.0))>=500 and getattr(self,'charts',None):order.append(self.charts[self.active_chart])
+    else:
+        mains=list(getattr(self,'charts',()));rr=int(getattr(self,'_chart_rr',0))%max(1,len(mains))
+        if mains:order=[self.charts[self.active_chart]]+[mains[(rr+i)%len(mains)] for i in range(len(mains))];self._chart_rr=(rr+1)%len(mains)
+    drawn=0;seen=set()
+    for c in order:
+        if id(c) in seen:continue
+        seen.add(id(c))
+        try:
+            is_main=c in getattr(self,'charts',())
+            if c.winfo_exists() and c.winfo_viewable() and c.due_for_refresh(now_ms):
+                c.request_draw(False);c.mark_refreshed(now_ms);drawn+=1
+                if visible_extras and is_main:self._main_background_ms27=now_ms
+                if drawn>=limit or (time.perf_counter()-start_cpu)*1000.0>=budget:break
+        except Exception as e:
+            try:self.market.errors.append(f'chart scheduler 2.7: {type(e).__name__}: {e}')
+            except Exception:pass
+    spent=(time.perf_counter()-start_cpu)*1000.0;delay=8 if spent<budget*.85 else 12 if spent<budget*1.4 else 20
+    if heavy>=3:delay=max(12,delay)
+    self._chart_refresh_job=self.root.after(delay,self._chart_refresh_pulse)
+App._chart_refresh_pulse=_sgp27_chart_refresh_pulse
+
+# The research lab remains available; this companion controller shows the Fed moving the actual
+# rate/QE/liquidity sliders live whenever autopilot is enabled.
+def _sgp27_market_conditions_lab(self):
+    _sgp25fp_lab_base(self)
+    w=ToolWindow(self.root);w.style_window('FED AUTOPILOT • LIVE POLICY SLIDERS','760x610');w.resizable(True,True);m=self.market
+    ttk.Label(w,text='FED AUTOPILOT • LIVE POLICY SLIDERS',font=('Segoe UI',15,'bold')).pack(anchor='w',padx=18,pady=(16,4));ttk.Label(w,text='The controller watches calculated SPX, inflation, unemployment, growth, VIX and credit stress. It deliberately ignores a temporary SPY-only dislocation. With autopilot on, the sliders below move as policy responds.',foreground=MUTED,wraplength=710).pack(anchor='w',padx=18,pady=(0,10))
+    auto=tk.BooleanVar(value=bool(getattr(m,'fed_autopilot',True)));vars={'Policy rate':tk.DoubleVar(value=float(m.macro.get('policy_rate',4.0))),'Inflation target':tk.DoubleVar(value=float(m.macro.get('fed_target',2.0))),'QE / QT intensity':tk.DoubleVar(value=float(getattr(m,'qe_intensity',0.0))),'Balance sheet ($T)':tk.DoubleVar(value=float(getattr(m,'qe_balance',7e12))/1e12),'Market liquidity':tk.DoubleVar(value=float(m.macro.get('liquidity',1.0)))}
+    def toggle():m.fed_autopilot=bool(auto.get());m.auto_stabilizer=m.fed_autopilot
+    ttk.Checkbutton(w,text='Fed controls policy sliders automatically',variable=auto,command=toggle).pack(anchor='w',padx=18,pady=5);readouts={};specs=[('Policy rate',0,12,.01,'%'),('Inflation target',1,4,.05,'%'),('QE / QT intensity',-.5,1,.01,''),('Balance sheet ($T)',3,12,.05,'T'),('Market liquidity',.35,3,.01,'×')]
+    for name,lo,hi,res,suffix in specs:
+        row=ttk.Frame(w);row.pack(fill='x',padx=18,pady=5);ttk.Label(row,text=name,width=20).pack(side='left');tk.Scale(row,from_=lo,to=hi,resolution=res,orient='horizontal',variable=vars[name],length=420,bg=PANEL,fg=TEXT,highlightthickness=0).pack(side='left',fill='x',expand=True);lab=ttk.Label(row,width=10);lab.pack(side='right');readouts[name]=(lab,suffix)
+    status=ttk.Label(w,text='',foreground=CYAN,wraplength=710,justify='left');status.pack(fill='x',padx=18,pady=10)
+    def apply_manual():
+        m.fed_autopilot=bool(auto.get());m.auto_stabilizer=m.fed_autopilot;m.macro['policy_rate']=float(vars['Policy rate'].get());m.macro['fed_target']=float(vars['Inflation target'].get());m.qe_intensity=float(vars['QE / QT intensity'].get());m.qe_balance=float(vars['Balance sheet ($T)'].get())*1e12;m.macro['liquidity']=float(vars['Market liquidity'].get());m.scenario_liquidity=float(vars['Market liquidity'].get());m.macro['qe_balance_trn']=m.qe_balance/1e12;self.status_flash('Fed policy controls applied')
+    job={'id':None}
+    def pulse():
+        try:
+            if not w.winfo_exists():return
+            if bool(getattr(m,'fed_autopilot',False)):
+                auto.set(True);vars['Policy rate'].set(float(m.macro.get('policy_rate',4.0)));vars['Inflation target'].set(float(m.macro.get('fed_target',2.0)));vars['QE / QT intensity'].set(float(getattr(m,'qe_intensity',0.0)));vars['Balance sheet ($T)'].set(float(getattr(m,'qe_balance',7e12))/1e12);vars['Market liquidity'].set(float(m.macro.get('liquidity',1.0)))
+            for name,(lab,suffix) in readouts.items():lab.config(text=f'{vars[name].get():.2f}{suffix}')
+            status.config(text=f'TARGET RATE {float(getattr(m,"fed_policy_target",m.macro.get("policy_rate",0))):.2f}%  •  SPY/SPX premium {float(getattr(m,"spy_spx_divergence_pct",0)):+.2f}%\n{getattr(m,"fed_policy_reason","Balanced dual-mandate conditions")}');job['id']=w.after(500,pulse)
+        except tk.TclError:return
+    def close():
+        try:
+            if job['id'] is not None:w.after_cancel(job['id'])
+        except Exception:pass
+        w.destroy()
+    bar=ttk.Frame(w);bar.pack(side='bottom',fill='x',padx=18,pady=16);ttk.Button(bar,text='APPLY CURRENT / MANUAL VALUES',command=apply_manual).pack(side='left',fill='x',expand=True);ttk.Button(bar,text='CLOSE',command=close).pack(side='left',fill='x',expand=True,padx=(7,0));w.protocol('WM_DELETE_WINDOW',close);pulse()
+App.market_conditions_lab=_sgp27_market_conditions_lab
+
+def _sgp27_maximize_window(window):
+    try:window.state('zoomed');return
+    except Exception:pass
+    try:window.attributes('-zoomed',True);return
+    except Exception:pass
+    try:window.geometry(f'{window.winfo_screenwidth()}x{window.winfo_screenheight()}+0+0')
+    except Exception:pass
+
+_Advanced_sgp27_base=AdvancedChartWindow
+class AdvancedChartWindow(_Advanced_sgp27_base):
+    def __init__(self,parent,app,asset):
+        super().__init__(parent,app,asset);self.after_idle(lambda:_sgp27_maximize_window(self))
+
+def _sgp27_relocate_time_controls(app):
+    header,_=_sgp25_news_header(app);skip=getattr(app,'skip_open_btn25',None)
+    if header is None or skip is None:return
+    old_scale=getattr(app,'time_warp_scale',None);old_clock=getattr(app,'clock_label',None);old_value=getattr(app,'time_warp_label',None);old_top=getattr(old_scale,'master',None)
+    try:
+        lo=float(old_scale.cget('from'));hi=float(old_scale.cget('to'));resolution=float(old_scale.cget('resolution'))
+    except Exception:lo,hi,resolution=1.0,100.0,.25
+    # Remove the original toolbar label and recreate the controls in the lower news/action row;
+    # Tk widgets cannot be re-parented safely after construction.
+    try:
+        for widget in old_top.winfo_children():
+            if isinstance(widget,ttk.Label) and str(widget.cget('text')).strip().upper()=='TIME WARP':widget.destroy()
+    except Exception:pass
+    for widget in (old_scale,old_value,old_clock):
+        try:widget.destroy()
+        except Exception:pass
+    group=ttk.Frame(header);group.pack(side='left',fill='x',expand=True,padx=(5,3),after=skip);app.time_status_group27=group
+    ttk.Label(group,text='TIME WARP',font=('Segoe UI',7,'bold')).pack(side='left',padx=(2,3));app.time_warp_scale=tk.Scale(group,from_=lo,to=hi,resolution=resolution,orient='horizontal',showvalue=0,length=172,variable=app.time_warp,bg=PANEL,fg=TEXT,highlightthickness=0,command=app.set_time_warp);app.time_warp_scale.pack(side='left');app.time_warp_label=ttk.Label(group,text='',width=6,font=('Segoe UI',7,'bold'));app.time_warp_label.pack(side='left',padx=(2,7));app.clock_label=ttk.Label(group,text='',font=('Consolas',8,'bold'),anchor='w');app.clock_label.pack(side='left',fill='x',expand=True,padx=(3,2));app.set_time_warp(app.time_warp.get())
+
+def _sgp27_clock_stream(self):
+    try:
+        if not self.root.winfo_exists():return
+        t=self.market.clock.current;state='US OPEN' if self.market.clock.open else 'US CLOSED';txt=f'{t:%a %Y-%m-%d %H:%M:%S ET}  •  {self.market.clock.utc_time}  •  {state}'
+        if txt!=getattr(self,'_last_clock_text27',None):self.clock_label.config(text=txt);self._last_clock_text27=txt
+    except Exception:pass
+    self._clock_stream_job=self.root.after(250,self._smooth_clock_stream)
+App._smooth_clock_stream=_sgp27_clock_stream
+
+_App_workspace_guard_sgp27_base=App._enforce_workspace25
+def _sgp27_workspace_guard(self,*args):
+    out=_App_workspace_guard_sgp27_base(self,*args)
+    try:
+        if getattr(self,'time_status_group27',None) is not None:self.time_warp_scale.config(length=172);self.clock_label.config(font=('Consolas',8,'bold'))
+    except Exception:pass
+    return out
+App._enforce_workspace25=_sgp27_workspace_guard
+
+_App_init_sgp27_base=App.__init__
+def _sgp27_app_init(self,root,market,portfolio):
+    _App_init_sgp27_base(self,root,market,portfolio)
+    self.watch_stream_ms25=max(100,min(300,int(getattr(self,'watch_stream_ms25',150))))
+    try:
+        self.orders_view.config(selectmode='extended')
+        for widget in self.orders_view.master.winfo_children():
+            if isinstance(widget,ttk.Frame):
+                for child in widget.winfo_children():
+                    if isinstance(child,ttk.Button) and 'CANCEL' in str(child.cget('text')).upper():child.config(text='CANCEL HIGHLIGHTED')
+        self.orders_view.bind('<Button-3>',self.orders_context)
+    except Exception:pass
+    try:_sgp27_relocate_time_controls(self)
+    except Exception as e:
+        try:self.market.errors.append(f'time control layout 2.7: {type(e).__name__}: {e}')
+        except Exception:pass
+    self.root.after_idle(lambda:_sgp27_maximize_window(self.root))
+App.__init__=_sgp27_app_init
+
+# Wheel input often arrives as a burst of many events.  The legacy handler rebuilt synthetic/live
+# candle data and painted synchronously for every notch while the scheduler painted again, making
+# candles appear to race or flicker.  Treat the burst as one camera transaction and resume live
+# rendering only after the gesture settles.
+_Chart_due_sgp27_base=Chart.due_for_refresh
+def _sgp27_chart_due(self,now_ms):
+    if getattr(self,'_wheel_zoom_job27',None) is not None:return False
+    return _Chart_due_sgp27_base(self,now_ms)
+Chart.due_for_refresh=_sgp27_chart_due
+
+def _sgp27_chart_zoom(self,up):
+    factor=1.12 if bool(up) else .89;self.zoom=max(.25,min(20.0,float(getattr(self,'zoom',1.0))*factor))
+    job=getattr(self,'_wheel_zoom_job27',None)
+    if job is not None:
+        try:self.after_cancel(job)
+        except Exception:pass
+    def commit():
+        self._wheel_zoom_job27=None;self._key=None;self._display_data_cache25=None;self._auto_y_state25=None;self._stable_bounds25=None
+        self.request_draw(force=True);self._next_refresh_ms=time.monotonic()*1000.0+max(50,int(getattr(self,'refresh_ms',100)))
+    try:self._wheel_zoom_job27=self.after(55,commit)
+    except Exception:commit()
+    return 'break'
+Chart._zoom=_sgp27_chart_zoom
+
+def _sgp27_chart_wheel(self,event):
+    try:
+        delta=int(getattr(event,'delta',0));up=delta>0
+        steps=max(1,min(4,abs(delta)//120)) if delta else 1
+    except Exception:up=True;steps=1
+    for _ in range(steps):self._zoom(up)
+    return 'break'
+Chart.wheel=_sgp27_chart_wheel

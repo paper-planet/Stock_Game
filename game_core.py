@@ -1982,3 +1982,109 @@ def _sgp26_restore_game_state(self,username,portfolio,market):
     except Exception:pass
     return ok
 AccountManager.restore_game_state=_sgp26_restore_game_state
+
+
+# ============================================================================
+# Stock Game Pro 2.7 — staged institutional liquidation / position integrity
+# ============================================================================
+# Option strategies are aggregate objects, so a very large strategy can be reduced by its
+# original leg ratio in O(number of legs) time.  This gives VWAP/TWAP/POV/Iceberg parents a
+# safe execution primitive without ever materializing one object per contract.
+def _sgp27_strategy_units(self,ref):
+    st=self.get_strategy(ref)
+    if st is None or not getattr(st,'legs',None):return 0
+    units=0
+    for leg in st.legs:
+        try:q=abs(int(leg.quantity))
+        except Exception:q=0
+        if q<=0:continue
+        units=q if units<=0 else math.gcd(units,q)
+    return max(0,int(units))
+Portfolio.strategy_units=_sgp27_strategy_units
+
+def _sgp27_liquidate_strategy_units(self,ref,units):
+    st=self.get_strategy(ref)
+    if st is None:return False,'Invalid or completed option strategy.',0,0.0
+    total=self.strategy_units(st)
+    try:close=max(0,min(total,int(units)))
+    except Exception:close=0
+    if total<=0 or close<=0:return False,'Liquidation quantity must be positive.',0,0.0
+    before_value=_sgp221_money(st.current_value());before_cost=_sgp221_money(getattr(st,'open_cost',0.0))
+    fraction=1.0 if close>=total else float(close)/float(total)
+    proceeds=_sgp221_money(before_value*fraction);cost_piece=before_cost if close>=total else _sgp221_money(before_cost*fraction)
+    ratios=[];contracts=0
+    for leg in list(st.legs):
+        q=max(0,int(leg.quantity));per_unit=q//total;cut=min(q,per_unit*close);ratios.append((leg,q-cut));contracts+=cut
+    complete=close>=total
+    if complete:
+        try:self.options.remove(st)
+        except ValueError:return False,'Strategy is no longer open.',0,0.0
+    else:
+        for leg,new_qty in ratios:leg.quantity=max(0,int(new_qty))
+        st.open_cost=_sgp221_money(before_cost-cost_piece)
+    self.cash=_sgp221_money(self.cash+proceeds);piece_pnl=_sgp221_money(proceeds-cost_piece);self.realized=_sgp221_money(self.realized+piece_pnl)
+    self._option_cache_version+=1;self._option_cache.clear();self.trade_count+=1;self._networth_cache26=None
+    try:
+        under=st.legs[0].contract.underlying.symbol if st.legs else 'OPTION';px=abs(proceeds)/max(1,contracts*CONTRACT_SIZE)
+        self._append_trade_history('CLOSE',under,max(1,contracts),px,'OPTION',f'{getattr(st,"name","Strategy")} • staged close {close:,}/{total:,} units • P/L ${piece_pnl:,.2f}')
+    except Exception:pass
+    state='fully liquidated' if complete else f'{self.strategy_units(st):,} units remain'
+    return True,f'{getattr(st,"name","Option strategy")} • closed {close:,} units • ${piece_pnl:,.2f} realized P/L • {state}',close,proceeds
+Portfolio.liquidate_strategy_units=_sgp27_liquidate_strategy_units
+
+def _sgp27_liquidate_strategy(self,ref):
+    units=self.strategy_units(ref)
+    ok,msg,_,_=self.liquidate_strategy_units(ref,units)
+    return ok,msg
+Portfolio.liquidate_strategy=_sgp27_liquidate_strategy
+
+# A stale pre-2.7 save can theoretically contain a pending ETF split.  Clear it rather than
+# allowing a one-time quantity jump when that account is next opened.
+_Portfolio_apply_actions_sgp27_base=Portfolio.apply_corporate_actions
+def _sgp27_apply_corporate_actions(self,assets):
+    clean=[]
+    for a in assets:
+        if str(getattr(a,'category','')) in ('ETF','Index'):
+            a.pending_split=None
+        else:clean.append(a)
+    return _Portfolio_apply_actions_sgp27_base(self,clean)
+Portfolio.apply_corporate_actions=_sgp27_apply_corporate_actions
+
+# Persist both stock and option liquidation parents.  Records remain compact and restore against
+# stable strategy ids; a parent is skipped safely if its position was already closed/expired.
+_Account_save_sgp27_base=AccountManager.save_game_state
+def _sgp27_save_game_state(self,username,portfolio,market,reason='autosave'):
+    ok=_Account_save_sgp27_base(self,username,portfolio,market,reason)
+    if ok and username:
+        try:
+            rec=self.accounts.get(str(username).lower()) or self.accounts.get(username);state=rec.setdefault('game_state',{});rows=[]
+            for o in list(getattr(market,'algo_orders',()))[:128]:
+                kind=str(o.get('kind','STOCK')).upper();a=o.get('asset');st=o.get('strategy')
+                rows.append({'id':int(o.get('id',0)),'kind':kind,'side':o.get('side','CLOSE' if kind=='OPTION' else 'BUY'),'symbol':getattr(a,'symbol',''),'strategy_id':getattr(st,'strategy_id',o.get('strategy_id')),'qty':int(o.get('qty',0)),'remaining':int(o.get('remaining',0)),'filled_qty':int(o.get('filled_qty',0)),'style':o.get('style','VWAP'),'participation':float(o.get('participation',12.0)),'status':o.get('status','WORKING'),'planned_slices':int(o.get('planned_slices',0)),'slices_done':int(o.get('slices_done',0)),'display_qty':int(o.get('display_qty',0))})
+            state['algo_orders']=rows;self._save()
+        except Exception:pass
+    return ok
+AccountManager.save_game_state=_sgp27_save_game_state
+
+_Account_restore_sgp27_base=AccountManager.restore_game_state
+def _sgp27_restore_game_state(self,username,portfolio,market):
+    ok=_Account_restore_sgp27_base(self,username,portfolio,market)
+    try:
+        rec=self.accounts.get(str(username).lower()) or self.accounts.get(username) or {};rows=(rec.get('game_state') or {}).get('algo_orders') or [];restored=[];max_id=int(getattr(market,'order_id',1));now=_sgp_perf_time.monotonic()
+        for row in rows[:128]:
+            kind=str(row.get('kind','STOCK')).upper();remaining=max(0,min(10**15,int(row.get('remaining',0))));st=None
+            if remaining<=0:continue
+            if kind=='OPTION':
+                sid=row.get('strategy_id');st=portfolio.get_strategy(f'OPT:{sid}') if sid is not None else None
+                if st is None:continue
+                remaining=min(remaining,portfolio.strategy_units(st));a=st.legs[0].contract.underlying if st.legs else None;side='CLOSE'
+            else:a=market.get_asset(str(row.get('symbol','')));side=str(row.get('side','BUY')).upper()
+            if a is None or remaining<=0:continue
+            oid=max(1,int(row.get('id',max_id)));max_id=max(max_id,oid+1);part=max(1.0,min(50.0,float(row.get('participation',12.0))));total=max(remaining,int(row.get('qty',remaining)))
+            restored.append({'id':oid,'kind':kind,'side':side,'asset':a,'strategy':st,'strategy_id':getattr(st,'strategy_id',None),'qty':total,'remaining':remaining,'filled_qty':max(0,int(row.get('filled_qty',0))),'style':str(row.get('style','VWAP')).upper(),'participation':part,'status':'WORKING','created_at':now,'next_slice':0.0,'last_fill':0,'last_vwap':0.0,'message':'Restored parent order','planned_slices':max(1,int(row.get('planned_slices',0) or math.ceil(100.0/part))),'slices_done':max(0,int(row.get('slices_done',0))),'display_qty':max(1,int(row.get('display_qty',0) or math.ceil(total*part/100.0)))})
+        market.algo_orders=restored;market.order_id=max_id
+    except Exception as e:
+        try:market.errors.append(f'parent restore 2.7: {type(e).__name__}: {e}')
+        except Exception:pass
+    return ok
+AccountManager.restore_game_state=_sgp27_restore_game_state

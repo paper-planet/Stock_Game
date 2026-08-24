@@ -863,7 +863,10 @@ def _sgp_corporate_action_cycle(self):
     if self._corp_last_date==d:return
     self._corp_last_date=d
     if self.clock.current.weekday()>=5:return
-    liquid=[a for a in self.stocks if getattr(a,'price',0)>2]
+    # Fund ETFs and calculated indexes are not ordinary operating companies.  Applying the
+    # random single-company split/dilution/buyback lottery to SPY silently changed a player's
+    # held quantity and broke its creation/redemption relationship with SPX.
+    liquid=[a for a in self.stocks if getattr(a,'price',0)>2 and str(getattr(a,'category','')) not in ('ETF','Index')]
     if not liquid:return
     # About one event every ~18 simulated weekdays for the whole universe.
     if random.random()>.055:return
@@ -2686,3 +2689,236 @@ def _sgp26_hot_symbols(self,now):
     self._v25_hot_cache=hot
     return hot
 Market._v25_hot_symbols=_sgp26_hot_symbols
+
+
+# ============================================================================
+# Stock Game Pro 2.7 — ETF arbitrage, true parent algorithms and Fed autopilot
+# ============================================================================
+_Market_init_sgp27_base=Market.__init__
+def _sgp27_market_init(self,*args,**kwargs):
+    _Market_init_sgp27_base(self,*args,**kwargs)
+    spy=self.get_asset('SPY');spx=self.get_asset('SPX')
+    self.spy_spx_nav_ratio=(float(spy.price)/max(.000001,float(spx.price))) if spy is not None and spx is not None else (640.0/5600.0)
+    self.spy_nav_band=.12;self.spy_spx_divergence_pct=0.0
+    self.fed_autopilot=bool(getattr(self,'auto_stabilizer',True));self.auto_stabilizer=self.fed_autopilot
+    self.fed_policy_target=float(self.macro.get('policy_rate',4.25));self.fed_policy_reason='Balanced dual-mandate conditions'
+    self._fed_last_record27=0.0;self._fed_last_slider27=0.0
+Market.__init__=_sgp27_market_init
+
+# SPY is an exchange-traded claim on the SPX basket.  A whale can temporarily dislocate it, but
+# creation/redemption arbitrage prevents repeated parent slices from compounding without bound.
+_Market_preview_sgp27_base=Market.preview_execution
+def _sgp27_preview_execution(self,side,a,qty):
+    quote=dict(_Market_preview_sgp27_base(self,side,a,qty));sym=str(getattr(a,'symbol',''))
+    if sym=='SPY':
+        quote['permanent']=min(float(quote.get('permanent',0.0)),.022)
+        quote['impact']=min(float(quote.get('impact',0.0)),.24)
+        quote['creation_redemption']=True
+    elif sym=='SPX':
+        # SPX is a calculated index, not an issued share. A simulator trade receives a synthetic
+        # execution price, while the displayed index level continues to be set by constituents.
+        buy=str(side).upper() in ('BUY','COVER');touch=max(.000001,float(a.ask if buy else a.bid));slip=min(.006,float(quote.get('impact',0.0))*.08);quote['vwap']=touch*(1+slip if buy else 1-slip)
+        quote['permanent']=min(float(quote.get('permanent',0.0)),.002)
+        quote['impact']=min(float(quote.get('impact',0.0)),.025)
+        quote['synthetic_index']=True
+    return quote
+Market.preview_execution=_sgp27_preview_execution
+
+_Market_execute_sgp27_base=Market.execute_liquidity_order
+def _sgp27_execute_liquidity_order(self,side,a,qty):
+    out=_Market_execute_sgp27_base(self,side,a,qty);sym=str(getattr(a,'symbol',''))
+    try:
+        if sym=='SPY':
+            spx=self.get_asset('SPX');nav=float(spx.price)*float(self.spy_spx_nav_ratio) if spx is not None else float(a.price)
+            lo=max(.000001,nav*(1-float(self.spy_nav_band)));hi=nav*(1+float(self.spy_nav_band));before=float(a.price);clamped=max(lo,min(hi,before))
+            if clamped!=before:
+                a.update_price(clamped,0,self.clock.current)
+                try:self._v25_note_asset_move(a,before)
+                except Exception:pass
+            st=self._impact_state.setdefault('SPY',{'pressure':0.0,'last':time.monotonic()});st['pressure']=max(-.32,min(.32,float(st.get('pressure',0.0))))
+            self._liquidity_health['SPY']=max(.25,float(self._liquidity_health.get('SPY',1.0)))
+            self.spy_spx_divergence_pct=(float(a.price)/max(.000001,nav)-1.0)*100.0
+        elif sym=='SPX':
+            st=self._impact_state.setdefault('SPX',{'pressure':0.0,'last':time.monotonic()});st['pressure']=max(-.04,min(.04,float(st.get('pressure',0.0))))
+    except Exception as e:self.errors.append(f'ETF arbitrage execution: {type(e).__name__}: {e}')
+    return out
+Market.execute_liquidity_order=_sgp27_execute_liquidity_order
+
+_Market_asset_return_sgp27_base=Market._asset_return
+def _sgp27_asset_return(self,a,game_minutes,market_z,sector_z):
+    r=float(_Market_asset_return_sgp27_base(self,a,game_minutes,market_z,sector_z))
+    if str(getattr(a,'symbol',''))=='SPY':
+        spx=self.get_asset('SPX')
+        if spx is not None:
+            nav=max(.000001,float(spx.price)*float(getattr(self,'spy_spx_nav_ratio',640.0/5600.0)));gap=math.log(max(.000001,float(a.price))/nav)
+            # Fast bounded creation/redemption correction. It removes an exponential runaway but
+            # leaves a visible premium/discount while a very large parent is still working.
+            r+=max(-.012,min(.012,-gap*.085));self.spy_spx_divergence_pct=(float(a.price)/nav-1.0)*100.0
+            st=self._impact_state.get('SPY')
+            if st:st['pressure']=max(-.32,min(.32,float(st.get('pressure',0.0))))
+    return max(-.70,min(.70,r))
+Market._asset_return=_sgp27_asset_return
+
+def _sgp27_algo_interval(style):
+    return {'POV':.20,'VWAP':.30,'ICEBERG':.38,'TWAP':.52}.get(str(style).upper(),.30)
+
+def _sgp27_volume_curve(self):
+    dt=self.clock.current;minute=dt.hour*60+dt.minute
+    if dt.weekday()>=5 or minute<570 or minute>=960:return .55
+    x=max(0.0,min(1.0,(minute-570)/390.0))
+    # U-shaped institutional volume curve: busiest near the open and close.
+    return .62+1.18*(abs(x-.5)*2.0)**1.55
+Market.intraday_volume_curve=_sgp27_volume_curve
+
+def _sgp27_option_execution_cap(self,st,remaining):
+    if st is None or not getattr(st,'legs',None):return 0
+    a=st.legs[0].contract.underlying
+    try:adv_contracts=max(1.0,float(self.adv_shares(a))/100.0)
+    except Exception:adv_contracts=1000.0
+    oi=[];vol=[]
+    for leg in st.legs:
+        try:oi.append(max(1,int(getattr(leg.contract,'open_interest',1))))
+        except Exception:pass
+        try:vol.append(max(1,int(getattr(leg.contract,'volume',1))))
+        except Exception:pass
+    capacity=max(1.0,adv_contracts*.035,(min(oi) if oi else 1)*.16,(min(vol) if vol else 1)*.35)
+    return max(1,min(int(remaining),int(capacity)))
+Market.option_execution_cap=_sgp27_option_execution_cap
+
+def _sgp27_initialize_parent(self,o):
+    part=max(1.0,min(50.0,float(o.get('participation',12.0))));qty=max(1,int(o.get('qty',1)));o['kind']=str(o.get('kind','STOCK')).upper();o['planned_slices']=max(2,min(100,int(math.ceil(100.0/part))));o['slices_done']=max(0,int(o.get('slices_done',0)));o['last_observed_volume']=max(0,int(getattr(o.get('asset'),'volume',0)))
+    if o['kind']=='OPTION':cap=self.option_execution_cap(o.get('strategy'),qty)
+    else:cap=max(1,int(self.max_executable_qty(o.get('asset'),o.get('side','SELL'),qty)))
+    o['display_qty']=max(1,min(qty,int(math.ceil(cap*part/100.0))))
+    return o
+Market._initialize_parent27=_sgp27_initialize_parent
+
+def _sgp27_submit_algo_order(self,side,a,qty,style='VWAP',participation=12.0):
+    side=str(side).upper();style=str(style).upper();styles=('VWAP','TWAP','POV','ICEBERG')
+    if side not in ('BUY','SELL','SHORT','COVER') or a is None:raise ValueError('Invalid algorithm order.')
+    if style not in styles:raise ValueError('Choose VWAP, TWAP, POV or ICEBERG.')
+    q=_sgp26_safe_positive_int(qty);part=max(1.0,min(50.0,float(participation)))
+    if q<=0:raise ValueError('Quantity must be positive.')
+    for o in self.algo_orders:
+        if o.get('kind','STOCK')=='STOCK' and o.get('asset') is a and o.get('side')==side and o.get('style')==style and o.get('status') in ('WORKING','PAUSED','WAITING SESSION'):
+            o['qty']=_sgp26_safe_positive_int(int(o.get('qty',0))+q);o['remaining']=_sgp26_safe_positive_int(int(o.get('remaining',0))+q);o['participation']=part;o['status']='WORKING';o['merged']=True;self._initialize_parent27(o);return o
+    if len(self.algo_orders)>=128:raise ValueError('Too many active parent orders. Cancel or complete an order first.')
+    o={'id':self.order_id,'kind':'STOCK','side':side,'asset':a,'strategy':None,'qty':q,'remaining':q,'filled_qty':0,'style':style,'participation':part,'status':'WORKING','created_at':time.monotonic(),'next_slice':0.0,'last_fill':0,'last_vwap':0.0,'message':''}
+    self.order_id+=1;self._initialize_parent27(o);self.algo_orders.append(o);self.visual_version+=1;return o
+Market.submit_algo_order=_sgp27_submit_algo_order
+
+def _sgp27_submit_option_liquidation(self,ref,style='VWAP',participation=12.0):
+    portfolio=getattr(self,'portfolio',None);st=portfolio.get_strategy(ref) if portfolio is not None else None;style=str(style).upper();part=max(1.0,min(50.0,float(participation)))
+    if st is None or not getattr(st,'legs',None):raise ValueError('Option strategy is no longer open.')
+    if style not in ('VWAP','TWAP','POV','ICEBERG'):raise ValueError('Choose VWAP, TWAP, POV or ICEBERG.')
+    units=max(0,int(portfolio.strategy_units(st)))
+    if units<=0:raise ValueError('Option strategy has no liquidatable units.')
+    for o in self.algo_orders:
+        if o.get('kind')=='OPTION' and o.get('strategy') is st and o.get('status') in ('WORKING','PAUSED','WAITING SESSION'):
+            o['style']=style;o['participation']=part;o['qty']=units;o['remaining']=units;o['status']='WORKING';o['merged']=True;self._initialize_parent27(o);return o
+    if len(self.algo_orders)>=128:raise ValueError('Too many active parent orders. Cancel or complete an order first.')
+    a=st.legs[0].contract.underlying;o={'id':self.order_id,'kind':'OPTION','side':'CLOSE','asset':a,'strategy':st,'strategy_id':getattr(st,'strategy_id',None),'qty':units,'remaining':units,'filled_qty':0,'style':style,'participation':part,'status':'WORKING','created_at':time.monotonic(),'next_slice':0.0,'last_fill':0,'last_vwap':0.0,'message':''}
+    self.order_id+=1;self._initialize_parent27(o);self.algo_orders.append(o);self.visual_version+=1;return o
+Market.submit_option_liquidation=_sgp27_submit_option_liquidation
+
+def _sgp27_parent_slice_qty(self,o,cap,remaining):
+    style=str(o.get('style','VWAP')).upper();part=max(1.0,min(50.0,float(o.get('participation',12.0))));cap=max(1,int(cap));remaining=max(1,int(remaining))
+    if style=='TWAP':
+        left=max(1,int(o.get('planned_slices',1))-int(o.get('slices_done',0)));target=int(math.ceil(remaining/left))
+    elif style=='POV':
+        a=o.get('asset');cur=max(0,int(getattr(a,'volume',0)));last=max(0,int(o.get('last_observed_volume',cur)));observed=max(0,cur-last);o['last_observed_volume']=cur
+        if observed<=0:
+            try:observed=max(1,int(self.adv_shares(a)*_sgp27_algo_interval(style)/(6.5*3600.0)))
+            except Exception:observed=1
+        target=int(math.ceil(observed*part/100.0))
+    elif style=='ICEBERG':target=max(1,int(o.get('display_qty',1)))
+    else:target=int(math.ceil(cap*part/100.0*float(self.intraday_volume_curve())))
+    return max(1,min(remaining,cap,target))
+Market.parent_slice_qty=_sgp27_parent_slice_qty
+
+def _sgp27_complete_parent(self,o,status='COMPLETE'):
+    if o in self.algo_orders:self.algo_orders.remove(o)
+    o['status']=status;self.algo_order_history.append(dict(o));self.algo_order_history=self.algo_order_history[-250:]
+Market._complete_parent27=_sgp27_complete_parent
+
+def _sgp27_process_algo_orders(self):
+    orders=list(getattr(self,'algo_orders',()) or ())
+    if not orders or getattr(self,'portfolio',None) is None:return
+    now=time.monotonic();n=len(orders);start=int(getattr(self,'_algo_rr26',0))%n
+    for step in range(n):
+        o=orders[(start+step)%n]
+        if o not in self.algo_orders or now<float(o.get('next_slice',0.0)):continue
+        kind=str(o.get('kind','STOCK')).upper();a=o.get('asset');remaining=_sgp26_safe_positive_int(o.get('remaining',0))
+        if a is None or remaining<=0:self._complete_parent27(o);continue
+        if not self.stock_trading_allowed(a):o['status']='WAITING SESSION';o['next_slice']=now+1.0;continue
+        if kind=='OPTION':
+            st=o.get('strategy') or self.portfolio.get_strategy(f"OPT:{o.get('strategy_id')}")
+            live=self.portfolio.strategy_units(st) if st is not None else 0;remaining=min(remaining,max(0,int(live)))
+            if remaining<=0:self._complete_parent27(o);continue
+            cap=self.option_execution_cap(st,remaining);slice_qty=self.parent_slice_qty(o,cap,remaining)
+            try:ok,msg,filled,proceeds=self.portfolio.liquidate_strategy_units(st,slice_qty);o['last_vwap']=abs(float(proceeds))/max(1,int(filled))
+            except Exception as e:ok=False;filled=0;msg=f'{type(e).__name__}: {e}';self.errors.append(f'option parent {o.get("id")}: {msg}')
+        else:
+            side=str(o.get('side','BUY')).upper();held=int(self.portfolio.positions.get(a.symbol,0))
+            if side=='SELL':remaining=min(remaining,max(0,held))
+            elif side=='COVER':remaining=min(remaining,max(0,-held))
+            if remaining<=0:self._complete_parent27(o);continue
+            cap=max(1,int(self.max_executable_qty(a,side,remaining)));slice_qty=self.parent_slice_qty(o,cap,remaining);before=int(self.portfolio.positions.get(a.symbol,0));self._processing_algo26=True
+            try:
+                fn={'BUY':self.portfolio.buy_asset,'SELL':self.portfolio.sell_asset,'SHORT':self.portfolio.short_asset,'COVER':self.portfolio.cover_short}[side];ok,msg=fn(a,slice_qty)
+            except Exception as e:ok=False;msg=f'{type(e).__name__}: {e}';self.errors.append(f'parent order {o.get("id")}: {msg}')
+            finally:self._processing_algo26=False
+            after=int(self.portfolio.positions.get(a.symbol,0));filled=max(0,after-before) if side in ('BUY','COVER') else max(0,before-after);o['last_vwap']=float(getattr(a,'last_execution_vwap',a.price))
+        if ok and filled>0:
+            o['filled_qty']=_sgp26_safe_positive_int(int(o.get('filled_qty',0))+filled);o['remaining']=max(0,int(o.get('remaining',0))-filled);o['last_fill']=filled;o['message']=str(msg);o['slices_done']=int(o.get('slices_done',0))+1;o['status']='WORKING' if o['remaining'] else 'COMPLETE';o['next_slice']=now+_sgp27_algo_interval(o.get('style'))
+            if o['remaining']<=0:self._complete_parent27(o)
+        else:o['status']='PAUSED';o['message']=str(msg);o['next_slice']=now+2.0
+        self._algo_rr26=(start+step+1)%max(1,n);self.visual_version+=1;break
+Market._process_algo_orders=_sgp27_process_algo_orders
+
+# Publish only what is actually visible/active at high frequency.  The old implementation promoted
+# every holding in a huge account into the 10–90 ms quote loop, which was a major source of power
+# usage and advanced-chart contention.
+def _sgp27_hot_symbols(self,now):
+    if now-float(getattr(self,'_v25_last_hot_refresh',0.0))<.12:return getattr(self,'_v25_hot_cache',set())
+    self._v25_last_hot_refresh=now;hot={'SPY','SPX','NDX','DJI','RUT'}
+    for attr in ('_ui_hot_symbols25','_ui_visible_watch27','_ui_position_hot27','_ui_market_map_hot25','_ui_options_hot25'):
+        try:hot.update(getattr(self,attr,()) or ())
+        except Exception:pass
+    for seq in (self.pending_orders,getattr(self,'algo_orders',())):
+        for o in seq:
+            a=o.get('asset')
+            if a:hot.add(a.symbol)
+    self._v25_hot_cache=hot;return hot
+Market._v25_hot_symbols=_sgp27_hot_symbols
+
+# Bounded dual-mandate controller. It watches the calculated SPX basket (not a manipulated SPY
+# print), then gently moves the same policy variables exposed by the UI sliders.
+def _sgp27_policy_stabilizer(self):
+    enabled=bool(getattr(self,'fed_autopilot',getattr(self,'auto_stabilizer',True)));self.fed_autopilot=enabled;self.auto_stabilizer=enabled
+    if not enabled:return
+    spx=self.get_asset('SPX');vix=self.get_asset('VIX');m=self.macro
+    if spx is None:return
+    infl=float(m.get('inflation',2.5));target=float(m.get('fed_target',2.0));un=float(m.get('unemployment',4.1));growth=float(m.get('gdp_growth',2.0));move=float(spx.change_percent());credit=max(0.0,float(getattr(self,'scenario_credit_stress',0.0)));vix_level=float(getattr(vix,'price',18.0))
+    taylor=2.0+1.25*(infl-target)+.45*(growth-2.0)-.35*(un-4.1)
+    emergency=max(0.0,(-move-3.0)/5.0)+max(0.0,(credit-2.0)/3.0)+max(0.0,(un-5.0)/2.0)
+    policy_target=max(0.0,min(12.0,taylor-1.35*emergency));current=float(m.get('policy_rate',4.0));step=max(-.015,min(.015,policy_target-current));m['policy_rate']=max(0.0,min(15.0,current+step));self.fed_policy_target=policy_target
+    support=max(0.0,min(1.0,.16*max(0.0,-move-2.0)+.15*credit+.10*max(0.0,un-4.5)+.015*max(0.0,vix_level-24.0)))
+    restraint=max(0.0,min(.65,.14*max(0.0,infl-target-.8)+.04*max(0.0,move-5.0)))
+    qe_target=max(-.50,min(1.0,support-restraint));qe=float(getattr(self,'qe_intensity',0.0));qe+=max(-.025,min(.025,qe_target-qe));self.qe_intensity=max(-.50,min(1.0,qe));balance=float(getattr(self,'qe_balance',7e12));balance+=self.qe_intensity*6.0e9;self.qe_balance=max(3e12,min(12e12,balance))
+    liq_target=max(.45,min(2.25,1.0+.58*self.qe_intensity+.35*support-.030*credit+.025*(growth-2.0)));liq=float(m.get('liquidity',1.0));liq+=max(-.012,min(.012,liq_target-liq));m['liquidity']=liq
+    scenario=float(getattr(self,'scenario_liquidity',1.0));self.scenario_liquidity=scenario+max(-.010,min(.010,liq-scenario))
+    if self.qe_intensity>0: self.scenario_credit_stress=max(0.0,credit-.012*self.qe_intensity)
+    m['qe_balance_trn']=self.qe_balance/1e12;m['financial_conditions']=float(getattr(self,'scenario_credit_stress',0.0))-.62*(liq-1.0)+.10*(m['policy_rate']-policy_target);m['volatility_regime']=float(getattr(self,'scenario_volatility',1.0))
+    if emergency>.15:self.fed_policy_reason='Financial-stability support: easing rates, liquidity and balance sheet'
+    elif restraint>.10:self.fed_policy_reason='Inflation restraint: gradual rate/QT normalization'
+    elif policy_target>current+.10:self.fed_policy_reason='Dual mandate: measured policy tightening'
+    elif policy_target<current-.10:self.fed_policy_reason='Dual mandate: measured policy easing'
+    else:self.fed_policy_reason='Balanced dual-mandate conditions'
+    now=time.monotonic()
+    if now-float(getattr(self,'_fed_last_record27',0.0))>=10.0 or emergency>.6:
+        self._fed_last_record27=now;self.policy_interventions.append({'time':self.clock.current,'action':self.fed_policy_reason,'spx_change':move,'target_rate':policy_target,'qe':self.qe_balance,'intensity':self.qe_intensity});self.policy_interventions=self.policy_interventions[-100:]
+    last=getattr(self,'_last_policy_news',None)
+    if emergency>.65 and (last is None or (self.clock.current-last).total_seconds()>=3600):
+        self._last_policy_news=self.clock.current;self.news.append(NewsEvent(f'Federal Reserve simulation: {self.fed_policy_reason}; target rate {policy_target:.2f}%, balance sheet ${self.qe_balance/1e12:.2f}T.','SPX',.006,0,'FED'))
+Market._auto_policy_stabilizer=_sgp27_policy_stabilizer
