@@ -420,7 +420,7 @@ class OptionPreviewWindow(ToolWindow):
         super().__init__(parent);self.contract=contract;self.portfolio=portfolio;self.refresh=refresh;self.chain=chain;self.style_window('OPTION CREATION / ORDER PREVIEW','620x520');self.action=tk.StringVar(value=default_action);self.qty=tk.IntVar(value=1)
         f=ttk.Frame(self);f.pack(fill='both',expand=True,padx=16,pady=16);ttk.Label(f,text=f'{contract.underlying.symbol} • {contract.option_type.upper()} • Strike ${contract.strike:,.2f} • {contract.days}D',font=('Arial',14,'bold')).pack(anchor='w');ttk.Label(f,text='Double-click preview: choose quantity, then buy the contract or send it to the advanced spread builder.').pack(anchor='w',pady=6)
         stats=contract.stats;ttk.Label(f,text=f'Bid ${contract.bid:.2f}   Ask ${contract.ask:.2f}   Mid ${contract.mid:.2f}   IV {contract.volatility*100:.1f}%\nDelta {stats["delta"]:+.3f}   Gamma {stats["gamma"]:.4f}   Theta {stats["theta"]:.3f}   Vega {stats["vega"]:.3f}').pack(anchor='w',pady=8)
-        row=ttk.Frame(f);row.pack(fill='x',pady=10);ttk.Label(row,text='Action').pack(side='left');ttk.Combobox(row,textvariable=self.action,values=['BUY','SELL'],state='readonly',width=10).pack(side='left',padx=6);ttk.Label(row,text='Quantity').pack(side='left',padx=(18,4));ttk.Spinbox(row,from_=1,to=100000, textvariable=self.qty,width=10).pack(side='left')
+        row=ttk.Frame(f);row.pack(fill='x',pady=10);ttk.Label(row,text='Action').pack(side='left');ttk.Combobox(row,textvariable=self.action,values=['BUY','SELL'],state='readonly',width=10).pack(side='left',padx=6);ttk.Label(row,text='Quantity').pack(side='left',padx=(18,4));ttk.Spinbox(row,from_=1,to=1000000000000, textvariable=self.qty,width=14).pack(side='left')
         self.cost=ttk.Label(f,text='');self.cost.pack(anchor='w',pady=6);self.qty.trace_add('write',lambda *x:self.update_cost());self.update_cost()
         ttk.Button(f,text='BUY / SELL QUANTITY',command=self.execute).pack(fill='x',pady=5);ttk.Button(f,text='ADD TO ADVANCED SPREAD BUILDER',command=self.to_spread).pack(fill='x');ttk.Button(f,text='CLOSE',command=self.destroy).pack(fill='x',pady=5)
     def update_cost(self):
@@ -453,7 +453,7 @@ class SpreadBuilder(ToolWindow):
     def __init__(self,parent,market,portfolio,refresh,first=None):
         super().__init__(parent);self.market=market;self.portfolio=portfolio;self.refresh=refresh;self.style_window('ADVANCED SPREAD BUILDER','900x720');self.rows=[];self.exp=tk.StringVar(value='30D');self.ticker=tk.StringVar(value=first.underlying.symbol if first else 'SPY');self.net=tk.DoubleVar(value=0);self.order_type=tk.StringVar(value='MARKET');self.action=tk.StringVar(value='BUY')
         top=ttk.Frame(self);top.pack(fill='x',padx=10,pady=8);ttk.Label(top,text='Ticker').pack(side='left');ttk.Entry(top,textvariable=self.ticker,width=10).pack(side='left',padx=4);ttk.Label(top,text='Expiry').pack(side='left',padx=(12,2));ttk.Combobox(top,textvariable=self.exp,values=[x[0] for x in EXPIRATIONS if x[0] != '0DTE'],state='readonly',width=8).pack(side='left');ttk.Label(top,text='Preset').pack(side='left',padx=(12,2));self.preset=tk.StringVar(value='Call Debit Spread');ttk.Combobox(top,textvariable=self.preset,values=['Call Debit Spread','Call Credit Spread','Put Debit Spread','Put Credit Spread','Bull Call Spread','Bear Put Spread','Long Straddle','Short Straddle','Iron Condor'],state='readonly',width=18).pack(side='left');ttk.Button(top,text='LOAD PRESET',command=self.template).pack(side='left',padx=6)
-        self.tv=ttk.Treeview(self,columns=('action','type','strike','qty','mark'),show='headings',height=8);[self.tv.heading(c,text=c.upper()) for c in self.tv['columns']];self.tv.column('action',width=90,anchor='center');self.tv.column('type',width=80,anchor='center');self.tv.column('strike',width=110,anchor='e');self.tv.column('qty',width=90,anchor='e');self.tv.column('mark',width=110,anchor='e');self.tv.pack(fill='x',padx=10,pady=8);self.tv.bind('<<TreeviewSelect>>',self.sync_leg_qty);self.tv.bind('<Double-1>',self.edit_leg_qty);qbar=ttk.Frame(self);qbar.pack(fill='x',padx=10);ttk.Label(qbar,text='Selected leg quantity').pack(side='left');self.leg_qty=tk.IntVar(value=1);ttk.Spinbox(qbar,from_=1,to=100000, textvariable=self.leg_qty,width=10,command=self.set_selected_qty).pack(side='left',padx=6);ttk.Button(qbar,text='APPLY QTY',command=self.set_selected_qty).pack(side='left');ttk.Label(qbar,text='  Double-click a leg to edit quantity').pack(side='left');self.preview=ttk.Label(self,text='No legs');self.preview.pack(fill='x',padx=10,pady=8);self.payoff=tk.Canvas(self,bg='#081018',height=240,highlightthickness=0);self.payoff.pack(fill='x',padx=10,pady=8);bar=ttk.Frame(self);bar.pack(fill='x',padx=10);ttk.Label(bar,text='Order').pack(side='left');ttk.Combobox(bar,textvariable=self.action,values=['BUY','SELL'],state='readonly',width=8).pack(side='left',padx=4);ttk.Combobox(bar,textvariable=self.order_type,values=['MARKET','LIMIT','STOP'],state='readonly',width=10).pack(side='left',padx=4);self.price=tk.DoubleVar(value=0);ttk.Entry(bar,textvariable=self.price,width=10).pack(side='left',padx=4);ttk.Button(bar,text='EXECUTE / WORK',command=self.execute).pack(side='left',padx=8);ttk.Button(bar,text='REMOVE SELECTED',command=self.remove).pack(side='left');self.template()
+        self.tv=ttk.Treeview(self,columns=('action','type','strike','qty','mark'),show='headings',height=8);[self.tv.heading(c,text=c.upper()) for c in self.tv['columns']];self.tv.column('action',width=90,anchor='center');self.tv.column('type',width=80,anchor='center');self.tv.column('strike',width=110,anchor='e');self.tv.column('qty',width=90,anchor='e');self.tv.column('mark',width=110,anchor='e');self.tv.pack(fill='x',padx=10,pady=8);self.tv.bind('<<TreeviewSelect>>',self.sync_leg_qty);self.tv.bind('<Double-1>',self.edit_leg_qty);qbar=ttk.Frame(self);qbar.pack(fill='x',padx=10);ttk.Label(qbar,text='Selected leg quantity').pack(side='left');self.leg_qty=tk.IntVar(value=1);ttk.Spinbox(qbar,from_=1,to=1000000000000, textvariable=self.leg_qty,width=14,command=self.set_selected_qty).pack(side='left',padx=6);ttk.Button(qbar,text='APPLY QTY',command=self.set_selected_qty).pack(side='left');ttk.Label(qbar,text='  Double-click a leg to edit quantity').pack(side='left');self.preview=ttk.Label(self,text='No legs');self.preview.pack(fill='x',padx=10,pady=8);self.payoff=tk.Canvas(self,bg='#081018',height=240,highlightthickness=0);self.payoff.pack(fill='x',padx=10,pady=8);bar=ttk.Frame(self);bar.pack(fill='x',padx=10);ttk.Label(bar,text='Order').pack(side='left');ttk.Combobox(bar,textvariable=self.action,values=['BUY','SELL'],state='readonly',width=8).pack(side='left',padx=4);ttk.Combobox(bar,textvariable=self.order_type,values=['MARKET','LIMIT','STOP'],state='readonly',width=10).pack(side='left',padx=4);self.price=tk.DoubleVar(value=0);ttk.Entry(bar,textvariable=self.price,width=10).pack(side='left',padx=4);ttk.Button(bar,text='EXECUTE / WORK',command=self.execute).pack(side='left',padx=8);ttk.Button(bar,text='REMOVE SELECTED',command=self.remove).pack(side='left');self.template()
         if first:self.rows.append({'action':'BUY','type':first.option_type.upper(),'strike':first.strike,'qty':1,'contract':first});self.refresh_table()
     def template(self):
         a=self.market.get_asset(self.ticker.get().upper())
@@ -967,7 +967,7 @@ class AdvancedChartWindow(ToolWindow):
         r=ttk.Frame(ticket);r.pack(fill='x',padx=8,pady=3)
         self.action=tk.StringVar(value='BUY');ttk.Combobox(r,textvariable=self.action,values=['BUY','SELL','SHORT','COVER'],state='readonly',width=10).pack(side='left')
         self.otype=tk.StringVar(value='MARKET');ttk.Combobox(r,textvariable=self.otype,values=['MARKET','LIMIT','STOP'],state='readonly',width=10).pack(side='left',padx=5)
-        self.qty=tk.IntVar(value=100);ttk.Spinbox(r,from_=1,to=10000000,textvariable=self.qty,width=10).pack(side='left')
+        self.qty=tk.IntVar(value=100);ttk.Spinbox(r,from_=1,to=1000000000000000,textvariable=self.qty,width=15).pack(side='left')
         pr=ttk.Frame(ticket);pr.pack(fill='x',padx=8,pady=3);ttk.Label(pr,text='Limit / stop').pack(side='left');self.price=tk.StringVar(value='');ttk.Entry(pr,textvariable=self.price,width=15).pack(side='left',padx=5)
         ttk.Button(ticket,text='SUBMIT ORDER',command=self.submit_order).pack(fill='x',padx=8,pady=(5,3))
         ttk.Button(ticket,text='ADVANCED OPTIONS / STRATEGY LAB',command=self.open_strategy_lab).pack(fill='x',padx=8,pady=3)
@@ -1520,7 +1520,7 @@ class SpreadBuilder(ToolWindow):
         ttk.Label(top,text='Preset').pack(side='left',padx=(12,2));pr=ttk.Combobox(top,textvariable=self.preset,values=['Custom','Long Call','Long Put','Bull Call Spread','Bear Put Spread','Long Straddle','Short Straddle','Iron Condor'],state='readonly',width=18);pr.pack(side='left');pr.bind('<<ComboboxSelected>>',lambda e:self.apply_preset())
         self.live=ttk.Label(top,text='',font=('Arial',10,'bold'));self.live.pack(side='right',padx=8)
         split=ttk.PanedWindow(self,orient='horizontal');split.pack(fill='both',expand=True,padx=8,pady=(0,7));chain_box=ttk.LabelFrame(split,text='PRO OPTIONS CHAIN — double-click CALL or PUT to add the selected action');work=ttk.Frame(split);split.add(chain_box,weight=5);split.add(work,weight=5)
-        cbar=ttk.Frame(chain_box);cbar.pack(fill='x',padx=5,pady=4);ttk.Label(cbar,text='Add leg as').pack(side='left');ttk.Combobox(cbar,textvariable=self.add_action,values=['BUY','SELL'],state='readonly',width=8).pack(side='left',padx=4);ttk.Label(cbar,text='Qty').pack(side='left');ttk.Spinbox(cbar,from_=1,to=10000,textvariable=self.leg_qty,width=7).pack(side='left',padx=4);ttk.Button(cbar,text='ADD SELECTED CALL',command=lambda:self.add_selected('call')).pack(side='left',padx=4);ttk.Button(cbar,text='ADD SELECTED PUT',command=lambda:self.add_selected('put')).pack(side='left')
+        cbar=ttk.Frame(chain_box);cbar.pack(fill='x',padx=5,pady=4);ttk.Label(cbar,text='Add leg as').pack(side='left');ttk.Combobox(cbar,textvariable=self.add_action,values=['BUY','SELL'],state='readonly',width=8).pack(side='left',padx=4);ttk.Label(cbar,text='Qty').pack(side='left');ttk.Spinbox(cbar,from_=1,to=1000000000000,textvariable=self.leg_qty,width=13).pack(side='left',padx=4);ttk.Button(cbar,text='ADD SELECTED CALL',command=lambda:self.add_selected('call')).pack(side='left',padx=4);ttk.Button(cbar,text='ADD SELECTED PUT',command=lambda:self.add_selected('put')).pack(side='left')
         chain_grid=ttk.Frame(chain_box);chain_grid.pack(fill='both',expand=True,padx=5,pady=4);chain_grid.columnconfigure(0,weight=1);chain_grid.columnconfigure(2,weight=1);chain_grid.rowconfigure(0,weight=1)
         call_cols=('bid','ask','last','iv','delta','vol','oi');put_cols=('bid','ask','last','iv','delta','vol','oi')
         self.calls=ttk.Treeview(chain_grid,columns=call_cols,show='headings',selectmode='browse');self.strikes=ttk.Treeview(chain_grid,columns=('strike',),show='headings',selectmode='browse');self.puts=ttk.Treeview(chain_grid,columns=put_cols,show='headings',selectmode='browse')
@@ -1666,7 +1666,7 @@ class OptionPreviewWindow(ToolWindow):
     def __init__(self,parent,contract,portfolio,refresh,chain=None,default_action='BUY'):
         super().__init__(parent);self.contract=contract;self.portfolio=portfolio;self.refresh=refresh;self.chain=chain;self.market=getattr(chain,'market',None) or getattr(getattr(parent,'app',None),'market',None) or getattr(portfolio,'market',None);self.action=tk.StringVar(value=default_action);self.qty=tk.IntVar(value=1)
         self.style_window('OPTION ORDER + LIVE RISK PREVIEW','920x720');top=ttk.Frame(self);top.pack(fill='x',padx=10,pady=8);self.title_lbl=ttk.Label(top,text='',font=('Arial',14,'bold'));self.title_lbl.pack(side='left');self.quote=ttk.Label(top,text='');self.quote.pack(side='right')
-        row=ttk.Frame(self);row.pack(fill='x',padx=10,pady=5);ttk.Label(row,text='Action').pack(side='left');ttk.Combobox(row,textvariable=self.action,values=['BUY','SELL'],state='readonly',width=8).pack(side='left',padx=4);ttk.Label(row,text='Contracts').pack(side='left',padx=(10,2));ttk.Spinbox(row,from_=1,to=100000,textvariable=self.qty,width=8).pack(side='left');ttk.Button(row,text='EXECUTE',command=self.execute).pack(side='left',padx=10);ttk.Button(row,text='OPEN IN ADVANCED STRATEGY LAB',command=self.to_spread).pack(side='left');ttk.Button(row,text='FULL OPTIONS CHAIN',command=self.open_chain).pack(side='left',padx=5)
+        row=ttk.Frame(self);row.pack(fill='x',padx=10,pady=5);ttk.Label(row,text='Action').pack(side='left');ttk.Combobox(row,textvariable=self.action,values=['BUY','SELL'],state='readonly',width=8).pack(side='left',padx=4);ttk.Label(row,text='Contracts').pack(side='left',padx=(10,2));ttk.Spinbox(row,from_=1,to=1000000000000,textvariable=self.qty,width=13).pack(side='left');ttk.Button(row,text='EXECUTE',command=self.execute).pack(side='left',padx=10);ttk.Button(row,text='OPEN IN ADVANCED STRATEGY LAB',command=self.to_spread).pack(side='left');ttk.Button(row,text='FULL OPTIONS CHAIN',command=self.open_chain).pack(side='left',padx=5)
         self.stats=ttk.Label(self,text='',justify='left',font=('Arial',9,'bold'));self.stats.pack(fill='x',padx=12,pady=5);self.payoff=tk.Canvas(self,bg='#081018',highlightthickness=0);self.payoff.pack(fill='both',expand=True,padx=10,pady=8);self.payoff.bind('<Configure>',lambda e:self.update_live());self.qty.trace_add('write',lambda *x:self.update_live());self.action.trace_add('write',lambda *x:self.update_live());self.after(60,self.update_live)
     def strategy(self):
         s=OptionStrategy(f'{self.action.get()} {self.contract}');s.add_leg(self.contract,max(1,int(self.qty.get() or 1)),self.action.get());s.open_cost=s.opening_debit();return s
@@ -9357,3 +9357,298 @@ def _sgp25_options_update_chain(self,force=False):
     except Exception as e:
         self.info_lbl.config(text=f'Option chain recovered: {type(e).__name__}: {e}');self._after_id=self.after(1200,lambda:self.update_chain(False))
 OptionsWindow.update_chain=_sgp25_options_update_chain
+
+# ============================================================================
+# Stock Game Pro 2.6 — event-loop backpressure / stable account presentation
+# ============================================================================
+# Manual actions previously called App.refresh(), whose legacy implementation scheduled a new
+# repeating timer every time.  After enough trades several permanent refresh chains competed to
+# rewrite the same widgets.  The final refresh below owns exactly one timer, while quote/portfolio
+# streams update only changed visible cells.
+
+def _sgp26_finite(value,default=0.0):
+    try:value=float(value)
+    except Exception:
+        try:return 1.0e300 if value>0 else -1.0e300 if value<0 else float(default)
+        except Exception:return float(default)
+    return value if math.isfinite(value) else (1.0e300 if value>0 else -1.0e300 if value<0 else float(default))
+
+def _sgp26_money_text(value,compact=True):
+    v=_sgp26_finite(value);av=abs(v);sign='-' if v<0 else ''
+    if compact and av>=1.0e9:
+        units=((1e30,'No'),(1e27,'Oc'),(1e24,'Sp'),(1e21,'Sx'),(1e18,'Qn'),(1e15,'Qd'),(1e12,'T'),(1e9,'B'))
+        for scale,suffix in units:
+            if av>=scale and av<scale*1000:return f'{sign}${av/scale:,.3f}{suffix}'
+        return f'{sign}${av:.3e}'
+    return f'{sign}${av:,.2f}'
+
+def _sgp26_qty_text(value):
+    try:v=int(value)
+    except Exception:return '0'
+    av=abs(v);sign='-' if v<0 else ''
+    if av>=10**15:
+        try:
+            raw=str(av);lead=(raw[:4]+'0000')[:4]
+            return f'{sign}{lead[0]}.{lead[1:]}e+{len(raw)-1}'
+        except Exception:return f'{sign}HUGE'
+    if av>=10**12:return f'{sign}{av/1e12:,.3f}T'
+    if av>=10**9:return f'{sign}{av/1e9:,.3f}B'
+    return f'{v:,}'
+
+def _sgp26_set_text(widget,text,**kwargs):
+    try:
+        if str(widget.cget('text'))!=str(text):widget.config(text=text,**kwargs)
+        elif kwargs:widget.config(**kwargs)
+    except Exception:pass
+
+def _sgp26_refresh_positions(self):
+    if getattr(self,'_positions_refresh_busy26',False):return getattr(self,'_last_position_records',[])
+    now=time.monotonic();trade=int(getattr(self.portfolio,'trade_count',0));structure=(trade,tuple(self.portfolio.positions),tuple(getattr(s,'strategy_id',id(s)) for s in self.portfolio.options),getattr(self,'position_sort_key','symbol'),bool(getattr(self,'position_sort_reverse',False)))
+    # Visible rows have their own mark stream. Rebuild the full model only after trades/sorts or
+    # at a modest cadence for summary accuracy.
+    if structure==getattr(self,'_position_structure26',None) and now-getattr(self,'_position_full_time26',0.0)<1.0:
+        return getattr(self,'_last_position_records',[])
+    self._positions_refresh_busy26=True
+    try:
+        old=self.pos.selection();keep=old[0] if old else None;rows=self._position_records();key=getattr(self,'position_sort_key','symbol');rev=bool(getattr(self,'position_sort_reverse',False))
+        def sk(r):
+            if key=='expiry':return self.portfolio.option_time_remaining(r['iid'],self.market.clock.current)[1] if r['type']=='OPTION' else 1e12
+            value=r.get(key,'');return str(value).lower() if isinstance(value,str) else value
+        try:rows.sort(key=sk,reverse=rev)
+        except Exception:pass
+        existing=set(self.pos.get_children(''));wanted=[r['iid'] for r in rows];wanted_set=set(wanted)
+        for iid in existing-wanted_set:self.pos.delete(iid)
+        for r in rows:
+            last=f'${_sgp26_finite(r["last"]):,.4f}' if abs(_sgp26_finite(r['last']))<1 else f'${_sgp26_finite(r["last"]):,.2f}'
+            vals=(r['symbol'],_sgp26_qty_text(r['qty']),last,_sgp26_money_text(r['value']),_sgp26_money_text(r['pnl']),f"{_sgp26_finite(r['pct']):+.2%}",r['type'],r['underlying'],r['expiry'])
+            if self.pos.exists(r['iid']):
+                if tuple(self.pos.item(r['iid'],'values'))!=tuple(str(x) for x in vals):self.pos.item(r['iid'],values=vals)
+            else:self.pos.insert('','end',iid=r['iid'],values=vals)
+        current=list(self.pos.get_children(''))
+        if current!=wanted:
+            for idx,iid in enumerate(wanted):
+                if self.pos.exists(iid):self.pos.move(iid,'',idx)
+        if keep and self.pos.exists(keep):self.pos.selection_set(keep);self.pos.focus(keep)
+        self._last_position_records=rows;self._position_structure26=structure;self._position_full_time26=now
+        return rows
+    except Exception as e:
+        try:self.market.errors.append(f'positions refresh 2.6: {type(e).__name__}: {e}')
+        except Exception:pass
+        return getattr(self,'_last_position_records',[])
+    finally:self._positions_refresh_busy26=False
+App.refresh_positions=_sgp26_refresh_positions
+
+def _sgp26_portfolio_stream(self):
+    t0=time.perf_counter()
+    try:
+        if not self.root.winfo_exists():return
+        rows=tuple(self.pos.get_children());n=len(rows)
+        if n:
+            try:f0,f1=self.pos.yview();start=max(0,int(f0*n)-3);end=min(n,max(start+18,int(f1*n)+4))
+            except Exception:start,end=0,min(n,30)
+            for iid in rows[start:end]:
+                try:
+                    vals=list(self.pos.item(iid,'values'))
+                    if iid.startswith('OPT:'):
+                        st=self.portfolio.get_strategy(iid)
+                        if st is None:continue
+                        value=_sgp26_finite(st.current_value());pnl=value-_sgp26_finite(getattr(st,'open_cost',0.0));pct=self.portfolio.option_return_pct(st,value);expiry,_=self.portfolio.option_time_remaining(iid,self.market.clock.current)
+                        if len(vals)>=9:vals[2]=_sgp26_money_text(value);vals[3]=_sgp26_money_text(value);vals[4]=_sgp26_money_text(pnl);vals[5]=f'{pct:+.2%}';vals[8]=expiry
+                    else:
+                        a=self.market.get_asset(iid);q=int(self.portfolio.positions.get(iid,0))
+                        if a is None or q==0:continue
+                        basis=_sgp26_finite(self.portfolio.cost_basis.get(iid,0.0));value=_sgp26_finite(_sgp26_finite(q)*_sgp26_finite(a.price));pnl=_sgp26_finite(value-basis if q>0 else basis+value);pct=pnl/max(1e-9,abs(basis));vals[2]=f'${float(a.price):,.4f}' if abs(float(a.price))<1 else f'${float(a.price):,.2f}';vals[3]=_sgp26_money_text(value);vals[4]=_sgp26_money_text(pnl);vals[5]=f'{pct:+.2%}'
+                    if tuple(self.pos.item(iid,'values'))!=tuple(str(x) for x in vals):self.pos.item(iid,values=vals)
+                except Exception:pass
+        equity=self.portfolio.cached_net_worth(max_age=.15);day=self.market.clock.current.date().isoformat();base=float(getattr(self.portfolio,'_daily_equity_open',{}).get(day,equity));daily=_sgp26_finite(equity-base)
+        if hasattr(self,'dailypl23'):_sgp26_set_text(self.dailypl23,f'DAILY P/L {_sgp26_money_text(daily)}')
+        if hasattr(self,'daytrade23'):_sgp26_set_text(self.daytrade23,f'DAY TRADES {self.portfolio.day_trades_rolling}/3')
+        count=len(self.portfolio.positions)+len(self.portfolio.options);requested=max(75,int(getattr(self,'portfolio_stream_ms25',100)));floor=120 if count<80 else 180 if count<300 else 280;spent=(time.perf_counter()-t0)*1000.0;delay=max(requested,floor,int(spent*2.5))
+    except Exception:delay=220
+    self._portfolio_stream25_job=self.root.after(max(75,min(1000,int(delay))),self._portfolio_fast_stream25)
+App._portfolio_fast_stream25=_sgp26_portfolio_stream
+
+def _sgp26_portfolio_pulse(self):
+    try:
+        if not self.root.winfo_exists():return
+        delay=300
+        if hasattr(self,'perf_canvas23') and self.perf_canvas23.winfo_viewable():
+            now=time.monotonic();eq=self.portfolio.cached_net_worth(max_age=.18);sig=(self.perf_range23.get(),self.perf_canvas23.winfo_width(),self.perf_canvas23.winfo_height(),round(_sgp26_finite(eq),-2 if abs(eq)>=1e9 else 2))
+            if sig!=getattr(self,'_perf_sig26',None) and now-getattr(self,'_perf_draw_time26',0.0)>=.45:
+                self._perf_sig26=sig;self._perf_draw_time26=now;_sgp23_draw_perf(self.perf_canvas23,self.portfolio,self.perf_range23.get())
+            delay=220
+    except Exception:delay=400
+    self._perf_job_fp=self.root.after(delay,self._portfolio_pulse_fp)
+App._portfolio_pulse_fp=_sgp26_portfolio_pulse
+
+def _sgp26_account_refresh(self):
+    if getattr(self,'_main_refresh_busy26',False):
+        self._main_refresh_pending26=True;return
+    old_job=getattr(self,'_main_refresh_job26',None)
+    if old_job:
+        try:self.root.after_cancel(old_job)
+        except Exception:pass
+    self._main_refresh_job26=None;self._main_refresh_busy26=True;started=time.perf_counter()
+    try:
+        now=time.monotonic()
+        if now-getattr(self,'_corp_actions_time26',0.0)>=5.0:
+            self._corp_actions_time26=now;self.portfolio.apply_corporate_actions(self.market.all_assets())
+        nw=self.portfolio.cached_net_worth(max_age=.10);self.portfolio.best_net_worth=max(_sgp26_finite(getattr(self.portfolio,'best_net_worth',0.0)),_sgp26_finite(nw));rows=self.refresh_positions() or []
+        summary=[f'CASH        {_sgp26_money_text(self.portfolio.cash)}',f'REALIZED    {_sgp26_money_text(self.portfolio.realized)}',f'MARGIN USED {_sgp26_money_text(self.portfolio.reserved_margin)}',f'NET WORTH   {_sgp26_money_text(nw)}',f'BUYING PWR  {_sgp26_money_text(self.portfolio.available_funds())}',f'LEVEL       {getattr(self.portfolio,"level",1)}',f'XP          {int(getattr(self.portfolio,"xp",0)):+,}',f'CREDIT      {int(getattr(self.portfolio,"credit_score",700))}','','POSITIONS']
+        for r in rows[:80]:summary.append(f"{str(r['symbol'])[:18]:<18} {_sgp26_qty_text(r['qty']):>12}  {_sgp26_money_text(r['value']):>14}  P/L {_sgp26_money_text(r['pnl']):>14}")
+        if len(rows)>80:summary.append(f'… {len(rows)-80:,} more positions shown in the Positions table')
+        text='\n'.join(summary)
+        if text!=getattr(self,'_account_summary_text26',None):
+            self._account_summary_text26=text;self.summary.delete('1.0','end');self.summary.insert('end',text)
+        if now-getattr(self,'_portfolio_model_time26',0.0)>=3.0:
+            self._portfolio_model_time26=now
+            try:self._portfolio_model_text26=_sgp25sys_portfolio_model(self)
+            except Exception:self._portfolio_model_text26='PORTFOLIO MODEL • temporarily unavailable'
+        if hasattr(self,'pred'):_sgp26_set_text(self.pred,getattr(self,'_portfolio_model_text26','PORTFOLIO MODEL'),font=('Consolas',8),foreground=MUTED)
+        self.refresh_news();self.refresh_orders();self.portfolio.record_equity_snapshot()
+        if hasattr(self,'pdt23'):
+            flag=bool(getattr(self.portfolio,'pdt_flagged',False));_sgp26_set_text(self.pdt23,'PDT FLAGGED' if flag else 'PDT CLEAR',foreground=RED if flag else GREEN)
+        status=f'Assets {len(self.market.all_assets()):,} • {self.market.data_status} • Working {len(self.market.pending_orders)+len(self.market.pending_option_orders)+len(self.market.pending_spread_orders)+len(getattr(self.market,"algo_orders",())):,} • Engine errors {len(self.market.errors)}'
+        _sgp26_set_text(self.status,status)
+    except Exception as e:
+        try:_sgp26_set_text(self.status,f'UI recovered: {type(e).__name__}: {e}')
+        except Exception:pass
+    finally:
+        self._main_refresh_busy26=False;pending=bool(getattr(self,'_main_refresh_pending26',False));self._main_refresh_pending26=False
+    count=len(getattr(self.portfolio,'positions',{}))+len(getattr(self.portfolio,'options',()));spent=(time.perf_counter()-started)*1000.0;delay=900 if pending else 1250 if count<150 else 1700 if count<500 else 2300;delay=max(delay,int(spent*3.0));self._main_refresh_job26=self.root.after(delay,self.refresh)
+App.refresh=_sgp26_account_refresh
+
+# One parent order replaces the old while-loop that created up to one hundred immediately
+# executable children on the Tk thread.
+def _sgp26_smart_calc(self):
+    try:a=self.app.market.get_asset(self.ticker.get().strip().upper());q=max(0,min(10**15,int(self.qty.get())))
+    except Exception:a=None;q=0
+    if not a:self.lbl.config(text='Unknown ticker or invalid quantity');return
+    side=self.side.get();cap=self.app.market.max_executable_qty(a,side,q) if q else 0;part=max(1.0,min(50.0,float(self.part.get())));first=max(1,min(q,int(math.ceil(cap*part/100.0)))) if q else 0;quote=self.app.market.preview_execution(side,a,first) if first else {'vwap':a.price,'impact':0.0}
+    self.lbl.config(text=f'{a.symbol}: parent {_sgp26_qty_text(q)} • first slice {_sgp26_qty_text(first)} • est VWAP ${float(quote.get("vwap",a.price)):,.4f} • impact {float(quote.get("impact",0))*100:.2f}% • one paced slice per service beat')
+SmartOrderWindow.calc=_sgp26_smart_calc
+
+def _sgp26_smart_submit(self):
+    try:a=self.app.market.get_asset(self.ticker.get().strip().upper());q=max(0,min(10**15,int(self.qty.get())))
+    except Exception:a=None;q=0
+    if not a or q<=0:return messagebox.showerror('Smart Order','Invalid ticker or quantity.')
+    try:o=self.app.market.submit_algo_order(self.side.get(),a,q,self.style.get(),self.part.get())
+    except Exception as e:return messagebox.showerror('Smart Order',str(e))
+    self.app.refresh_orders();self.app.status_flash(f'Parent #{o["id"]} working • {self.side.get()} {_sgp26_qty_text(q)} {a.symbol} • {self.style.get()}')
+    messagebox.showinfo('Smart Order',f'Parent order #{o["id"]} accepted.\n\nThe order will release bounded {self.style.get()} slices over time; it will not create a burst of child orders.');self.destroy()
+SmartOrderWindow.submit=_sgp26_smart_submit
+
+def _sgp26_refresh_orders(self):
+    if not hasattr(self,'orders_view'):return
+    keep=self.orders_view.selection();keep=keep[0] if keep else None;wanted=[]
+    for o in self.market.pending_orders:
+        a=o.get('asset');wanted.append((f"STOCK:{o.get('id')}",(o.get('id',''),getattr(a,'symbol',''),o.get('side',''),o.get('type',''),_sgp26_qty_text(o.get('qty',0)),f"${float(o.get('price') or 0):,.2f}",'WORKING')))
+    for o in self.market.pending_option_orders:
+        c=o.get('contract');wanted.append((f"OPTION:{o.get('id')}",(o.get('id',''),getattr(getattr(c,'underlying',None),'symbol',''),o.get('side',''),f"OPT {o.get('type','')}",_sgp26_qty_text(o.get('qty',1)),f"${float(o.get('price') or 0):,.2f}",'WORKING')))
+    for o in self.market.pending_spread_orders:
+        st=o.get('strategy');wanted.append((f"SPREAD:{o.get('id')}",(o.get('id',''),getattr(st,'name','SPREAD'),o.get('side',''),f"SPREAD {o.get('type','')}",len(getattr(st,'legs',[])),f"${float(o.get('price') or 0):,.2f}",'WORKING')))
+    for o in getattr(self.market,'algo_orders',()):
+        a=o.get('asset');filled=int(o.get('filled_qty',0));total=max(1,int(o.get('qty',1)));status=f"{o.get('status','WORKING')} {filled/total:.1%}";wanted.append((f"ALGO:{o.get('id')}",(o.get('id',''),getattr(a,'symbol',''),o.get('side',''),o.get('style','VWAP'),_sgp26_qty_text(o.get('remaining',0)),f"${float(o.get('last_vwap') or 0):,.4f}",status)))
+    existing=set(self.orders_view.get_children());ids=[x[0] for x in wanted]
+    for iid in existing-set(ids):self.orders_view.delete(iid)
+    for iid,vals in wanted:
+        if self.orders_view.exists(iid):
+            if tuple(self.orders_view.item(iid,'values'))!=tuple(str(x) for x in vals):self.orders_view.item(iid,values=vals)
+        else:self.orders_view.insert('','end',iid=iid,values=vals)
+    if list(self.orders_view.get_children())!=ids:
+        for idx,iid in enumerate(ids):self.orders_view.move(iid,'',idx)
+    if keep and self.orders_view.exists(keep):self.orders_view.selection_set(keep);self.orders_view.focus(keep)
+App.refresh_orders=_sgp26_refresh_orders
+
+# Timeframe changes always start from a fitted context. Very fine periods are normalized only when
+# carrying them into a much wider timeframe would produce a misleading multi-year tick mosaic.
+def _sgp26_period_too_dense(tf,period):
+    rank={'1 Tick':0,'30 Sec':1,'1 Min':2,'3 Min':3,'5 Min':4,'10 Min':5,'30 Min':6,'1 Hour':7,'1 Day':8,'Auto':9}.get(str(period),9)
+    floor={'1D':0,'1W':2,'1M':4,'3M':6,'6M':7,'1Y':8,'5Y':8,'MAX':8}.get(str(tf),0)
+    return rank<floor
+
+def _sgp26_reset_chart_context(chart):
+    chart.zoom=1.0;chart.view_offset=0;chart.follow_latest=True;chart.pan_mode=False;chart.fit_inception=False;chart._pre_fit23=None;chart._manual_y_shift=0.0;chart.vertical_scale=1.0
+    for name,value in (('_key',None),('_auto_y_state25',None),('_stable_bounds25',None),('_manual_fit_bounds26',None),('_max_bounds25',None),('_display_data_cache25',None),('_last_render_data25',None),('_prod25_backfill_cache',None),('_synth_cache25',None),('_synth24_cache25',None)):
+        setattr(chart,name,value)
+    chart._immutable_backfill_cache25={};chart._volume_cache25={};chart._volume_scale25=None
+
+def _sgp26_set_tf(self,tf):
+    tf=str(tf);tf=tf if tf in ('1D','1W','1M','3M','6M','1Y','5Y','MAX') else '1D';self.timeframe=tf
+    if (tf=='1D' and str(getattr(self,'candle_period','Auto'))=='1 Day') or _sgp26_period_too_dense(tf,getattr(self,'candle_period','Auto')):self.candle_period='Auto'
+    _sgp26_reset_chart_context(self)
+    try:self.app.market.load_chart_data(self.asset,tf)
+    except Exception:pass
+    try:
+        if self is self.app.charts[self.app.active_chart]:self.app.tf.set(tf);self.app.candle_period_var.set(self.candle_period);self.app._refresh_candle_choices25()
+    except Exception:pass
+    self.request_draw(force=True)
+Chart.set_tf=_sgp26_set_tf
+
+def _sgp26_set_candle_period(self,value):
+    value=str(value);value=value if value in _SGP_CANDLE_PERIODS else 'Auto'
+    if self.timeframe=='1D' and value=='1 Day':value='Auto'
+    self.candle_period=value;_sgp26_reset_chart_context(self);self.request_draw(force=True)
+Chart.set_candle_period=_sgp26_set_candle_period
+
+def _sgp26_chart_configure(self,event=None):
+    job=getattr(self,'_resize_draw_job26',None)
+    if job:
+        try:self.after_cancel(job)
+        except Exception:pass
+    try:self._resize_draw_job26=self.after(45,lambda:self.request_draw(force=True))
+    except Exception:pass
+
+_Chart_init_sgp26_base=Chart.__init__
+def _sgp26_chart_init(self,parent,app,index):
+    _Chart_init_sgp26_base(self,parent,app,index)
+    try:self.unbind('<Configure>');self.bind('<Configure>',self._stable_configure26)
+    except Exception:pass
+Chart.__init__=_sgp26_chart_init
+Chart._stable_configure26=_sgp26_chart_configure
+
+# Let the right account/positions pane expand much farther left. The guard intervenes only when the
+# chart center would become genuinely unusable, and resize work is debounced instead of queued for
+# every pixel of sash movement.
+def _sgp26_schedule_workspace(self,*_):
+    job=getattr(self,'_workspace_job26',None)
+    if job:
+        try:self.root.after_cancel(job)
+        except Exception:pass
+    try:self._workspace_job26=self.root.after(60,self._enforce_workspace25)
+    except Exception:pass
+App._schedule_workspace26=_sgp26_schedule_workspace
+
+def _sgp26_enforce_workspace(self,*_):
+    self._workspace_job26=None
+    if getattr(self,'_workspace_guard_busy26',False):return
+    self._workspace_guard_busy26=True
+    try:
+        outer=getattr(self,'_outer_workspace25',None) or self._find_outer25();self._outer_workspace25=outer
+        if outer is None or len(outer.panes())<3:return
+        panes=list(outer.panes());ow=max(1,outer.winfo_width());s0=int(outer.sashpos(0));s1=int(outer.sashpos(1));count=max(1,len(getattr(self,'charts',())))
+        min_center=430 if count<=2 else 500 if count<=3 else 610 if count<=4 else 720 if count<=6 else 820;min_right=245
+        if s1-s0<min_center and ow-s1>min_right:
+            target=min(ow-min_right,s0+min_center)
+            if target>s1+3:outer.sashpos(1,target)
+        cw=max(1,s1-s0)
+        try:self.time_warp_scale.config(length=66 if cw<760 else 88 if cw<980 else 118)
+        except Exception:pass
+        try:self.clock_label.config(font=('Segoe UI',6 if cw<720 else 7,'bold'))
+        except Exception:pass
+    finally:self._workspace_guard_busy26=False
+App._enforce_workspace25=_sgp26_enforce_workspace
+
+_App_init_sgp26_base=App.__init__
+def _sgp26_app_init(self,root,market,portfolio):
+    _App_init_sgp26_base(self,root,market,portfolio)
+    self._outer_workspace25=self._find_outer25()
+    try:
+        if self._outer_workspace25:
+            self._outer_workspace25.unbind('<Configure>');self._outer_workspace25.bind('<Configure>',self._schedule_workspace26)
+            panes=self._outer_workspace25.panes()
+            if len(panes)>=3:
+                right=self.root.nametowidget(panes[2]);right.unbind('<Configure>');right.bind('<Configure>',self._schedule_workspace26)
+        self.root.after(120,self._schedule_workspace26)
+    except Exception:pass
+App.__init__=_sgp26_app_init

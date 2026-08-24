@@ -2527,3 +2527,162 @@ def _sgp25_port_routes_init(self,*args,**kwargs):
     # initializer so every live vessel starts on the corrected production route set.
     self._shipping_cycle25={};self.freight_routes=[dict(r) for r in _SGP25FP_FREIGHT_ROUTES];self.shipments=[self._new_shipment(i) for i in range(18)]
 Market.__init__=_sgp25_port_routes_init
+
+# ============================================================================
+# Stock Game Pro 2.6 — bounded institutional execution / large-account safety
+# ============================================================================
+# Oversized orders used to be represented as many independent working orders.  When the
+# market opened, every child could execute in the same engine pass, producing a burst of
+# portfolio valuation, order-book and UI work.  A large order is now one parent record that
+# releases at most one bounded slice per service beat.  This keeps execution O(1) per beat,
+# while retaining liquidity depletion, partial fills and price impact.
+
+_Market_init_sgp26_base=Market.__init__
+def _sgp26_market_init(self,*args,**kwargs):
+    _Market_init_sgp26_base(self,*args,**kwargs)
+    self.algo_orders=[]
+    self.algo_order_history=[]
+    self._algo_rr26=0
+    self._processing_algo26=False
+Market.__init__=_sgp26_market_init
+
+def _sgp26_safe_positive_int(value,limit=10**15):
+    try:value=int(value)
+    except Exception:return 0
+    return max(0,min(int(limit),value))
+
+def _sgp26_estimated_float(self,a):
+    """Stable effective float using every locally available size signal."""
+    try:adv=max(1.0,float(self.adv_shares(a)))
+    except Exception:adv=100_000.0
+    try:reported=max(0.0,float(getattr(a,'shares_outstanding',0.0) or 0.0))
+    except Exception:reported=0.0
+    try:mcap=max(0.0,float(getattr(a,'market_cap',0.0) or 0.0));mcap_float=mcap/max(.000001,float(a.price))
+    except Exception:mcap_float=0.0
+    category=str(getattr(a,'category',''))
+    floor=50_000_000.0 if category in ('ETF','Index') else 12_000_000.0
+    turnover=adv*(100.0 if category=='ETF' else 60.0)
+    return max(1.0,min(1.0e15,max(floor,reported,mcap_float,turnover)))
+Market.estimated_float_shares=_sgp26_estimated_float
+
+def _sgp26_position_capacity(self,a,side='BUY'):
+    # This is a soft simulator inventory diagnostic, not a hard player-position ceiling.
+    # Actual access is governed by per-slice liquidity and buying power below.
+    f=self.estimated_float_shares(a);side=str(side).upper();category=str(getattr(a,'category',''))
+    mult=6.0 if category in ('ETF','Index') else 3.0 if side in ('BUY','SELL') else 1.5
+    return max(1,min(10**15,int(f*mult)))
+Market.position_capacity=_sgp26_position_capacity
+
+def _sgp26_max_executable_qty(self,a,side,requested):
+    req=_sgp26_safe_positive_int(requested)
+    if req<=0:return 0
+    book=self.get_book(a);buy=str(side).upper() in ('BUY','COVER');levels=book.asks if buy else book.bids
+    visible=sum(max(0,int(x.size)) for x in levels)
+    f=max(1.0,float(self.estimated_float_shares(a)))
+    try:adv=max(1.0,float(self.adv_shares(a)),f*.006)
+    except Exception:adv=max(1.0,f*.006)
+    try:px=max(.000001,float(a.price));mcap=max(0.0,float(getattr(a,'market_cap',0.0) or 0.0))
+    except Exception:px=1.0;mcap=0.0
+    category=str(getattr(a,'category',''))
+    # Block desks/creation units provide more capacity than the displayed book. Small caps
+    # remain impact-heavy, but no longer hit the old arbitrary 4%-of-float one-click wall.
+    if category in ('ETF','Index'):float_fraction=.75
+    elif mcap and mcap<2_000_000_000:float_fraction=.22
+    elif px<5:float_fraction=.20
+    else:float_fraction=.30
+    health=max(.05,min(1.0,float(getattr(self,'_liquidity_health',{}).get(a.symbol,1.0))))
+    gross=max(float(visible)*32.0,adv*10.0,f*float_fraction)
+    cap=max(1,int(gross*(.28+.72*health)))
+    return min(req,cap,10**15)
+Market.max_executable_qty=_sgp26_max_executable_qty
+
+def _sgp26_submit_algo_order(self,side,a,qty,style='VWAP',participation=12.0):
+    side=str(side).upper();style=str(style).upper()
+    if side not in ('BUY','SELL','SHORT','COVER') or a is None:raise ValueError('Invalid algorithm order.')
+    q=_sgp26_safe_positive_int(qty)
+    if q<=0:raise ValueError('Quantity must be positive.')
+    part=max(1.0,min(50.0,float(participation)))
+    # Repeated clicks coalesce into the same parent instead of growing an unbounded order list.
+    for o in self.algo_orders:
+        if o.get('asset') is a and o.get('side')==side and o.get('style')==style and o.get('status') in ('WORKING','PAUSED'):
+            o['qty']=_sgp26_safe_positive_int(int(o.get('qty',0))+q);o['remaining']=_sgp26_safe_positive_int(int(o.get('remaining',0))+q);o['participation']=part;o['status']='WORKING';o['merged']=True
+            return o
+    if len(self.algo_orders)>=128:raise ValueError('Too many active parent orders. Cancel or complete an order first.')
+    o={'id':self.order_id,'side':side,'asset':a,'qty':q,'remaining':q,'filled_qty':0,'style':style,
+       'participation':part,'status':'WORKING','created_at':time.monotonic(),'next_slice':0.0,
+       'last_fill':0,'last_vwap':0.0,'message':''}
+    self.order_id+=1;self.algo_orders.append(o);self.visual_version+=1
+    return o
+Market.submit_algo_order=_sgp26_submit_algo_order
+
+def _sgp26_algo_interval(style):
+    return {'POV':.20,'VWAP':.32,'ICEBERG':.40,'TWAP':.55}.get(str(style).upper(),.32)
+
+def _sgp26_process_algo_orders(self):
+    orders=list(getattr(self,'algo_orders',()) or ())
+    if not orders:return
+    now=time.monotonic();n=len(orders);start=int(getattr(self,'_algo_rr26',0))%n
+    for step in range(n):
+        o=orders[(start+step)%n]
+        if o not in self.algo_orders or now<float(o.get('next_slice',0.0)):continue
+        a=o.get('asset');side=str(o.get('side','BUY')).upper();remaining=_sgp26_safe_positive_int(o.get('remaining',0))
+        if a is None or remaining<=0:
+            if o in self.algo_orders:self.algo_orders.remove(o)
+            continue
+        if not self.stock_trading_allowed(a):
+            o['status']='WAITING SESSION';o['next_slice']=now+1.0;continue
+        # Closing parents can never submit beyond the live position.
+        held=int(getattr(self,'portfolio',None).positions.get(a.symbol,0)) if getattr(self,'portfolio',None) is not None else 0
+        if side=='SELL':remaining=min(remaining,max(0,held))
+        elif side=='COVER':remaining=min(remaining,max(0,-held))
+        if remaining<=0:
+            o['status']='COMPLETE';self.algo_orders.remove(o);self.algo_order_history.append(dict(o));self.algo_order_history=self.algo_order_history[-250:];continue
+        cap=max(1,int(self.max_executable_qty(a,side,remaining)));part=max(1.0,min(50.0,float(o.get('participation',12.0))))
+        slice_qty=max(1,min(remaining,int(math.ceil(cap*part/100.0))))
+        before=int(self.portfolio.positions.get(a.symbol,0));self._processing_algo26=True
+        try:
+            fn={'BUY':self.portfolio.buy_asset,'SELL':self.portfolio.sell_asset,'SHORT':self.portfolio.short_asset,'COVER':self.portfolio.cover_short}[side]
+            ok,msg=fn(a,slice_qty)
+        except Exception as e:
+            ok=False;msg=f'{type(e).__name__}: {e}';self.errors.append(f'algo order {o.get("id")}: {msg}')
+        finally:self._processing_algo26=False
+        after=int(self.portfolio.positions.get(a.symbol,0))
+        filled=max(0,after-before) if side in ('BUY','COVER') else max(0,before-after)
+        if ok and filled>0:
+            o['filled_qty']=_sgp26_safe_positive_int(int(o.get('filled_qty',0))+filled);o['remaining']=max(0,int(o.get('remaining',0))-filled);o['last_fill']=filled;o['last_vwap']=float(getattr(a,'last_execution_vwap',a.price));o['message']=str(msg);o['status']='WORKING' if o['remaining'] else 'COMPLETE';o['next_slice']=now+_sgp26_algo_interval(o.get('style'))
+            if o['remaining']<=0:
+                self.algo_orders.remove(o);self.algo_order_history.append(dict(o));self.algo_order_history=self.algo_order_history[-250:]
+        else:
+            # Do not spin on a rejected parent. It remains cancellable and retries slowly in case
+            # buying power/session state changes.
+            o['status']='PAUSED';o['message']=str(msg);o['next_slice']=now+2.0
+        self._algo_rr26=(start+step+1)%max(1,n);self.visual_version+=1
+        break  # hard budget: one parent slice per market service pass
+Market._process_algo_orders=_sgp26_process_algo_orders
+
+_Market_process_orders_sgp26_base=Market._process_orders
+def _sgp26_process_orders(self):
+    _Market_process_orders_sgp26_base(self)
+    self._process_algo_orders()
+Market._process_orders=_sgp26_process_orders
+
+_Market_cancel_order_sgp26_base=Market.cancel_order
+def _sgp26_cancel_order(self,order_id,kind=None):
+    sid=str(order_id)
+    if kind is None or str(kind).upper()=='ALGO':
+        for o in list(getattr(self,'algo_orders',())):
+            if str(o.get('id'))==sid:
+                self.algo_orders.remove(o);o['status']='CANCELLED';self.algo_order_history.append(dict(o));self.algo_order_history=self.algo_order_history[-250:];self.visual_version+=1
+                return True,f'Cancelled parent order #{sid}'
+    return _Market_cancel_order_sgp26_base(self,order_id,kind)
+Market.cancel_order=_sgp26_cancel_order
+
+_Market_hot_symbols_sgp26_base=Market._v25_hot_symbols
+def _sgp26_hot_symbols(self,now):
+    hot=set(_Market_hot_symbols_sgp26_base(self,now))
+    for o in getattr(self,'algo_orders',()):
+        a=o.get('asset')
+        if a:hot.add(a.symbol)
+    self._v25_hot_cache=hot
+    return hot
+Market._v25_hot_symbols=_sgp26_hot_symbols

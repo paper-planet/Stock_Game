@@ -248,7 +248,9 @@ class OptionStrategy:
         self.name=name;self.legs=[];self.open_cost=0.;self.opened=False;self.strategy_id=None;self.opened_at=None;self.expiry_at=None
     def add_leg(self,c,q,a):
         q=int(q);a=a.upper()
-        if q<=0 or q>1000000:raise ValueError('Invalid option quantity.')
+        # Quantities are aggregate contract counts, not one object per contract.  Keep a generous
+        # finite guard for large-account play without imposing the old arbitrary one-million cap.
+        if q<=0 or q>1000000000000:raise ValueError('Invalid option quantity.')
         self.legs.append(StrategyLeg(c,q,a))
     def current_value(self):return sum((l.contract.bid if l.action=='BUY' else l.contract.ask)*l.quantity*CONTRACT_SIZE*l.sign for l in self.legs)
     def opening_debit(self):return sum(l.sign*l.mark*l.quantity*CONTRACT_SIZE for l in self.legs)
@@ -1826,3 +1828,157 @@ def _sgp25fp_update_bar(self,interval,minutes,ts,price,volume):
         c.low=max(.000001,min(float(c.low),float(c.open),float(c.close),min(float(c.open),float(c.close))-dn))
     except Exception:pass
 Asset._update_bar=_sgp25fp_update_bar
+
+# ============================================================================
+# Stock Game Pro 2.6 — stable whale-account valuation / residual routing
+# ============================================================================
+# The portfolio remains O(number of symbols + option legs), never O(number of shares/contracts).
+# These final guards make every UI valuation finite, invalidate caches immediately on a trade,
+# and route an oversized residual into one market-managed parent order instead of discarding it.
+
+def _sgp26_portfolio_value_key(self):
+    market=getattr(self,'market',None)
+    return (int(getattr(self,'trade_count',0)),int(getattr(market,'visual_version',0)) if market is not None else 0,
+            int(getattr(self,'_option_cache_version',0)),len(getattr(self,'positions',{})),len(getattr(self,'options',())))
+
+def _sgp26_cached_net_worth(self,assets=None,max_age=.25):
+    now=_sgp_perf_time.monotonic();key=_sgp26_portfolio_value_key(self);cached=getattr(self,'_networth_cache26',None)
+    try:max_age=max(.04,min(2.0,float(max_age)))
+    except Exception:max_age=.25
+    if cached and cached[0]==key and now-cached[1]<=max_age:return cached[2]
+    try:value=_sgp221_money(self.mark_value(assets or (getattr(self.market,'all_assets',lambda:[])() if getattr(self,'market',None) else [])))
+    except Exception:value=_sgp221_money(getattr(self,'cash',0.0))
+    self._networth_cache26=(key,now,value);self._networth_cache=(now,value)
+    return value
+Portfolio.cached_net_worth=_sgp26_cached_net_worth
+
+def _sgp26_regulatory_equity(self):
+    return float(self.cached_net_worth(max_age=.12))
+Portfolio.regulatory_equity=_sgp26_regulatory_equity
+
+def _sgp26_execution_room(self,a,side,requested):
+    try:q=int(requested)
+    except Exception:return 0
+    if q<=0:return 0
+    # Total position size is not hard-rejected. Per-slice liquidity, price impact, margin and
+    # buying power remain authoritative, and the residual becomes a paced parent order.
+    market=getattr(self,'market',None)
+    if market is not None and hasattr(market,'max_executable_qty'):
+        try:q=min(q,max(0,int(market.max_executable_qty(a,side,q))))
+        except Exception:pass
+    return max(0,min(q,10**15))
+Portfolio._execution_room_v221=_sgp26_execution_room
+
+def _sgp26_filled_delta(portfolio,a,side,before):
+    after=int(portfolio.positions.get(a.symbol,0))
+    return max(0,after-before) if side in ('BUY','COVER') else max(0,before-after)
+
+def _sgp26_route_residual(portfolio,a,side,requested,filled,msg):
+    market=getattr(portfolio,'market',None);remaining=max(0,int(requested)-int(filled))
+    if remaining<=0 or market is None or not hasattr(market,'submit_algo_order') or bool(getattr(market,'_processing_algo26',False)):
+        return msg
+    try:
+        order=market.submit_algo_order(side,a,remaining,'VWAP',12.0)
+        action='merged into' if order.get('merged') else 'routed to'
+        return f'{msg} • residual {remaining:,} {action} paced parent #{order.get("id")}'
+    except Exception as e:
+        return f'{msg} • residual {remaining:,} remains unfilled ({e})'
+
+_Portfolio_buy_sgp26_base=Portfolio.buy_asset
+_Portfolio_sell_sgp26_base=Portfolio.sell_asset
+_Portfolio_short_sgp26_base=Portfolio.short_asset
+_Portfolio_cover_sgp26_base=Portfolio.cover_short
+
+def _sgp26_buy(self,a,qty):
+    try:requested=max(0,min(10**15,int(qty)))
+    except Exception:return False,'Invalid quantity.'
+    before=int(self.positions.get(a.symbol,0));ok,msg=_Portfolio_buy_sgp26_base(self,a,requested);filled=_sgp26_filled_delta(self,a,'BUY',before)
+    if ok:msg=_sgp26_route_residual(self,a,'BUY',requested,filled,msg)
+    self._networth_cache26=None
+    return ok,msg
+
+def _sgp26_sell(self,a,qty):
+    try:requested=max(0,min(10**15,int(qty)))
+    except Exception:return False,'Invalid quantity.'
+    requested=min(requested,max(0,int(self.positions.get(a.symbol,0))));before=int(self.positions.get(a.symbol,0));ok,msg=_Portfolio_sell_sgp26_base(self,a,requested);filled=_sgp26_filled_delta(self,a,'SELL',before)
+    if ok:msg=_sgp26_route_residual(self,a,'SELL',requested,filled,msg)
+    self._networth_cache26=None
+    return ok,msg
+
+def _sgp26_short(self,a,qty,margin_rate=.5):
+    try:requested=max(0,min(10**15,int(qty)))
+    except Exception:return False,'Invalid quantity.'
+    before=int(self.positions.get(a.symbol,0));ok,msg=_Portfolio_short_sgp26_base(self,a,requested,margin_rate);filled=_sgp26_filled_delta(self,a,'SHORT',before)
+    if ok:msg=_sgp26_route_residual(self,a,'SHORT',requested,filled,msg)
+    self._networth_cache26=None
+    return ok,msg
+
+def _sgp26_cover(self,a,qty):
+    try:requested=max(0,min(10**15,int(qty)))
+    except Exception:return False,'Invalid quantity.'
+    requested=min(requested,max(0,-int(self.positions.get(a.symbol,0))));before=int(self.positions.get(a.symbol,0));ok,msg=_Portfolio_cover_sgp26_base(self,a,requested);filled=_sgp26_filled_delta(self,a,'COVER',before)
+    if ok:msg=_sgp26_route_residual(self,a,'COVER',requested,filled,msg)
+    self._networth_cache26=None
+    return ok,msg
+
+Portfolio.buy_asset=_sgp26_buy;Portfolio.sell_asset=_sgp26_sell
+Portfolio.short_asset=_sgp26_short;Portfolio.cover_short=_sgp26_cover
+
+_Portfolio_exec_strategy_sgp26_base=Portfolio.execute_strategy
+_Portfolio_liquidate_strategy_sgp26_base=Portfolio.liquidate_strategy
+def _sgp26_execute_strategy(self,s):
+    ok,msg=_Portfolio_exec_strategy_sgp26_base(self,s);self._networth_cache26=None
+    return ok,msg
+def _sgp26_liquidate_strategy(self,ref):
+    ok,msg=_Portfolio_liquidate_strategy_sgp26_base(self,ref);self._networth_cache26=None
+    return ok,msg
+Portfolio.execute_strategy=_sgp26_execute_strategy;Portfolio.liquidate_strategy=_sgp26_liquidate_strategy
+
+# Snapshot only the forty largest exposures, using the same clamped arithmetic as the account UI.
+# This prevents an old oversized integer from overflowing during autosave/performance history.
+def _sgp26_record_equity_snapshot(self,force=False):
+    now=_sgp23_now(self);stamp=now.replace(second=0,microsecond=0)
+    if not force and getattr(self,'_equity_last_stamp',None)==stamp:return
+    eq=float(self.cached_net_worth(max_age=.05));hold=[];market=getattr(self,'market',None)
+    if market:
+        for sym,q in self.positions.items():
+            a=market.get_asset(sym)
+            if a is not None and q:
+                value=_sgp221_notional(q,a.price);hold.append((sym,int(q),float(a.price),value,str(getattr(a,'category','Security'))))
+        for st in list(getattr(self,'options',())):
+            try:
+                if not st.legs:continue
+                under=st.legs[0].contract.underlying.symbol;qty=max(1,sum(abs(int(l.quantity)) for l in st.legs));value=_sgp221_money(st.current_value());hold.append((self.strategy_ref(st),qty,value/max(1,qty),value,f'Option • {under}'))
+            except Exception:pass
+    hold=sorted(hold,key=lambda x:abs(_sgp221_money(x[3])),reverse=True)[:40]
+    rec={'time':_sgp_dt_iso_v20(now),'equity':eq,'cash':_sgp221_money(self.cash),'realized':_sgp221_money(self.realized),'holdings':hold}
+    self.equity_history.append(rec);self.equity_history=self.equity_history[-20000:];self._equity_last_stamp=stamp
+    self._daily_equity_open.setdefault(now.date().isoformat(),eq)
+Portfolio.record_equity_snapshot=_sgp26_record_equity_snapshot
+
+# Persist active parent orders as compact records.  No child-slice list is ever serialized.
+_Account_save_sgp26_base=AccountManager.save_game_state
+def _sgp26_save_game_state(self,username,portfolio,market,reason='autosave'):
+    ok=_Account_save_sgp26_base(self,username,portfolio,market,reason)
+    if ok and username:
+        try:
+            rec=self.accounts.get(str(username).lower()) or self.accounts.get(username);state=rec.setdefault('game_state',{})
+            state['algo_orders']=[{'id':int(o.get('id',0)),'side':o.get('side','BUY'),'symbol':getattr(o.get('asset'),'symbol',''),'qty':int(o.get('qty',0)),'remaining':int(o.get('remaining',0)),'filled_qty':int(o.get('filled_qty',0)),'style':o.get('style','VWAP'),'participation':float(o.get('participation',12.0)),'status':o.get('status','WORKING')} for o in list(getattr(market,'algo_orders',()))[:128]]
+            self._save()
+        except Exception:pass
+    return ok
+AccountManager.save_game_state=_sgp26_save_game_state
+
+_Account_restore_sgp26_base=AccountManager.restore_game_state
+def _sgp26_restore_game_state(self,username,portfolio,market):
+    ok=_Account_restore_sgp26_base(self,username,portfolio,market)
+    try:
+        rec=self.accounts.get(str(username).lower()) or self.accounts.get(username) or {};rows=(rec.get('game_state') or {}).get('algo_orders') or [];restored=[];max_id=int(getattr(market,'order_id',1))
+        for row in rows[:128]:
+            a=market.get_asset(str(row.get('symbol','')));remaining=max(0,min(10**15,int(row.get('remaining',0))))
+            if a is None or remaining<=0:continue
+            oid=max(1,int(row.get('id',max_id)));max_id=max(max_id,oid+1);restored.append({'id':oid,'side':str(row.get('side','BUY')).upper(),'asset':a,'qty':max(remaining,int(row.get('qty',remaining))),'remaining':remaining,'filled_qty':max(0,int(row.get('filled_qty',0))),'style':str(row.get('style','VWAP')).upper(),'participation':max(1.0,min(50.0,float(row.get('participation',12.0)))),'status':'WORKING','created_at':_sgp_perf_time.monotonic(),'next_slice':0.0,'last_fill':0,'last_vwap':0.0,'message':''})
+        market.algo_orders=restored;market.order_id=max_id
+    except Exception:pass
+    return ok
+AccountManager.restore_game_state=_sgp26_restore_game_state
